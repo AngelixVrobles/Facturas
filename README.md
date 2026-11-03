@@ -17,13 +17,24 @@ No necesita servidor, base de datos ni cuenta: se publica gratis en GitHub Pages
   - Cada vez que piden materiales se llena la orden: obra, solicitante, proveedor, fecha requerida, lugar de entrega, departamento, artículos (cantidad, unidad y descripción) y observaciones. El número sigue solo (`OC-0001`, `OC-0002`…); en Ajustes se cambia el prefijo y el próximo número para seguir el talonario de la empresa.
   - Con la clave de API, se puede pegar el mensaje del pedido (por ejemplo, de WhatsApp) o usar una foto de la lista, y la orden se llena sola para revisarla.
   - **Guardar y sacar PDF** genera la orden en carta, igual al formato impreso: encabezado de la empresa, 12 renglones por página (sigue en otra página si hay más), firmas del solicitante y de quien autoriza, sello y la nota obligatoria. Se comparte por WhatsApp o correo para firmarla y sellarla.
-  - Con la foto o el PDF de la orden firmada y sellada, la orden pasa de *Por firmar* a *Firmada*.
+  - Cada orden lleva un **código QR** pequeño arriba a la derecha. Cuando llega la foto de la orden firmada y sellada, basta con agregarla con **+** junto con las facturas: la app reconoce el código y la adjunta sola a su orden, que pasa de *Por firmar* a *Firmada*. También se puede adjuntar desde la orden. El PDF que hizo la app (sin firmar) no se acepta como firmada. El código se quita en Ajustes si no se quiere.
   - Cada factura se enlaza a su orden: sola, si la factura trae el número (el XML de la e-CF en *NumeroOrdenCompra*, un PDF que dice "Orden de compra: 0012", o la lectura automática que encuentra "OC-0012"); con la sugerencia **Asignar OC-…** cuando hay una orden del mismo proveedor (por nombre o por RNC); o eligiéndola en la factura. Si a la factura le falta la obra o el proveedor, los toma de la orden.
+  - Si de un proveedor hay **una sola orden abierta** (por firmar o firmada, todavía sin factura), su factura se enlaza sola a ella y lo avisa, por si hay que cambiarla. Con dos o más abiertas no adivina: sugiere.
+  - Estados: *Por firmar*, *Sin factura* (firmada, esperando la factura), *Completas* y *Todas*.
+  - **Repetir esta orden** crea una nueva con el mismo proveedor, obra y artículos. Al elegir la obra se llenan el lugar de entrega, quién pide y el departamento de la última orden de esa obra; los artículos de órdenes anteriores salen como sugerencia y traen su unidad.
+  - **Pegar y llenar** toma el mensaje que copiaste de WhatsApp y llena la orden (con la clave de API). **Compartir la firmada** manda la copia firmada al proveedor.
   - Una orden sin facturas se puede eliminar; si ya tiene facturas, solo se anula y queda en el registro.
 - **Pagos:** eliges qué facturas entran (o un proyecto completo) y sale:
   - **PDF para presentar:** portada con el total y el ITBIS, totales por proyecto, detalle con RNC, NCF, orden de compra, fecha, ITBIS y total, firmas *Elaboró / Revisó / Autorizó*, y después cada factura seguida de su orden firmada y sellada, como pide la nota de la orden. Si la orden todavía no tiene la copia firmada, entra la orden marcada *COPIA SIN FIRMA*, y la pantalla del pago avisa qué facturas no tienen orden. Si una orden tiene varias facturas, la copia va una sola vez, después de la primera.
-  - **Excel:** hoja *Resumen* y hoja *Facturas* (con la columna *Orden de compra*) con filtros, encabezado fijo, montos en RD$ y totales que se ajustan al filtrar.
+  - En la portada también van los **totales por proveedor** con su RNC, para hacer una transferencia por proveedor.
+  - **Excel detallado**, con filtros, encabezado fijo, montos en RD$ (y US$ si hay) y totales que se ajustan al filtrar:
+    - *Resumen*: por proyecto (subtotal, ITBIS y total), por estado y un control de lo que falta (sin orden, órdenes sin firmar, avisos, facturas de consumo, electrónicas verificables).
+    - *Facturas*: proyecto, proveedor, RNC, NCF, tipo, vencimiento del NCF, fecha, concepto, orden de compra y su estado, quién la pidió, referencia, subtotal sin ITBIS, ITBIS, total, estado, pago, fecha del pago, de dónde salieron los datos (QR, XML, lectura automática o a mano), avisos, enlace **Verificar** a la DGII y fecha en que se agregó. Al imprimir ocupa 3 hojas de ancho y repite las columnas que identifican la factura.
+    - *Por proveedor*, *Órdenes* (las órdenes de esas facturas) y *Artículos* (lo que se pidió en cada orden).
 - **Seguimiento:** cada pago pasa por *Por presentar → Presentado → Pagado*.
+- **Para hacer:** arriba en *Facturas*, lo pendiente con un toque para resolverlo: facturas sin leer (**Leer todas**), con algo que revisar, sin orden de compra, órdenes por firmar o esperando factura, facturas listas para pagar (**Armar pago** las marca) y pagos presentados que faltan por pagar.
+- **Más ayudas en la factura:** la obra se toma del texto del PDF aunque no haya clave ("Obra: Caperuza 2"); si falta el ITBIS, sugiere el 18 % incluido y se guarda con un toque; el concepto sale de los artículos de la orden; **No lleva orden** quita el aviso a las que no la necesitan.
+- **Lectura sin internet:** si una factura no se pudo leer por falta de conexión, se lee sola cuando vuelve el internet. Si pones la clave de API después de cargar facturas, **Leer todas** las lee de una vez.
 - **Funciona sin internet**, salvo la lectura automática de facturas de papel y de pedidos.
 
 ## Publicarla en GitHub Pages
@@ -67,7 +78,7 @@ En Android: Chrome → menú → **Instalar app**.
 
 ## Actualizar la app
 
-Al cambiar archivos, sube también `sw.js` con un número nuevo en `VERSION` (por ejemplo `facturas-1.1.3`). Al abrirla, la app avisa que hay una versión nueva y se actualiza con un toque.
+Al cambiar archivos, sube también `sw.js` con un número nuevo en `VERSION` (por ejemplo `facturas-1.2.1`). Al abrirla, la app avisa que hay una versión nueva y se actualiza con un toque.
 
 ## Archivos
 
@@ -76,6 +87,7 @@ Al cambiar archivos, sube también `sw.js` con un número nuevo en `VERSION` (po
 | `index.html` | Pantallas y estilos |
 | `js/app.js` | Lógica de la app: facturas, órdenes de compra, pagos, PDF, Excel y respaldos |
 | `js/rd.js` | NCF y e-NCF, RNC, código QR y XML de la DGII |
+| `js/qr.js` | Código QR de cada orden de compra |
 | `js/runtime.js` | Almacenamiento en el teléfono y lectura de facturas y pedidos por API |
 | `js/xlsx-zip.js` | Archivos Excel y `.zip` |
 | `sw.js` | Funcionamiento sin internet |

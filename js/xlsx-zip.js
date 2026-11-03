@@ -80,13 +80,13 @@
     return Math.round((Date.UTC(+m[1], +m[2] - 1, +m[3]) - Date.UTC(1899, 11, 30)) / 86400000);
   }
   // Estilos de celda (índices en cellXfs).
-  const XS = { head: 1, money: 2, date: 3, totLabel: 4, totMoney: 5, title: 6, muted: 7, headR: 8, totInt: 9, int: 10, totBlank: 11, bold: 12, ind: 13, headInd: 14, moneyUsd: 15, totMoneyUsd: 16 };
+  const XS = { head: 1, money: 2, date: 3, totLabel: 4, totMoney: 5, title: 6, muted: 7, headR: 8, totInt: 9, int: 10, totBlank: 11, bold: 12, ind: 13, headInd: 14, moneyUsd: 15, totMoneyUsd: 16, link: 17, warn: 18 };
   const STYLES = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
     + '<numFmts count="3"><numFmt numFmtId="164" formatCode="&quot;RD$&quot;#,##0.00"/><numFmt numFmtId="165" formatCode="dd/mm/yyyy"/><numFmt numFmtId="166" formatCode="&quot;US$&quot;#,##0.00"/></numFmts>'
-    + '<fonts count="4"><font><sz val="11"/><name val="Calibri"/><family val="2"/></font><font><b/><sz val="11"/><name val="Calibri"/><family val="2"/></font><font><b/><sz val="15"/><color rgb="FF151C28"/><name val="Calibri"/><family val="2"/></font><font><sz val="10"/><color rgb="FF566173"/><name val="Calibri"/><family val="2"/></font></fonts>'
+    + '<fonts count="6"><font><sz val="11"/><name val="Calibri"/><family val="2"/></font><font><b/><sz val="11"/><name val="Calibri"/><family val="2"/></font><font><b/><sz val="15"/><color rgb="FF151C28"/><name val="Calibri"/><family val="2"/></font><font><sz val="10"/><color rgb="FF566173"/><name val="Calibri"/><family val="2"/></font><font><u/><sz val="11"/><color rgb="FF1F4FD8"/><name val="Calibri"/><family val="2"/></font><font><sz val="11"/><color rgb="FFB42318"/><name val="Calibri"/><family val="2"/></font></fonts>'
     + '<fills count="4"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE1E7F5"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFF1F3F7"/><bgColor indexed="64"/></patternFill></fill></fills>'
     + '<borders count="3"><border><left/><right/><top/><bottom/><diagonal/></border><border><left/><right/><top/><bottom style="thin"><color rgb="FF8C97A8"/></bottom><diagonal/></border><border><left/><right/><top style="thin"><color rgb="FF8C97A8"/></top><bottom/><diagonal/></border></borders>'
-    + '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="17">'
+    + '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="19">'
     + '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
     + '<xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/>'
     + '<xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>'
@@ -104,13 +104,15 @@
     + '<xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="left" indent="1"/></xf>'
     + '<xf numFmtId="166" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>'
     + '<xf numFmtId="166" fontId="1" fillId="3" borderId="2" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1"/>'
+    + '<xf numFmtId="0" fontId="4" fillId="0" borderId="0" xfId="0" applyFont="1"/>'
+    + '<xf numFmtId="0" fontId="5" fillId="0" borderId="0" xfId="0" applyFont="1"/>'
     + '</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>';
 
   const isNum = (n) => typeof n === 'number' && Number.isFinite(n);
   function cellXml(c, ref) {
     if (!c) return '';
     const st = c.s ? ` s="${c.s}"` : '';
-    if (c.f) return `<c r="${ref}"${st}><f>${xesc(c.f)}</f>${isNum(c.v) ? `<v>${c.v}</v>` : ''}</c>`;
+    if (c.f) return `<c r="${ref}"${st}${typeof c.v === 'string' ? ' t="str"' : ''}><f>${xesc(c.f)}</f>${isNum(c.v) ? `<v>${c.v}</v>` : typeof c.v === 'string' ? `<v>${xesc(c.v)}</v>` : ''}</c>`;
     if (typeof c.v === 'number') return isNum(c.v) ? `<c r="${ref}"${st}><v>${c.v}</v></c>` : `<c r="${ref}"${st}/>`;
     const str = String(c.v ?? '');
     return str ? `<c r="${ref}"${st} t="inlineStr"><is><t xml:space="preserve">${xesc(str)}</t></is></c>` : `<c r="${ref}"${st}/>`;
@@ -123,7 +125,7 @@
     return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
       + `<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr><sheetViews><sheetView workbookViewId="0"${o.selected ? ' tabSelected="1"' : ''}>${pane}</sheetView></sheetViews><sheetFormatPr defaultRowHeight="15"/>${cols}<sheetData>${data}</sheetData>`
       + (o.autoFilter ? `<autoFilter ref="${o.autoFilter}"/>` : '')
-      + `<pageMargins left="0.5" right="0.5" top="0.6" bottom="0.7" header="0.3" footer="0.3"/><pageSetup orientation="${o.landscape ? 'landscape' : 'portrait'}" fitToWidth="1" fitToHeight="0"/>`
+      + `<pageMargins left="0.5" right="0.5" top="0.6" bottom="0.7" header="0.3" footer="0.3"/><pageSetup orientation="${o.landscape ? 'landscape' : 'portrait'}" fitToWidth="${o.fitWidth || 1}" fitToHeight="0"/>`
       + (o.footer ? `<headerFooter><oddFooter>${xesc(o.footer)}</oddFooter></headerFooter>` : '')
       + '</worksheet>';
   }

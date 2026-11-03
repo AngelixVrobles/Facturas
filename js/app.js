@@ -7,8 +7,10 @@ const LIB = {
   pdfjs: 'vendor/pdf.min.js',
   pdfjsWorker: 'vendor/pdf.worker.min.js',
   jsqr: 'vendor/jsQR.min.js',
+  qrgen: 'js/qr.js',
 };
-const APP_VERSION = '1.1.2';
+const PDF_CREATOR = 'Facturas de Proyectos';
+const APP_VERSION = '1.2.0';
 const SVG = (d) => `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ICON = {
   plus: SVG('<path d="M12 5v14M5 12h14"/>'),
@@ -41,16 +43,16 @@ const PAY_LABEL = { armando: 'Por presentar', presentado: 'Presentado', pagado: 
 const INV_LABEL = { pendiente: 'Pendiente', enpago: 'En pago', presentada: 'Presentada', pagada: 'Pagada' };
 const GROUP_OF = { pendiente: 'pendientes', enpago: 'tramite', presentada: 'tramite', pagada: 'pagadas' };
 const SEGS = [['pendientes', 'Pendientes'], ['tramite', 'En trámite'], ['pagadas', 'Pagadas'], ['todas', 'Todas']];
-const Q_LABEL = { espera: 'En espera', preparando: 'Preparando…', subiendo: 'Guardando…', leyendo: 'Leyendo la factura…', lista: 'Lista', qr: 'Lista: datos del QR de la DGII', xml: 'Lista: datos del XML', manual: 'Guardada; llena los datos', error: 'No se pudo agregar' };
+const Q_LABEL = { espera: 'En espera', preparando: 'Preparando…', subiendo: 'Guardando…', leyendo: 'Leyendo la factura…', lista: 'Lista', qr: 'Lista: datos del QR de la DGII', xml: 'Lista: datos del XML', manual: 'Guardada; llena los datos', orden: 'Orden firmada', error: 'No se pudo agregar' };
 const CUR_PREFIX = { DOP: 'RD$', USD: 'US$', EUR: '€' };
 const ORDER_LABEL = { borrador: 'Borrador', enviada: 'Por firmar', autorizada: 'Firmada', anulada: 'Anulada' };
-const ORDER_SEGS = [['porfirmar', 'Por firmar'], ['firmadas', 'Firmadas'], ['todas', 'Todas']];
+const ORDER_SEGS = [['porfirmar', 'Por firmar'], ['sinfactura', 'Sin factura'], ['completas', 'Completas'], ['todas', 'Todas']];
 const UNITS = ['Unidad', 'Funda', 'Saco', 'Galón', 'Cubeta', 'Caja', 'Rollo', 'Metro', 'Pie', 'Pulgada', 'Libra', 'Quintal', 'Plancha', 'Varilla', 'Tubo', 'Lámina', 'Juego', 'Par', 'Litro', 'm²', 'm³', 'Viaje', 'Servicio'];
 const DEFAULT_ORDER_NOTE = 'Toda factura recibida por compras deberá estar acompañada, como mínimo, de una fotocopia de la orden de compra debidamente autorizada y sellada. Esta orden debe presentarse junto con la factura para su recepción, verificación y trámite.';
 
 const S = {
   tab: 'facturas', filter: 'pendientes', projectFilter: 'all', search: '', paymentId: null,
-  projects: [], invoices: [], payments: [], orders: [], settings: {}, got: { projects: false, invoices: false, payments: false, orders: false }, orderFilter: 'todas', orderSearch: '',
+  projects: [], invoices: [], payments: [], orders: [], settings: {}, got: { projects: false, invoices: false, payments: false, orders: false }, orderFilter: 'todas', orderSearch: '', focus: null,
   dbState: 'loading', aiState: 'ok', queue: [], sheet: null, payDel: false, busyPdf: false, pdfMsg: '',
   updateReg: null, updating: false, ready: null, restoreFile: null,
 };
@@ -176,7 +178,7 @@ function orderCandidates(i, D) {
   return D.orders.filter((o) => o.status !== 'anulada' && (!i.projectId || o.projectId === i.projectId) && names.some((n) => sameName(o.supplier, n)))
     .sort((a, b) => used(a) - used(b) || (Number(b.number) || 0) - (Number(a.number) || 0));
 }
-function needsOrder(i, D) { return !!(D.firstOrderAt && !i.order && String(i.createdAt || '') >= D.firstOrderAt); }
+function needsOrder(i, D) { return !!(D.firstOrderAt && !i.order && !i.noOrder && String(i.createdAt || '') >= D.firstOrderAt); }
 function fmtQty(q) { if (typeof q === 'number') return new Intl.NumberFormat('es-DO', { maximumFractionDigits: 3 }).format(q); return String(q == null ? '' : q); }
 // Número de orden escrito por el proveedor ("OC-0012", "0012"), por ejemplo en <NumeroOrdenCompra> del XML.
 function orderByNumberText(text, projectId) {
@@ -204,7 +206,38 @@ function fillFromOrder(target, inv, o) {
   target.orderId = o.id;
   if (!(inv.projectId || target.projectId) && o.projectId) { target.projectId = o.projectId; target.projectHint = ''; }
   if (!(inv.supplier || target.supplier) && o.supplier) target.supplier = o.supplier;
+  if (!(inv.concept || target.concept) && Array.isArray(o.items) && o.items.length) target.concept = itemsSummary(o.items);
   return target;
+}
+// "Cemento gris 42.5 kg y 3 artículos más"
+function itemsSummary(items) {
+  const its = (items || []).filter((x) => x && x.desc);
+  if (!its.length) return '';
+  return (its.length > 1 ? `${its[0].desc} y ${plural(its.length - 1, 'artículo más', 'artículos más')}` : its[0].desc).slice(0, 140);
+}
+// Una sola orden abierta (por firmar o firmada, todavía sin facturas) de este proveedor, en su obra si ya la tiene: se enlaza sola.
+function soleOpenOrder(inv, D) {
+  const names = [inv.supplier, ...((inv.rnc && D.namesByRnc.get(inv.rnc)) || [])].filter(Boolean);
+  if (!names.length) return null;
+  const open = D.orders.filter((o) => (o.status === 'enviada' || o.status === 'autorizada') && !(D.invByOrder.get(o.id) || []).some((x) => x.id !== inv.id)
+    && (!inv.projectId || o.projectId === inv.projectId) && names.some((n) => sameName(o.supplier, n)));
+  return open.length === 1 ? open[0] : null;
+}
+// La obra escrita en el texto de un PDF (por ejemplo "Obra: Caperuza 2"), entre los proyectos que ya existen.
+function projectMentionIn(text) {
+  const t = ' ' + projKey(String(text || '').slice(0, 12000)) + ' ';
+  let best = null, bestLen = 0;
+  for (const p of S.projects) {
+    const k = projKey(p.name);
+    if (k.length >= 4 && k.length > bestLen && t.includes(' ' + k + ' ')) { best = p; bestLen = k.length; }
+  }
+  return best;
+}
+// Código QR de la orden de compra: "OC1:<id>:<número>".
+const orderQrText = (o) => `OC1:${o.id}:${Number(o.number) || 0}`;
+function parseOrderQr(t) {
+  const m = /^OC1:([0-9a-z]{6,40}):(\d{1,7})$/i.exec(String(t || '').trim());
+  return m ? { kind: 'order', id: m[1], number: Number(m[2]) } : null;
 }
 // Nombre del proveedor según facturas anteriores con el mismo RNC.
 function knownSupplier(rnc) {
@@ -238,7 +271,9 @@ function payInvoices(pay, D) { const ids = new Set(Array.isArray(pay.invoiceIds)
 function inProject(i) { return S.projectFilter === 'all' || (S.projectFilter === 'none' ? !i.project : i.projectId === S.projectFilter); }
 function visibleList(D) {
   const q = norm(S.search);
-  let list = D.invoices.filter(inProject).filter((i) => S.filter === 'todas' || GROUP_OF[i.status] === S.filter);
+  let list = D.invoices.filter(inProject);
+  if (S.focus) list = list.filter((i) => i.status !== 'pagada' && (S.focus === 'revisar' ? reviewFlags(i, D).some((f) => f !== 'Sin orden') : needsOrder(i, D)));
+  else list = list.filter((i) => S.filter === 'todas' || GROUP_OF[i.status] === S.filter);
   if (q) list = list.filter((i) => norm([i.supplier, i.number, i.rnc, i.concept, i.ref, i.project && i.project.name, i.fileName].join(' ')).includes(q));
   return list.sort(sortByDateDesc);
 }
@@ -299,6 +334,7 @@ async function scanQr(src) {
   if (typeof window.jsQR !== 'function') return null;
   const W = src.naturalWidth || src.width, H = src.naturalHeight || src.height;
   if (!W || !H) return null;
+  let orderHit = null;
   for (const [fx, fy, fw, fh] of QR_REGIONS) {
     const sx = Math.round(W * fx), sy = Math.round(H * fy);
     const sw = Math.round(W * fw), sh = Math.round(H * fh);
@@ -309,9 +345,9 @@ async function scanQr(src) {
     ctx.drawImage(src, sx, sy, sw, sh, 0, 0, c.width, c.height);
     const img = ctx.getImageData(0, 0, c.width, c.height);
     const code = window.jsQR(img.data, c.width, c.height, { inversionAttempts: 'dontInvert' });
-    if (code && code.data) { const qr = RD.parseQr(code.data); if (qr) return qr; }
+    if (code && code.data) { const qr = RD.parseQr(code.data); if (qr) return qr; if (!orderHit) orderHit = parseOrderQr(code.data); }
   }
-  return null;
+  return orderHit;
 }
 async function prepImage(file) {
   const img = await loadImage(file);
@@ -341,7 +377,9 @@ async function inspectPdf(bytes) {
     const page = await renderPdfCanvas(pdf, 1, 1800);
     const qr = await scanQr(page);
     const thumb = await canvasToJpeg(scaledCanvas(page, 1400), 0.85);
-    return { pages: pdf.numPages, text: text.replace(/[ \t]+/g, ' ').slice(0, 12000), thumb, qr };
+    let creator = '';
+    try { const md = await pdf.getMetadata(); creator = String((md && md.info && md.info.Creator) || ''); } catch (e) { /* sin metadatos */ }
+    return { pages: pdf.numPages, text: text.replace(/[ \t]+/g, ' ').slice(0, 12000), thumb, qr, creator };
   } finally { try { pdf.destroy(); } catch (e) { /* nada */ } }
 }
 async function getBlob(id) { const b = await RT.assets.get(id); if (!b) throw new Error('No se encontró el archivo.'); return b; }
@@ -431,6 +469,7 @@ function cardHTML(i, D, opts = {}) {
 }
 
 function renderFacturas(D) {
+  renderTodo(D);
   if (S.projectFilter !== 'all' && S.projectFilter !== 'none' && !D.projById.has(S.projectFilter) && S.got.projects) S.projectFilter = 'all';
   const base = D.invoices.filter(inProject);
   const counts = { pendientes: 0, tramite: 0, pagadas: 0, todas: base.length };
@@ -446,9 +485,10 @@ function renderFacturas(D) {
   const list = visibleList(D);
   const sum = $('#f-sum');
   if (S.got.invoices && base.length) {
-    const canMake = S.filter === 'pendientes' && list.length && canEdit();
+    const canMake = !S.focus && S.filter === 'pendientes' && list.length && canEdit();
     const acts = (list.length ? `<button type="button" class="btn sm" data-act="list-xlsx">${ICON.sheet} Excel</button>` : '') + (canMake ? `<button type="button" class="btn sm" data-act="new-pay-from">Armar pago con estas ${ICON.right}</button>` : '');
-    sum.innerHTML = `<div class="sumline"><span>${plural(list.length, 'factura', 'facturas')} · <b class="mono">${esc(totalStr(list))}</b></span>${acts ? `<span class="acts">${acts}</span>` : ''}</div>`;
+    const focusLine = S.focus ? `<div class="focus-line"><span class="grow">Mostrando: <b>${S.focus === 'revisar' ? 'facturas con algo que revisar' : 'facturas sin orden de compra'}</b></span><button type="button" class="btn sm" data-act="focus-off">Ver todas</button></div>` : '';
+    sum.innerHTML = `${focusLine}<div class="sumline"><span>${plural(list.length, 'factura', 'facturas')} · <b class="mono">${esc(totalStr(list))}</b></span>${acts ? `<span class="acts">${acts}</span>` : ''}</div>`;
   } else sum.innerHTML = '';
 
   const el = $('#f-list');
@@ -469,12 +509,42 @@ function renderFacturas(D) {
   }
 }
 
+/* ---------- para hacer ---------- */
+function needsReading(i) { return (i.ai === 'off' || i.ai === 'failed') && !i.notInvoice && i.status !== 'pagada' && !!i.fileId && (i.fileType === 'application/pdf' || String(i.fileType || '').startsWith('image/')); }
+function readyToPay(i, D) { return i.status === 'pendiente' && isNum(i.amount) && !reviewFlags(i, D).length && !(i.order && i.order.status !== 'autorizada'); }
+function renderTodo(D) {
+  const el = $('#todo');
+  if (!el) return;
+  if (!S.got.invoices || !S.got.orders || !S.got.payments || !canEdit()) { el.hidden = true; el.innerHTML = ''; return; }
+  const live = D.invoices.filter((i) => i.status !== 'pagada');
+  const unread = live.filter((i) => needsReading(i) && i.ai !== 'pending');
+  const review = live.filter((i) => reviewFlags(i, D).some((f) => f !== 'Sin orden'));
+  const noOrd = live.filter((i) => needsOrder(i, D));
+  const toSign = D.orders.filter((o) => o.status === 'borrador' || o.status === 'enviada');
+  const waiting = D.orders.filter((o) => o.status === 'autorizada' && !(D.invByOrder.get(o.id) || []).length);
+  const ready = D.invoices.filter((i) => readyToPay(i, D));
+  const presented = S.payments.filter((p) => p.status === 'presentado');
+  const row = (n, text, btn, cls = '') => `<div class="todo-row ${cls}"><span class="n">${n}</span><span class="grow">${text}</span>${btn}</div>`;
+  const b = (act, label, extra = '', cls = '') => `<button type="button" class="btn sm${cls}" data-act="${act}"${extra}>${label}</button>`;
+  const rows = [];
+  if (unread.length) rows.push(ai.hasKey() ? row(unread.length, plural(unread.length, 'factura sin leer', 'facturas sin leer'), b('read-all', 'Leer todas'))
+    : row(unread.length, `${plural(unread.length, 'factura', 'facturas')} sin datos. Con la clave de API se llenan solas.`, b('settings', 'Ajustes')));
+  if (review.length) rows.push(row(review.length, plural(review.length, 'factura con algo que revisar', 'facturas con algo que revisar'), b('focus', 'Ver', ' data-f="revisar"'), 'warn'));
+  if (noOrd.length) rows.push(row(noOrd.length, plural(noOrd.length, 'factura sin orden de compra', 'facturas sin orden de compra'), b('focus', 'Ver', ' data-f="sinorden"'), 'warn'));
+  if (toSign.length) rows.push(row(toSign.length, plural(toSign.length, 'orden por firmar', 'órdenes por firmar'), b('go-orders', 'Ver', ' data-f="porfirmar"')));
+  if (waiting.length) rows.push(row(waiting.length, plural(waiting.length, 'orden firmada esperando factura', 'órdenes firmadas esperando factura'), b('go-orders', 'Ver', ' data-f="sinfactura"')));
+  if (ready.length) rows.push(row(ready.length, `${plural(ready.length, 'factura lista', 'facturas listas')} para pagar · <b class="mono">${esc(totalStr(ready))}</b>`, b('pay-ready', 'Armar pago', '', ' primary'), 'ok'));
+  if (presented.length) rows.push(row(presented.length, plural(presented.length, 'pago presentado, esperando que lo paguen', 'pagos presentados, esperando que los paguen'), b('tab', 'Ver', ' data-tab="pagos"')));
+  el.hidden = !rows.length;
+  el.innerHTML = rows.length ? `<div class="todo"><h2>Para hacer</h2>${rows.join('')}</div>` : '';
+}
+
 function renderQueue() {
   const el = $('#queue');
   const q = S.queue;
   if (!q.length) { el.hidden = true; el.innerHTML = ''; return; }
   const left = q.filter((x) => !x.done).length;
-  const cls = { espera: 'q-busy', preparando: 'q-busy', subiendo: 'q-busy', leyendo: 'q-busy', lista: 'q-ok', qr: 'q-ok', xml: 'q-ok', manual: 'q-manual', error: 'q-error' };
+  const cls = { espera: 'q-busy', preparando: 'q-busy', subiendo: 'q-busy', leyendo: 'q-busy', lista: 'q-ok', qr: 'q-ok', xml: 'q-ok', orden: 'q-ok', manual: 'q-manual', error: 'q-error' };
   el.hidden = false;
   el.innerHTML = `<div class="q-head"><b>${left ? `Procesando ${left} de ${q.length}…` : `Listo: ${plural(q.length, 'archivo', 'archivos')}`}</b>${left ? '' : '<button type="button" class="btn sm ghost" data-act="queue-clear">Ocultar</button>'}</div><ul class="q-list">${q.map((x) => `<li class="${cls[x.state]}"><span class="q-dot"></span><span class="q-name">${esc(x.name)}</span><span class="q-state">${esc(Q_LABEL[x.state] + (x.msg ? ': ' + x.msg : ''))}</span></li>`).join('')}</ul>`;
 }
@@ -545,19 +615,19 @@ function renderPayDetail(D, pay) {
 function orderCardHTML(o, D) {
   const invs = D.invByOrder.get(o.id) || [];
   const n = (o.items || []).length;
-  const meta = [o.project ? o.project.name : 'Sin proyecto', fmtDate(o.date), plural(n, 'artículo', 'artículos'), invs.length ? plural(invs.length, 'factura', 'facturas') : ''].filter(Boolean).join(' · ');
+  const meta = [o.project ? o.project.name : 'Sin proyecto', fmtDate(o.date), plural(n, 'artículo', 'artículos'), invs.length ? plural(invs.length, 'factura', 'facturas') : o.status === 'autorizada' ? 'esperando factura' : ''].filter(Boolean).join(' · ');
   return `<button type="button" class="ord" data-act="open-order" data-id="${esc(o.id)}"><span class="ord-top"><b class="mono">${esc(orderNo(o))}</b><span class="pill o-${o.status}">${ORDER_LABEL[o.status]}</span></span><span class="ord-sup">${esc(o.supplier || 'Sin proveedor')}</span><span class="ord-meta">${esc(meta)}</span></button>`;
 }
 function renderOrdenes(D) {
   const el = $('#o-list');
   $('#o-new').hidden = !canEdit();
-  const groupOf = (o) => (o.status === 'autorizada' ? 'firmadas' : o.status === 'anulada' ? 'anuladas' : 'porfirmar');
-  const counts = { porfirmar: 0, firmadas: 0, todas: D.orders.length };
+  const groupOf = (o) => (o.status === 'anulada' ? 'anuladas' : o.status !== 'autorizada' ? 'porfirmar' : (D.invByOrder.get(o.id) || []).length ? 'completas' : 'sinfactura');
+  const counts = { porfirmar: 0, sinfactura: 0, completas: 0, todas: D.orders.length };
   for (const o of D.orders) if (counts[groupOf(o)] != null) counts[groupOf(o)]++;
   $('#o-seg').innerHTML = ORDER_SEGS.map(([k, label]) => `<button type="button" data-act="ofilter" data-f="${k}" aria-pressed="${S.orderFilter === k}"><span>${label}</span><span class="n">${counts[k]}</span></button>`).join('');
   if (!S.got.orders) { el.innerHTML = S.dbState === 'absent' ? '' : '<p class="loading">Cargando órdenes…</p>'; return; }
   if (!D.orders.length) {
-    el.innerHTML = `<div class="empty"><h2>Aquí van tus órdenes de compra</h2><ol><li>Cuando te pidan materiales, toca <b>Nueva orden de compra</b> y llénala. Si tienes la clave de API, puedes pegar el mensaje del pedido y se llena sola.</li><li>Comparte el PDF para que la firmen y la sellen.</li><li>Toma una foto de la orden firmada y adjúntala. Cuando llegue la factura, la enlazas a su orden y salen juntas en el PDF del pago.</li></ol></div>`;
+    el.innerHTML = `<div class="empty"><h2>Aquí van tus órdenes de compra</h2><ol><li>Cuando te pidan materiales, toca <b>Nueva orden de compra</b> y llénala. Si tienes la clave de API, puedes pegar el mensaje del pedido y se llena sola.</li><li>Comparte el PDF para que la firmen y la sellen.</li><li>Cuando vuelva firmada y sellada, agrega la foto con <b>+</b> en Facturas: la app reconoce el código QR de la orden y la adjunta sola.</li><li>Cuando llegue la factura, se enlaza sola a su orden si es la única abierta de ese proveedor (si no, te sugiere cuál). En el PDF del pago salen juntas.</li></ol></div>`;
     return;
   }
   const q = norm(S.orderSearch);
@@ -595,7 +665,7 @@ function closeSheet() { const root = $('#sheet-root'); root.hidden = true; root.
 function lockBody() { document.body.classList.toggle('locked', !!S.sheet || !$('#viewer').hidden); }
 const sheetHead = (title) => `<div class="sheet-h"><h2>${title}</h2><button type="button" class="icon-btn plain" data-act="sheet-close" aria-label="Cerrar">${ICON.close}</button></div>`;
 
-function invSig(i) { return JSON.stringify([i.orderId, i.order && i.order.status, i.ncfExpiry, i.supplier, i.number, i.rnc, i.date, i.amount, i.itbis, i.currency, i.concept, i.ref, i.projectId, i.projectHint, i.ai, i.notInvoice, i.pay && i.pay.id, i.pay && i.pay.status, i.dup, i.fiscal, i.xmlId, i.fileId, i.buyerRnc]); }
+function invSig(i) { return JSON.stringify([i.orderId, i.orderAuto, i.noOrder, i.order && i.order.status, i.ncfExpiry, i.supplier, i.number, i.rnc, i.date, i.amount, i.itbis, i.currency, i.concept, i.ref, i.projectId, i.projectHint, i.ai, i.notInvoice, i.pay && i.pay.id, i.pay && i.pay.status, i.dup, i.fiscal, i.xmlId, i.fileId, i.buyerRnc]); }
 function openInvoice(id, keepScroll) {
   const D = derive();
   const i = D.invoices.find((x) => x.id === id);
@@ -632,10 +702,15 @@ function openInvoice(id, keepScroll) {
   const opts = D.projects.map((p) => `<option value="${esc(p.id)}"${p.id === i.projectId ? ' selected' : ''}>${esc(p.name)}</option>`).join('');
   const ordList = D.orders.filter((o) => o.status !== 'anulada' || o.id === i.orderId).sort((a, b) => (b.projectId === i.projectId) - (a.projectId === i.projectId) || sameName(b.supplier, i.supplier) - sameName(a.supplier, i.supplier) || (Number(b.number) || 0) - (Number(a.number) || 0));
   const orderOpts = ordList.map((o) => `<option value="${esc(o.id)}"${o.id === i.orderId ? ' selected' : ''}>${esc([orderNo(o), o.supplier, o.project && o.project.name].filter(Boolean).join(' · '))}</option>`).join('');
-  const cand = !i.order && edit ? orderCandidates(i, D) : [];
-  if (cand.length) msgs.push(`<div class="msg hint"><span>Hay ${cand.length === 1 ? 'una orden' : 'órdenes'} de este proveedor${i.projectId ? ' para esta obra' : ''}.</span>${cand.slice(0, 3).map((o) => `<button type="button" class="link" data-act="link-order" data-id="${esc(i.id)}" data-order="${esc(o.id)}">Asignar ${esc(orderNo(o))}${!i.projectId && o.project ? ' (' + esc(o.project.name) + ')' : ''}</button>`).join(' ')}</div>`);
-  else if (needsOrder(i, D)) msgs.push(`<div class="msg warn">${ICON.alert}<span>Esta factura no tiene orden de compra. Debe presentarse con su orden firmada y sellada.</span></div>`);
+  const cand = !i.order && !i.noOrder && edit ? orderCandidates(i, D) : [];
+  const noOrdBtn = edit ? ` <button type="button" class="link" data-act="no-order" data-id="${esc(i.id)}">No lleva orden</button>` : '';
+  if (cand.length) msgs.push(`<div class="msg hint"><span>Hay ${cand.length === 1 ? 'una orden' : 'órdenes'} de este proveedor${i.projectId ? ' para esta obra' : ''}.</span>${cand.slice(0, 3).map((o) => `<button type="button" class="link" data-act="link-order" data-id="${esc(i.id)}" data-order="${esc(o.id)}">Asignar ${esc(orderNo(o))}${!i.projectId && o.project ? ' (' + esc(o.project.name) + ')' : ''}</button>`).join(' ')}${needsOrder(i, D) ? noOrdBtn : ''}</div>`);
+  else if (needsOrder(i, D)) msgs.push(`<div class="msg warn">${ICON.alert}<span>Esta factura no tiene orden de compra. Debe presentarse con su orden firmada y sellada.${noOrdBtn}</span></div>`);
+  if (i.order && i.orderAuto) msgs.push(`<div class="msg hint"><span>Se enlazó sola a la orden <b>${esc(orderNo(i.order))}</b>: es la única abierta de este proveedor. Si no es, cámbiala en «Orden de compra».</span></div>`);
+  if (!i.order && i.noOrder) msgs.push(`<div class="msg"><span>Marcada como factura que no lleva orden de compra.${edit ? ` <button type="button" class="link" data-act="no-order-undo" data-id="${esc(i.id)}">Deshacer</button>` : ''}</span></div>`);
   if (i.order && i.order.status !== 'autorizada') msgs.push(`<div class="msg warn">${ICON.alert}<span>La orden ${esc(orderNo(i.order))} todavía no tiene la copia firmada y sellada.</span></div>`);
+  const t18 = edit && isNum(i.amount) && i.amount > 0 && !isNum(i.itbis) && (!ncf.ok || ['01', '02', '31', '32'].includes(ncf.code)) ? round2((i.amount * 18) / 118) : null;
+  if (t18) msgs.push(`<div class="msg hint"><span>Si todo lleva ITBIS de 18 %, el ITBIS de esta factura es <b>${esc(money(t18, i.currency))}</b>.</span><button type="button" class="link" data-act="itbis18" data-id="${esc(i.id)}" data-v="${t18}">Usar ese ITBIS</button></div>`);
   const cur = normCur(i.currency);
   const delBtn = edit && i.status !== 'pagada' ? `<div><button type="button" class="btn danger sm" data-act="inv-del">${ICON.trash} Eliminar factura</button></div>` : '';
   const html = `<form id="inv-form" data-id="${esc(i.id)}" autocomplete="off">${sheetHead('Factura')}
@@ -753,6 +828,7 @@ async function openSettings() {
         <div class="field"><label for="st-oc-prefix">Prefijo del número</label><input id="st-oc-prefix" maxlength="8" value="${esc(orderPrefix())}"></div>
         <div class="field"><label for="st-oc-next">Próximo número</label><input id="st-oc-next" class="mono" inputmode="numeric" maxlength="7" value="${nextOrderNumber()}"></div>
         <div class="field full"><label for="st-oc-note">Nota obligatoria al pie de la orden</label><textarea id="st-oc-note" rows="3" maxlength="500">${esc(st.orderNote != null ? st.orderNote : DEFAULT_ORDER_NOTE)}</textarea></div>
+        <label class="field full check-row"><input type="checkbox" id="st-oc-qr"${st.orderQr !== false ? ' checked' : ''}><span>Poner un código QR en la orden. Así, al agregar con <b>+</b> la foto de la orden firmada, la app la reconoce y la adjunta sola a su orden.</span></label>
       </div>
       <h3 class="h2">Respaldo</h3>
       <p class="hint">Tus facturas solo están en este teléfono. Descarga un respaldo cada semana y guárdalo en iCloud Drive o en tu computadora. ${last ? 'Último respaldo: ' + esc(fmtDate(new Date(last).toISOString().slice(0, 10))) + '.' : 'Todavía no has hecho ninguno.'}</p>
@@ -861,8 +937,9 @@ function setQ(item, state, msg) { item.state = state; if (msg !== undefined) ite
 function finishQ(item, state, msg) {
   item.done = true;
   setQ(item, state, msg || '');
-  if (S.queue.every((x) => x.done) && S.queue.every((x) => ['lista', 'qr', 'xml'].includes(x.state))) {
-    setTimeout(() => { if (S.queue.every((x) => x.done)) { S.queue = S.queue.filter((x) => !['lista', 'qr', 'xml'].includes(x.state)); renderQueue(); } }, 5000);
+  const okStates = ['lista', 'qr', 'xml', 'orden'];
+  if (S.queue.every((x) => x.done) && S.queue.every((x) => okStates.includes(x.state))) {
+    setTimeout(() => { if (S.queue.every((x) => x.done)) { S.queue = S.queue.filter((x) => !okStates.includes(x.state)); renderQueue(); } }, 5000);
   }
   scheduleRender();
 }
@@ -893,17 +970,29 @@ async function addOne(item) {
     const isImg = !isXml && !isPdf && (type.startsWith('image/') || /\.(jpe?g|png|webp|gif|heic|heif|bmp)$/i.test(name));
     if (!isXml && !isPdf && !isImg) throw new UserError('Solo se pueden agregar fotos, PDF o XML de factura electrónica');
     if (isXml) { await addXml(item, f); return; }
-    let blob, ftype, thumb = null, text = '', pages = 1, aiImage = null, qr = null;
+    let blob, ftype, thumb = null, text = '', pages = 1, aiImage = null, qr = null, creator = '';
     if (isPdf) {
       if (f.size > 25 * 1048576) throw new UserError('El PDF pesa más de 25 MB');
       const bytes = await f.arrayBuffer();
       blob = new Blob([bytes], { type: 'application/pdf' });
       ftype = 'application/pdf';
-      try { const r = await inspectPdf(bytes); pages = r.pages; text = r.text; thumb = r.thumb; qr = r.qr; } catch (e) { console.warn('PDF', e); }
+      try { const r = await inspectPdf(bytes); pages = r.pages; text = r.text; thumb = r.thumb; qr = r.qr; creator = r.creator; } catch (e) { console.warn('PDF', e); }
+      if (creator === PDF_CREATOR) throw new UserError(qr && qr.kind === 'order' ? 'Es el PDF de la orden sin firmar. Agrega la foto o el escaneo de la orden ya firmada y sellada' : 'Este PDF lo hizo esta app; no es una factura');
       if (thumb && !hasText(text)) aiImage = thumb;
     } else {
       const r = await prepImage(f);
       blob = r.blob; qr = r.qr; ftype = 'image/jpeg'; aiImage = blob;
+    }
+    if (qr && qr.kind === 'order') {
+      const o = S.orders.find((x) => x.id === qr.id);
+      if (o) {
+        setQ(item, 'subiendo');
+        await saveSignedCopy(o, blob, ftype, thumb);
+        item.file = null;
+        finishQ(item, 'orden', `${orderNo(o)} quedó adjunta a su orden`);
+        return;
+      }
+      qr = null;
     }
     setQ(item, 'subiendo');
     // Si ya existe la misma factura electrónica cargada por XML, se le agrega la foto o el PDF.
@@ -929,8 +1018,10 @@ async function addOne(item) {
     };
     if (qr) Object.assign(doc, qrFields(qr));
     if (doc.rnc && !doc.supplier) doc.supplier = knownSupplier(doc.rnc);
+    if (!doc.projectId && text) { const pm = projectMentionIn(text); if (pm) doc.projectId = pm.id; }
     const om = text ? orderMentionIn(text, doc.projectId) : null;
     if (om) fillFromOrder(doc, doc, om);
+    else { const so = soleOpenOrder(doc, derive()); if (so) { fillFromOrder(doc, doc, so); doc.orderAuto = true; } }
     const ref = db.collection('invoices').doc();
     await dbw(() => ref.set(doc));
     item.invId = ref.id;
@@ -963,6 +1054,7 @@ async function addXml(item, f) {
     const upd = { ...fields, xmlId: up.id };
     if (!same.supplier && x.emisor) upd.supplier = x.emisor.slice(0, 120);
     if (xo && !same.orderId) fillFromOrder(upd, same, xo);
+    else if (!same.orderId) { const so = soleOpenOrder({ ...same, ...upd }, derive()); if (so) { fillFromOrder(upd, same, so); upd.orderAuto = true; } }
     await dbw(() => db.doc('invoices/' + same.id).update(upd));
     item.invId = same.id;
     finishQ(item, 'xml');
@@ -977,6 +1069,7 @@ async function addXml(item, f) {
   };
   if (xo) fillFromOrder(nd, nd, xo);
   else if (x.ordenCompra) nd.ref = ('OC ' + x.ordenCompra).slice(0, 60);
+  if (!nd.orderId) { const so = soleOpenOrder(nd, derive()); if (so) { fillFromOrder(nd, nd, so); nd.orderAuto = true; } }
   await dbw(() => ref.set(nd));
   item.invId = ref.id;
   item.file = null;
@@ -1066,8 +1159,8 @@ function parseAI(out, inv) {
   // Si la factura menciona su orden de compra (ej. "OC-0012"), queda enlazada; si no tenía obra, toma la de la orden.
   const refx = s(o.referencia, 60);
   const pid = upd.projectId || (hasProject ? inv.projectId : null);
-  const ordRef = refx && !(inv && inv.orderId) ? matchOrderRef(refx, pid) : null;
-  if (ordRef) { upd.orderId = ordRef.id; if (!pid && ordRef.projectId) { upd.projectId = ordRef.projectId; upd.projectHint = ''; } if (!upd.supplier && !(inv && inv.supplier) && ordRef.supplier) upd.supplier = ordRef.supplier; }
+  const ordRef = refx && !(inv && inv.orderId && !inv.orderAuto) ? matchOrderRef(refx, pid) : null;
+  if (ordRef) { upd.orderId = ordRef.id; upd.orderAuto = false; if (!pid && ordRef.projectId) { upd.projectId = ordRef.projectId; upd.projectHint = ''; } if (!upd.supplier && !(inv && inv.supplier) && ordRef.supplier) upd.supplier = ordRef.supplier; }
   else if (refx && !(inv && inv.ref)) upd.ref = refx;
   return upd;
 }
@@ -1081,14 +1174,58 @@ async function readWithAI(invId, input) {
   } catch (e) {
     console.warn('lectura', e);
     if (e && e.code === 'bad_key') { S.aiState = 'badkey'; scheduleRender(); }
-    await ref.update({ ai: e && e.code === 'no_key' ? 'off' : 'failed' }).catch(() => {});
+    await ref.update({ ai: e && e.code === 'no_key' ? 'off' : 'failed', aiErr: String((e && e.code) || '') }).catch(() => {});
     return 'failed';
   }
   if (S.aiState === 'badkey') { S.aiState = 'ok'; scheduleRender(); }
   const cur = S.invoices.find((x) => x.id === invId);
   if (!cur) return 'failed';
-  await dbw(() => ref.update(parseAI(out, cur))).catch((e) => console.error(e));
+  const upd = parseAI(out, cur);
+  upd.aiErr = '';
+  if (!upd.orderId && !(cur.orderId && !cur.orderAuto)) {
+    const merged = { ...cur, ...upd, orderId: null };
+    const so = soleOpenOrder(merged, derive());
+    if (so) { fillFromOrder(upd, merged, so); upd.orderAuto = true; }
+  }
+  await dbw(() => ref.update(upd)).catch((e) => console.error(e));
   return 'done';
+}
+async function aiInputFor(i) {
+  if (i.fileType === 'application/pdf') {
+    const r = await inspectPdf(await (await getBlob(i.fileId)).arrayBuffer());
+    return { text: r.text, image: hasText(r.text) ? null : r.thumb };
+  }
+  if (i.fileType && i.fileType.startsWith('image/')) return { image: await getBlob(i.fileId), text: '' };
+  return null;
+}
+let readingMany = false;
+async function readMany(list, quiet) {
+  if (!ai.hasKey()) { openSettings(); return; }
+  if (readingMany || !list.length) return;
+  readingMany = true;
+  try {
+    if (!quiet) toast(`Leyendo ${plural(list.length, 'factura', 'facturas')}…`);
+    const jobs = [];
+    for (const i of list) {
+      try {
+        const input = await aiInputFor(i);
+        if (!input) continue;
+        await db.doc('invoices/' + i.id).update({ ai: 'pending', aiErr: '' });
+        jobs.push(enqueueAI({ invId: i.id, input }));
+      } catch (e) { console.warn('lectura en lote', e); }
+    }
+    const res = await Promise.all(jobs);
+    const ok = res.filter((r) => r === 'done').length;
+    if (jobs.length) toast(ok === jobs.length ? `Listo: ${plural(ok, 'factura leída', 'facturas leídas')}` : `Se leyeron ${ok} de ${jobs.length}. Las demás puedes intentarlas otra vez.`);
+  } finally { readingMany = false; }
+}
+// Las que no se pudieron leer por falta de internet se leen solas cuando vuelve la conexión.
+function retryOffline() {
+  if (!ai.hasKey() || !navigator.onLine || S.dbState !== 'ready') return;
+  const list = S.invoices.filter((i) => i.ai === 'failed' && i.aiErr === 'offline');
+  if (!list.length) return;
+  toast(`Volvió el internet: leyendo ${plural(list.length, 'factura pendiente', 'facturas pendientes')}…`);
+  readMany(list, true);
 }
 async function rereadInvoice(id, btn) {
   const i = S.invoices.find((x) => x.id === id);
@@ -1097,12 +1234,8 @@ async function rereadInvoice(id, btn) {
   btn.disabled = true;
   btn.textContent = 'Leyendo…';
   try {
-    let input = { image: null, text: '' };
-    if (i.fileType === 'application/pdf') {
-      const r = await inspectPdf(await (await getBlob(i.fileId)).arrayBuffer());
-      input = { text: r.text, image: hasText(r.text) ? null : r.thumb };
-    } else if (i.fileType && i.fileType.startsWith('image/')) input.image = await getBlob(i.fileId);
-    else { toast('Esta factura viene del XML; no hace falta leerla.'); return; }
+    const input = await aiInputFor(i);
+    if (!input) { toast('Esta factura viene del XML; no hace falta leerla.'); return; }
     await db.doc('invoices/' + id).update({ ai: 'pending' });
     if (S.sheet && S.sheet.type === 'inv' && S.sheet.id === id) S.sheet.dirty = false;
     const r = await enqueueAI({ invId: id, input });
@@ -1156,7 +1289,8 @@ async function saveInvoice(form) {
       notInvoice: false,
     };
     const ordSel = upd.orderId ? S.orders.find((x) => x.id === upd.orderId) : null;
-    if (ordSel) { if (!upd.projectId && ordSel.projectId) upd.projectId = ordSel.projectId; if (!upd.supplier && ordSel.supplier) upd.supplier = ordSel.supplier; }
+    if (ordSel) { if (!upd.projectId && ordSel.projectId) upd.projectId = ordSel.projectId; if (!upd.supplier && ordSel.supplier) upd.supplier = ordSel.supplier; if (!upd.concept) upd.concept = itemsSummary(ordSel.items); }
+    upd.orderAuto = false;
     if (upd.projectId) upd.projectHint = '';
     if (inv.ai === 'pending' || inv.ai === 'failed') upd.ai = 'off';
     await dbw(() => db.doc('invoices/' + id).update(upd));
@@ -1211,7 +1345,7 @@ async function deletePayment(payId) {
 
 /* ---------- órdenes de compra ---------- */
 function itemRowHTML(it, n, dis) {
-  return `<div class="o-row" data-row><span class="o-n mono">${n}</span><input data-f="qty" class="mono" inputmode="decimal" maxlength="12" placeholder="Cant." aria-label="Cantidad" value="${esc(it.qty != null ? String(it.qty) : '')}" ${dis}><input data-f="unit" list="dl-units" maxlength="20" placeholder="Unidad" aria-label="Unidad" value="${esc(it.unit || '')}" ${dis}><input data-f="desc" maxlength="160" placeholder="Descripción y especificaciones" aria-label="Descripción" value="${esc(it.desc || '')}" ${dis}>${dis ? '' : `<button type="button" class="icon-btn plain" data-act="order-rm-item" aria-label="Quitar artículo">${ICON.close}</button>`}</div>`;
+  return `<div class="o-row" data-row><span class="o-n mono">${n}</span><input data-f="qty" class="mono" inputmode="decimal" maxlength="12" placeholder="Cant." aria-label="Cantidad" value="${esc(it.qty != null ? String(it.qty) : '')}" ${dis}><input data-f="unit" list="dl-units" maxlength="20" placeholder="Unidad" aria-label="Unidad" value="${esc(it.unit || '')}" ${dis}><input data-f="desc" list="dl-items" maxlength="160" placeholder="Descripción y especificaciones" aria-label="Descripción" value="${esc(it.desc || '')}" ${dis}>${dis ? '' : `<button type="button" class="icon-btn plain" data-act="order-rm-item" aria-label="Quitar artículo">${ICON.close}</button>`}</div>`;
 }
 function uniqList(list) { const seen = new Set(); const out = []; for (const v of list) { const s = String(v || '').trim(); const k = norm(s); if (s && !seen.has(k)) { seen.add(k); out.push(s); } } return out; }
 function orderSig(o, D) { return JSON.stringify([o.status, o.signedFileId, o.signedAt, o.updatedAt, o.number, (D.invByOrder.get(o.id) || []).map((i) => [i.id, i.supplier, i.number, i.amount])]); }
@@ -1222,15 +1356,19 @@ function refreshOrderSheet(D) {
   if (!o) { if (S.got.orders && sh.sig) closeSheet(); return; }
   if (orderSig(o, D) !== sh.sig) openOrder(o.id, true);
 }
-function openOrder(id, keepScroll) {
+function openOrder(id, keepScroll, copyFrom) {
   const D = derive();
   const o = id ? D.orderById.get(id) : null;
   if (id && !o) return;
+  const src = !o && copyFrom ? D.orderById.get(copyFrom) : null;
   const edit = canEdit() && (!o || o.status !== 'anulada');
   const dis = edit ? '' : 'disabled';
-  const projId = o ? o.projectId : S.projectFilter !== 'all' && S.projectFilter !== 'none' ? S.projectFilter : '';
-  const prevPlace = (pid) => { const p = D.orders.find((x) => x.projectId === pid && x.place); return p ? p.place : ''; };
-  const data = o || { number: nextOrderNumber(), date: todayISO(), projectId: projId, requestedBy: '', supplier: '', neededDate: '', place: projId ? prevPlace(projId) : '', department: (D.orders[0] && D.orders[0].department) || '', items: [], notes: '' };
+  const projId = o ? o.projectId : src ? src.projectId : S.projectFilter !== 'all' && S.projectFilter !== 'none' ? S.projectFilter : '';
+  // Lo que se repite de la última orden de la misma obra: lugar de entrega, quién pide y departamento.
+  const lastOf = (pid, f) => { const p = D.orders.find((x) => x.projectId === pid && x[f]); return p ? p[f] : ''; };
+  const data = o || (src
+    ? { number: nextOrderNumber(), date: todayISO(), projectId: src.projectId, requestedBy: src.requestedBy || '', supplier: src.supplier || '', neededDate: '', place: src.place || '', department: src.department || '', items: (src.items || []).map((x) => ({ ...x })), notes: src.notes || '' }
+    : { number: nextOrderNumber(), date: todayISO(), projectId: projId, requestedBy: projId ? lastOf(projId, 'requestedBy') : '', supplier: '', neededDate: '', place: projId ? lastOf(projId, 'place') : '', department: (projId && lastOf(projId, 'department')) || (D.orders[0] && D.orders[0].department) || '', items: [], notes: '' });
   const items = (data.items || []).slice();
   if (edit) for (let k = Math.max(1, 3 - items.length); k > 0; k--) items.push({});
   const opts = D.projects.map((p) => `<option value="${esc(p.id)}"${p.id === data.projectId ? ' selected' : ''}>${esc(p.name)}</option>`).join('');
@@ -1239,13 +1377,16 @@ function openOrder(id, keepScroll) {
   const signed = o && o.signedFileId;
   const signedThumb = signed ? o.signedThumbId || (String(o.signedFileType).startsWith('image/') ? o.signedFileId : null) : null;
   const statusText = !o ? '' : o.status === 'autorizada' ? 'Firmada y sellada' + (o.signedAt ? ' el ' + fmtDate(o.signedAt) : '') + '.' : o.status === 'enviada' ? 'Falta adjuntar la copia firmada y sellada.' : o.status === 'anulada' ? 'Esta orden está anulada.' : 'Todavía no has sacado el PDF.';
-  const fill = edit && ai.hasKey() ? `<details class="edit" id="o-fill"><summary>Llenar desde el mensaje del pedido</summary><div class="fields"><div class="field full"><label for="o-msg">Pega aquí el mensaje (por ejemplo, de WhatsApp)</label><textarea id="o-msg" rows="4" maxlength="4000" placeholder="Ej.: Necesito para mañana en Caperuza 2: 10 fundas de cemento, 20 varillas de 3/8 y 2 galones de pintura blanca"></textarea></div><div class="actions full"><button type="button" class="btn" data-act="order-fill">Llenar con el mensaje</button><button type="button" class="btn" data-act="order-fill-photo">Usar una foto de la lista</button></div><p class="usage full" id="o-fill-status"></p></div></details>` : '';
-  const signedBox = o ? `<div class="card"><h2>Orden firmada y sellada</h2>${signed ? `<button type="button" class="preview" data-act="order-view-signed" data-id="${esc(o.id)}">${signedThumb ? `<img src="${esc(assetUrl(signedThumb))}" alt="">` : '<span class="ph">PDF</span>'}<span class="preview-tag">Ver</span></button>` : '<p class="hint">Cuando la firmen y la sellen, tómale una foto y adjúntala. Esa copia es la que va con la factura en el PDF del pago.</p>'}${edit ? `<div><button type="button" class="btn" data-act="order-signed">${ICON.plus} ${signed ? 'Cambiar la copia firmada' : 'Adjuntar la orden firmada'}</button></div>` : ''}</div>` : '';
+  const fill = edit && ai.hasKey() ? `<details class="edit" id="o-fill"${!o && !src ? ' open' : ''}><summary>Llenar desde el mensaje del pedido</summary><div class="fields"><div class="field full"><label for="o-msg">Pega aquí el mensaje (por ejemplo, de WhatsApp)</label><textarea id="o-msg" rows="4" maxlength="4000" placeholder="Ej.: Necesito para mañana en Caperuza 2: 10 fundas de cemento, 20 varillas de 3/8 y 2 galones de pintura blanca"></textarea></div><div class="actions full"><button type="button" class="btn primary" data-act="order-paste">Pegar y llenar</button><button type="button" class="btn" data-act="order-fill">Llenar con el mensaje</button><button type="button" class="btn" data-act="order-fill-photo">Usar una foto de la lista</button></div><p class="usage full" id="o-fill-status"></p></div></details>` : '';
+  const signedBox = o ? `<div class="card"><h2>Orden firmada y sellada</h2>${signed ? `<button type="button" class="preview" data-act="order-view-signed" data-id="${esc(o.id)}">${signedThumb ? `<img src="${esc(assetUrl(signedThumb))}" alt="">` : '<span class="ph">PDF</span>'}<span class="preview-tag">Ver</span></button>` : `<p class="hint">Cuando la firmen y la sellen, tómale una foto y adjúntala aquí${S.settings.orderQr !== false ? ', o agrégala con <b>+</b> desde Facturas: la app reconoce el código QR de la orden y la adjunta sola' : ''}. Esa copia es la que va con la factura en el PDF del pago.</p>`}<div class="actions">${signed ? `<button type="button" class="btn" data-act="order-share-signed" data-id="${esc(o.id)}">${ICON.share} Compartir la firmada</button>` : ''}${edit ? `<button type="button" class="btn" data-act="order-signed">${ICON.plus} ${signed ? 'Cambiar la copia firmada' : 'Adjuntar la orden firmada'}</button>` : ''}</div></div>` : '';
+  const repeat = o && canEdit() ? `<div><button type="button" class="btn sm" data-act="order-repeat" data-id="${esc(o.id)}">Repetir esta orden</button></div>` : '';
+  const copyNote = src ? `<div class="msg hint"><span>Copia de la orden <b>${esc(orderNo(src))}</b>. Revisa las cantidades antes de guardar.</span></div>` : '';
   const invBox = invs.length ? `<div class="card"><h2>Facturas de esta orden</h2><div class="list">${invs.map((i) => `<button type="button" class="link" data-act="open-inv" data-id="${esc(i.id)}">${esc((i.supplier || 'Factura') + (i.number ? ' · ' + RD.normNcf(i.number) : '') + ' · ' + money(i.amount, i.currency))}</button>`).join('')}</div></div>` : '';
   const prevScroll = keepScroll && $('.sheet-b') ? $('.sheet-b').scrollTop : 0;
   const danger = o && canEdit() ? `<div>${invs.length ? (o.status !== 'anulada' ? '<button type="button" class="btn danger sm" data-act="order-annul">Anular orden</button>' : '') : `<button type="button" class="btn danger sm" data-act="order-del">${ICON.trash} Eliminar orden</button>`}</div><div id="o-confirm" hidden></div>` : '';
   openSheet(`<form id="order-form" data-id="${o ? esc(o.id) : ''}" autocomplete="off">${sheetHead(o ? esc(orderNo(o)) : 'Nueva orden de compra')}
     <div class="sheet-b">
+      ${copyNote}
       ${o ? `<div class="status-line"><span class="pill o-${o.status}">${ORDER_LABEL[o.status]}</span><span>${esc(statusText)}</span></div>` : ''}
       ${fill}
       <div class="fields">
@@ -1264,10 +1405,11 @@ function openOrder(id, keepScroll) {
       <div class="field"><label for="o-notes">Observaciones / instrucciones especiales</label><textarea id="o-notes" rows="2" maxlength="300" ${dis}>${esc(data.notes || '')}</textarea></div>
       ${signedBox}
       ${invBox}
+      ${repeat}
       ${danger}
     </div>
     <div class="sheet-f">${edit ? '<button type="submit" class="btn">Guardar</button>' : ''}<button type="button" class="btn primary" data-act="order-pdf">${ICON.down} ${edit ? 'Guardar y sacar PDF' : 'Sacar PDF'}</button></div>
-  </form>${dl('dl-units', uniqList([...UNITS, ...D.orders.flatMap((x) => (x.items || []).map((it) => it.unit))]))}${dl('dl-people', uniqList(D.orders.map((x) => x.requestedBy)))}${dl('dl-sups', uniqList([...D.orders.map((x) => x.supplier), ...S.invoices.map((x) => x.supplier)]))}${dl('dl-depts', uniqList(D.orders.map((x) => x.department)))}`, { type: 'order', id: o ? o.id : null, dirty: false, sig: o ? orderSig(o, D) : null });
+  </form>${dl('dl-units', uniqList([...UNITS, ...D.orders.flatMap((x) => (x.items || []).map((it) => it.unit))]))}${dl('dl-people', uniqList(D.orders.map((x) => x.requestedBy)))}${dl('dl-sups', uniqList([...D.orders.map((x) => x.supplier), ...S.invoices.map((x) => x.supplier)]))}${dl('dl-depts', uniqList(D.orders.map((x) => x.department)))}${dl('dl-items', uniqList(D.orders.flatMap((x) => (x.items || []).map((it) => it.desc))).slice(0, 400))}`, { type: 'order', id: o ? o.id : null, dirty: !!src, sig: o ? orderSig(o, D) : null });
   if (keepScroll && $('.sheet-b')) $('.sheet-b').scrollTop = prevScroll;
 }
 function renumberItems() { $$('#o-items [data-row]').forEach((r, k) => { r.querySelector('.o-n').textContent = String(k + 1); }); }
@@ -1343,37 +1485,76 @@ async function deleteOrder(id) {
   closeSheet();
   for (const a of [o.signedFileId, o.signedThumbId]) if (a) { try { await assets.delete(a); } catch (e) { /* ya no existe */ } }
 }
+async function saveSignedCopy(o, blob, ftype, thumb) {
+  const up = await assets.upload(blob, { type: ftype });
+  let thumbId = null;
+  if (thumb) { try { thumbId = (await assets.upload(thumb, { type: 'image/jpeg' })).id; } catch (e) { console.warn('miniatura', e); } }
+  const old = [o.signedFileId, o.signedThumbId].filter(Boolean);
+  await dbw(() => db.doc('orders/' + o.id).update({ signedFileId: up.id, signedFileType: ftype, signedThumbId: thumbId, signedAt: todayISO(), status: o.status === 'anulada' ? 'anulada' : 'autorizada' }));
+  for (const a of old) { try { await assets.delete(a); } catch (e) { /* ya no existe */ } }
+}
 async function attachSigned(orderId, file) {
-  const o = S.orders.find((x) => x.id === orderId);
+  let o = S.orders.find((x) => x.id === orderId);
   if (!o) return;
   toast('Guardando la copia firmada…');
   try {
     const name = String(file.name || ''), type = String(file.type || '').toLowerCase();
     const isPdf = type === 'application/pdf' || /\.pdf$/i.test(name);
-    let blob, ftype, thumbId = null;
+    let blob, ftype, thumb = null, qr = null;
     if (isPdf) {
       const bytes = await file.arrayBuffer();
       blob = new Blob([bytes], { type: 'application/pdf' });
       ftype = 'application/pdf';
-      try { const r = await inspectPdf(bytes); thumbId = (await assets.upload(r.thumb, { type: 'image/jpeg' })).id; } catch (e) { console.warn('miniatura', e); }
+      let r = null;
+      try { r = await inspectPdf(bytes); thumb = r.thumb; qr = r.qr; } catch (e) { console.warn('miniatura', e); }
+      if (r && r.creator === PDF_CREATOR) throw new UserError('Ese es el PDF de la orden sin firmar. Adjunta la foto o el escaneo de la orden ya firmada y sellada.');
     } else {
-      blob = (await prepImage(file)).blob;
+      const r = await prepImage(file);
+      blob = r.blob; qr = r.qr;
       ftype = 'image/jpeg';
     }
-    const up = await assets.upload(blob, { type: ftype });
-    const old = [o.signedFileId, o.signedThumbId].filter(Boolean);
-    await dbw(() => db.doc('orders/' + orderId).update({ signedFileId: up.id, signedFileType: ftype, signedThumbId: thumbId, signedAt: todayISO(), status: o.status === 'anulada' ? 'anulada' : 'autorizada' }));
-    for (const a of old) { try { await assets.delete(a); } catch (e) { /* ya no existe */ } }
-    toast('Copia firmada guardada');
+    // Si la foto trae el código QR de otra orden, se adjunta a esa.
+    const other = qr && qr.kind === 'order' && qr.id !== o.id ? S.orders.find((x) => x.id === qr.id) : null;
+    if (other) o = other;
+    await saveSignedCopy(o, blob, ftype, thumb);
+    toast(other ? `Esa foto es de la orden ${orderNo(other)}: quedó adjunta a esa.` : 'Copia firmada guardada');
   } catch (e) {
     console.error(e);
     toast(e instanceof UserError ? e.message : 'No se pudo guardar la copia. Intenta de nuevo.');
+  }
+}
+async function pasteOrderMessage(btn) {
+  const box = $('#o-msg');
+  if (!box) return;
+  let txt = '';
+  try { if (navigator.clipboard && navigator.clipboard.readText) txt = await navigator.clipboard.readText(); } catch (e) { txt = ''; }
+  if (!String(txt).trim()) {
+    const st = $('#o-fill-status');
+    if (st) st.textContent = 'No se pudo leer lo que copiaste. Mantén presionado el cuadro, toca Pegar y luego «Llenar con el mensaje».';
+    box.focus();
+    return;
+  }
+  box.value = String(txt).slice(0, 4000);
+  fillOrderFromMessage(btn, null);
+}
+async function shareSigned(id) {
+  const o = S.orders.find((x) => x.id === id);
+  if (!o || !o.signedFileId) return;
+  try {
+    const b = await getBlob(o.signedFileId);
+    const pdf = o.signedFileType === 'application/pdf';
+    deliverFile(new Blob([await b.arrayBuffer()], { type: pdf ? 'application/pdf' : 'image/jpeg' }), fileSafe(`Orden de compra ${orderNo(o)} firmada${o.supplier ? ' - ' + o.supplier : ''}`) + (pdf ? '.pdf' : '.jpg'));
+  } catch (e) {
+    console.error(e);
+    toast('No se pudo preparar el archivo.');
   }
 }
 async function linkOrder(invId, orderId) {
   const inv = S.invoices.find((x) => x.id === invId), o = S.orders.find((x) => x.id === orderId);
   if (!inv || !o) return;
   const upd = fillFromOrder({}, inv, o);
+  upd.orderAuto = false;
+  upd.noOrder = false;
   if (!(await write(() => db.doc('invoices/' + invId).update(upd), 'Orden asignada'))) return;
   if (S.sheet && S.sheet.type === 'inv' && S.sheet.id === invId && S.sheet.dirty) {
     if ($('#f-order')) $('#f-order').value = orderId;
@@ -1469,12 +1650,14 @@ async function buildOrderPdf(o, opts = {}) {
   const font = await doc.embedFont(StandardFonts.Helvetica);
   const bold = await doc.embedFont(StandardFonts.HelveticaBold);
   doc.setTitle(pdfSafe('Orden de compra ' + orderNo(o)));
-  doc.setCreator('Facturas de Proyectos');
+  doc.setCreator(PDF_CREATOR);
   const st = S.settings || {};
   const proj = S.projects.find((p) => p.id === o.projectId);
   const W = 612, H = 792, X0 = 38, X1 = 574;
   const NAVY = rgb(0.137, 0.255, 0.353), INK = rgb(0.1, 0.11, 0.13), VAL = rgb(0.04, 0.1, 0.3), GREY = rgb(0.42, 0.45, 0.5);
-  const SEP = rgb(0.8, 0.82, 0.86), GRID = rgb(0.62, 0.67, 0.74), WHITE = rgb(1, 1, 1), RED = rgb(0.75, 0.15, 0.12);
+  const SEP = rgb(0.8, 0.82, 0.86), GRID = rgb(0.62, 0.67, 0.74), WHITE = rgb(1, 1, 1), RED = rgb(0.75, 0.15, 0.12), BLACK = rgb(0, 0, 0);
+  let qrm = null;
+  if (st.orderQr !== false && o.id) { try { await loadScript(LIB.qrgen); qrm = window.QR.encode(orderQrText(o)); } catch (e) { console.warn('QR de la orden', e); } }
   const items = (o.items || []).filter((x) => x && (x.desc || (x.qty !== '' && x.qty != null)));
   const per = 12;
   const nPages = Math.max(1, Math.ceil(items.length / per));
@@ -1487,8 +1670,22 @@ async function buildOrderPdf(o, opts = {}) {
     const hline = (a, b, top, th = 0.6, color = SEP) => p.drawLine({ start: { x: a, y: yy(top) }, end: { x: b, y: yy(top) }, thickness: th, color });
     if (st.company) center(st.company.toUpperCase(), W / 2, 56, 13.5, bold, NAVY);
     center('ORDEN DE COMPRA / SOLICITUD DE MATERIALES', W / 2, st.company ? 76 : 60, 10.5, font, INK);
-    if (nPages > 1) { const t = `Página ${pg + 1} de ${nPages}`; text(t, X1 - font.widthOfTextAtSize(t, 8), 28, 8, font, GREY); }
-    if (opts.unsigned) { const t = 'COPIA SIN FIRMA'; text(t, X1 - bold.widthOfTextAtSize(t, 9), 40, 9, bold, RED); }
+    if (nPages > 1) text(`Página ${pg + 1} de ${nPages}`, X0, 28, 8, font, GREY);
+    if (opts.unsigned) text('COPIA SIN FIRMA', X0, 40, 9, bold, RED);
+    if (qrm) {
+      // Código de la orden: con él, la foto de la orden firmada se reconoce y se adjunta sola.
+      const side = 56, m = side / qrm.size, qx = X1 - side, qtop = 20;
+      for (let r = 0; r < qrm.size; r++) {
+        for (let c = 0; c < qrm.size;) {
+          if (!qrm.isDark(r, c)) { c++; continue; }
+          let e = c;
+          while (e < qrm.size && qrm.isDark(r, e)) e++;
+          p.drawRectangle({ x: qx + c * m, y: yy(qtop + (r + 1) * m) - 0.04, width: (e - c) * m + 0.04, height: m + 0.08, color: BLACK });
+          c = e;
+        }
+      }
+      center(orderNo(o), qx + side / 2, qtop + side + 9, 6.5, font, GREY);
+    }
     const field = (label, value, x, top, xEnd) => {
       text(label, x, top, 9, font, INK);
       const lx = x + font.widthOfTextAtSize(pdfSafe(label), 9) + 4;
@@ -1585,7 +1782,7 @@ async function buildPackage(pay, D, onProgress) {
   const font = await out.embedFont(StandardFonts.Helvetica);
   const bold = await out.embedFont(StandardFonts.HelveticaBold);
   out.setTitle(pdfSafe('Relación de facturas - ' + (pay.name || 'Pago')));
-  out.setCreator('Facturas de Proyectos');
+  out.setCreator(PDF_CREATOR);
   const groups = packageGroups(payInvoices(pay, D), D);
   const invs = groups.flatMap((g) => g.items);
   const st = S.settings || {};
@@ -1619,6 +1816,12 @@ async function buildPackage(pay, D, onProgress) {
   page.drawRectangle({ x: M, y: y - 6, width: W - 2 * M, height: 19, color: C.band });
   T('Proyecto', M + 6, y, 9, bold, C.grey); R('Facturas', 360, y, 9, bold, C.grey); R('ITBIS', 460, y, 9, bold, C.grey); R('Total', W - M - 6, y, 9, bold, C.grey); y -= 21;
   for (const g of groups) { ensure(20); T(fit(g.name, font, 10, 260), M + 6, y, 10); R(String(g.items.length), 360, y, 10); R(totalStr(g.items, 'itbis'), 460, y, 10); R(totalStr(g.items), W - M - 6, y, 10, bold); y -= 8; hr(y); y -= 13; }
+  y -= 18;
+
+  // Por proveedor: lo que se le transfiere a cada uno.
+  const supHead = () => { page.drawRectangle({ x: M, y: y - 6, width: W - 2 * M, height: 19, color: C.band }); T('Proveedor', M + 6, y, 9, bold, C.grey); T('RNC', 300, y, 9, bold, C.grey); R('Facturas', 418, y, 9, bold, C.grey); R('Total a pagar', W - M - 6, y, 9, bold, C.grey); y -= 21; };
+  ensure(60); T('Por proveedor', M, y, 11.5, bold); y -= 20; supHead();
+  for (const g of supplierGroups(invs)) { ensure(20, supHead); T(fit(g.name || 'Sin nombre', font, 10, 245), M + 6, y, 10); T(g.rnc ? RD.fmtRnc(g.rnc) : '-', 300, y, 10); R(String(g.items.length), 418, y, 10); R(totalStr(g.items), W - M - 6, y, 10, bold); y -= 8; hr(y); y -= 13; }
   y -= 18;
 
   const cols = [
@@ -1733,100 +1936,191 @@ async function makePdf(payId) {
 
 /* ---------- Excel ---------- */
 const XL_STATUS = { pendiente: 'Pendiente', enpago: 'En pago por presentar', presentada: 'Presentada', pagada: 'Pagada' };
+function supplierGroups(invs, byCur) {
+  const m = new Map();
+  for (const i of invs) {
+    const rnc = RD.normRnc(i.rnc);
+    const k = (rnc || 'n:' + (supKey(i.supplier) || norm(i.supplier) || '?')) + (byCur ? '|' + normCur(i.currency) : '');
+    if (!m.has(k)) m.set(k, { name: i.supplier || '', rnc, cur: normCur(i.currency), items: [] });
+    const g = m.get(k);
+    if (!g.name && i.supplier) g.name = i.supplier;
+    g.items.push(i);
+  }
+  const tot = (g) => g.items.reduce((t, i) => t + (isNum(i.amount) ? i.amount : 0), 0);
+  return [...m.values()].sort((a, b) => tot(b) - tot(a));
+}
 function invoicesWorkbook({ heading, scope, invs, D, isPayment }) {
   const { XS, colName, excelDate, sheetXml, buildXlsx } = FILES;
   const st = S.settings || {};
   const list = packageGroups(invs, D).flatMap((g) => g.items);
   const curs = [...new Set(list.map((i) => normCur(i.currency)))];
+  if (!curs.length) curs.push('DOP');
   const multi = curs.length > 1;
-  const cols = ['#', 'Proyecto', 'Proveedor', 'RNC', 'NCF', 'Tipo', 'Fecha', 'Concepto', 'Orden de compra', 'Referencia', 'ITBIS', 'Total'].concat(multi ? ['Moneda'] : [], ['Estado', 'Pago', 'Fecha del pago']);
-  const widths = [5, 24, 30, 13, 16, 22, 12, 36, 15, 14, 15, 16].concat(multi ? [9] : [], [22, 22, 15]);
-  const C = (n) => cols.indexOf(n);
-  const L = (n) => colName(C(n));
-  const H = 5, first = H + 1, last = H + list.length;
   const mStyle = (cur, total) => (normCur(cur) === 'USD' ? (total ? XS.totMoneyUsd : XS.moneyUsd) : total ? XS.totMoney : XS.money);
   const company = [st.company, st.companyRnc ? 'RNC ' + RD.fmtRnc(st.companyRnc) : ''].filter(Boolean).join(' · ');
   const generated = ['Generado el ' + fmtDate(todayISO()), st.preparedBy ? 'Elaboró: ' + st.preparedBy : ''].filter(Boolean).join(' · ');
-  const top = [
+  const top = (title) => [
     [{ v: company || heading, s: XS.title }],
-    [{ v: company ? heading : scope, s: company ? XS.bold : XS.muted }],
+    [{ v: (company ? heading : scope) + (title ? ' · ' + title : ''), s: company ? XS.bold : XS.muted }],
     [{ v: [company ? scope : '', st.area || '', generated].filter(Boolean).join(' · '), s: XS.muted }],
   ];
   const footer = `&L${(st.company || 'Facturas de Proyectos').replace(/&/g, '&&')}&C${heading.replace(/&/g, '&&')}&RPágina &P de &N`;
-  const rows = top.map((r) => r.slice());
-  rows[H - 1] = cols.map((c) => ({ v: c, s: c === 'ITBIS' || c === 'Total' || c === '#' ? XS.headR : c === 'Proyecto' || c === 'Estado' ? XS.headInd : XS.head }));
-  list.forEach((i, n) => {
-    const r = [];
-    const ncf = RD.parseNcf(i.number);
-    r[C('#')] = { v: n + 1, s: XS.int };
-    r[C('Proyecto')] = { v: i.project ? i.project.name : 'Sin proyecto', s: XS.ind };
-    r[C('Proveedor')] = { v: i.supplier || '' };
-    r[C('RNC')] = { v: RD.normRnc(i.rnc) };
-    r[C('NCF')] = { v: RD.normNcf(i.number) };
-    r[C('Tipo')] = { v: ncf.ok ? ncf.label : '' };
-    const fd = excelDate(i.date);
-    r[C('Fecha')] = fd == null ? { v: '' } : { v: fd, s: XS.date };
-    r[C('Concepto')] = { v: i.concept || '' };
-    r[C('Orden de compra')] = { v: i.order ? orderNo(i.order) : '' };
-    r[C('Referencia')] = { v: i.ref || '' };
-    r[C('ITBIS')] = isNum(i.itbis) ? { v: round2(i.itbis), s: mStyle(i.currency) } : { v: '' };
-    r[C('Total')] = isNum(i.amount) ? { v: round2(i.amount), s: mStyle(i.currency) } : { v: '' };
-    if (multi) r[C('Moneda')] = { v: normCur(i.currency) };
-    r[C('Estado')] = { v: XL_STATUS[i.status] || '', s: XS.ind };
-    r[C('Pago')] = { v: i.pay ? i.pay.name || 'Pago' : '' };
-    const pd = i.pay ? excelDate(i.pay.status === 'pagado' && i.pay.paidAt ? i.pay.paidAt : i.pay.date) : null;
-    r[C('Fecha del pago')] = pd == null ? { v: '' } : { v: pd, s: XS.date };
-    rows[H + n] = r;
-  });
-  const sum = (field, cur) => round2(list.reduce((t, i) => t + (isNum(i[field]) && (!cur || normCur(i.currency) === cur) ? i[field] : 0), 0));
-  if (!multi) {
-    const tot = cols.map(() => ({ v: '', s: XS.totBlank }));
-    tot[C('#')] = { f: `SUBTOTAL(3,${L('Proyecto')}${first}:${L('Proyecto')}${last})`, v: list.length, s: XS.totInt };
-    tot[C('Referencia')] = { v: 'Total', s: XS.totLabel };
-    tot[C('ITBIS')] = { f: `SUBTOTAL(9,${L('ITBIS')}${first}:${L('ITBIS')}${last})`, v: sum('itbis'), s: mStyle(curs[0], true) };
-    tot[C('Total')] = { f: `SUBTOTAL(9,${L('Total')}${first}:${L('Total')}${last})`, v: sum('amount'), s: mStyle(curs[0], true) };
-    rows[last] = tot;
-  } else {
-    curs.forEach((c, k) => {
-      const tot = cols.map(() => ({ v: '', s: XS.totBlank }));
-      tot[C('Referencia')] = { v: 'Total ' + (CUR_PREFIX[c] || c), s: XS.totLabel };
-      tot[C('ITBIS')] = { f: `SUMIF(${L('Moneda')}${first}:${L('Moneda')}${last},"${c}",${L('ITBIS')}${first}:${L('ITBIS')}${last})`, v: sum('itbis', c), s: mStyle(c, true) };
-      tot[C('Total')] = { f: `SUMIF(${L('Moneda')}${first}:${L('Moneda')}${last},"${c}",${L('Total')}${first}:${L('Total')}${last})`, v: sum('amount', c), s: mStyle(c, true) };
-      rows[last + k] = tot;
-    });
+  const H = 5;
+  const M = (v, cur) => (isNum(v) ? { v: round2(v), s: mStyle(cur) } : { v: '' });
+  const Dt = (s) => { const d = excelDate(String(s || '').slice(0, 10)); return d == null ? { v: '' } : { v: d, s: XS.date }; };
+  const subOf = (i) => (isNum(i.amount) && isNum(i.itbis) ? round2(i.amount - i.itbis) : null);
+  const sheets = [], names = [];
+
+  // Tabla: encabezado en la fila 5, filtro, encabezado fijo al desplazarse y fila de totales (SUBTOTAL, o SUMIF por moneda).
+  function addSheet(name, cols, rows, o = {}) {
+    const out = top(o.title);
+    out[H - 1] = cols.map((c) => ({ v: c.k, s: c.money || c.num ? XS.headR : c.ind ? XS.headInd : XS.head }));
+    rows.forEach((r, n) => { out[H + n] = cols.map((c) => c.v(r, n)); });
+    const first = H + 1, last = H + Math.max(rows.length, 1);
+    const col = (k) => colName(cols.findIndex((c) => c.k === k));
+    const lab = cols.findIndex((c) => c.money || c.sumInt) - 1;
+    if (rows.length && lab >= 0) {
+      const groups = multi && o.curKey ? curs : [null];
+      groups.forEach((cur, g) => {
+        const tot = cols.map(() => ({ v: '', s: XS.totBlank }));
+        tot[lab] = { v: cur ? 'Total ' + (CUR_PREFIX[cur] || cur) : 'Total', s: XS.totLabel };
+        if (!cur && o.countKey) tot[cols.findIndex((c) => c.k === (o.countAt || o.countKey))] = { f: `SUBTOTAL(3,${col(o.countKey)}${first}:${col(o.countKey)}${last})`, v: rows.length, s: XS.totInt };
+        cols.forEach((c, j) => {
+          if (c.sumInt) { if (!cur) tot[j] = { f: `SUBTOTAL(9,${colName(j)}${first}:${colName(j)}${last})`, v: rows.reduce((t, r) => t + (Number(c.raw(r)) || 0), 0), s: XS.totInt }; return; }
+          if (!c.money) return;
+          const rng = `${colName(j)}${first}:${colName(j)}${last}`;
+          const val = round2(rows.reduce((t, r) => t + ((!cur || o.curOf(r) === cur) && isNum(c.raw(r)) ? c.raw(r) : 0), 0));
+          tot[j] = cur ? { f: `SUMIF(${col(o.curKey)}${first}:${col(o.curKey)}${last},"${cur}",${rng})`, v: val, s: mStyle(cur, true) } : { f: `SUBTOTAL(9,${rng})`, v: val, s: mStyle(curs[0], true) };
+        });
+        out[last + g] = tot;
+      });
+    }
+    const lastCol = colName(cols.length - 1);
+    const idx = sheets.length;
+    sheets.push({ name, xml: sheetXml(out, { widths: cols.map((c) => c.w), freeze: H, autoFilter: rows.length ? `A${H}:${lastCol}${last}` : null, landscape: o.landscape !== false, footer, fitWidth: o.fitWidth }) });
+    const q = `'${name.replace(/'/g, "''")}'`;
+    if (rows.length) names.push({ name: '_xlnm._FilterDatabase', sheet: idx, hidden: true, ref: `${q}!$A$${H}:$${lastCol}$${last}` });
+    // Al imprimir: el encabezado se repite en cada hoja y, si la tabla ocupa varias de ancho, también las primeras columnas.
+    names.push({ name: '_xlnm.Print_Titles', sheet: idx, ref: o.titleCols ? `${q}!$A:$${colName(o.titleCols - 1)},${q}!$${H}:$${H}` : `${q}!$${H}:$${H}` });
   }
-  const lastCol = colName(cols.length - 1);
-  const factXml = sheetXml(rows, { widths, freeze: H, autoFilter: `A${H}:${lastCol}${last}`, landscape: true, footer });
-  // Hoja de resumen (valores fijos, por proyecto y moneda).
-  const rs = top.map((r) => r.slice());
-  rs[H - 1] = [{ v: 'Proyecto', s: XS.head }, { v: 'Facturas', s: XS.headR }, { v: 'ITBIS', s: XS.headR }, { v: 'Total', s: XS.headR }];
+
+  // Resumen (primera hoja): por proyecto, por estado y control de lo que falta.
+  const rs = top();
+  rs[H - 1] = [{ v: 'Proyecto', s: XS.head }, { v: 'Facturas', s: XS.headR }, { v: 'Subtotal', s: XS.headR }, { v: 'ITBIS', s: XS.headR }, { v: 'Total', s: XS.headR }];
   let r = H;
+  const line = (label, its, c, total) => [{ v: label, s: total ? XS.totLabel : undefined }, { v: its.length, s: total ? XS.totInt : XS.int },
+    { v: round2(its.reduce((t, i) => t + (isNum(subOf(i)) ? subOf(i) : 0), 0)), s: mStyle(c, total) },
+    { v: round2(its.reduce((t, i) => t + (isNum(i.itbis) ? i.itbis : 0), 0)), s: mStyle(c, total) },
+    { v: round2(its.reduce((t, i) => t + (isNum(i.amount) ? i.amount : 0), 0)), s: mStyle(c, total) }];
   for (const g of packageGroups(invs, D)) {
     for (const c of curs) {
       const its = g.items.filter((i) => normCur(i.currency) === c);
-      if (!its.length) continue;
-      rs[r++] = [{ v: g.name + (multi ? ` (${CUR_PREFIX[c] || c})` : '') }, { v: its.length, s: XS.int }, { v: round2(its.reduce((t, i) => t + (isNum(i.itbis) ? i.itbis : 0), 0)), s: mStyle(c) }, { v: round2(its.reduce((t, i) => t + (isNum(i.amount) ? i.amount : 0), 0)), s: mStyle(c) }];
+      if (its.length) rs[r++] = line(g.name + (multi ? ` (${CUR_PREFIX[c] || c})` : ''), its, c);
     }
   }
-  for (const c of curs) {
-    const its = list.filter((i) => normCur(i.currency) === c);
-    rs[r++] = [{ v: 'Total' + (multi ? ' ' + (CUR_PREFIX[c] || c) : ''), s: XS.totLabel }, { v: its.length, s: XS.totInt }, { v: sum('itbis', c), s: mStyle(c, true) }, { v: sum('amount', c), s: mStyle(c, true) }];
-  }
+  for (const c of curs) rs[r++] = line('Total' + (multi ? ' ' + (CUR_PREFIX[c] || c) : ''), list.filter((i) => normCur(i.currency) === c), c, true);
   if (!isPayment) {
     r++;
-    rs[r++] = [{ v: 'Estado', s: XS.head }, { v: 'Facturas', s: XS.headR }, { v: 'ITBIS', s: XS.headR }, { v: 'Total', s: XS.headR }];
+    rs[r++] = [{ v: 'Estado', s: XS.head }, { v: 'Facturas', s: XS.headR }, { v: 'Subtotal', s: XS.headR }, { v: 'ITBIS', s: XS.headR }, { v: 'Total', s: XS.headR }];
     for (const k of ['pendiente', 'enpago', 'presentada', 'pagada']) {
       for (const c of curs) {
         const its = list.filter((i) => i.status === k && normCur(i.currency) === c);
-        if (!its.length) continue;
-        rs[r++] = [{ v: XL_STATUS[k] + (multi ? ` (${CUR_PREFIX[c] || c})` : '') }, { v: its.length, s: XS.int }, { v: round2(its.reduce((t, i) => t + (isNum(i.itbis) ? i.itbis : 0), 0)), s: mStyle(c) }, { v: round2(its.reduce((t, i) => t + (isNum(i.amount) ? i.amount : 0), 0)), s: mStyle(c) }];
+        if (its.length) rs[r++] = line(XL_STATUS[k] + (multi ? ` (${CUR_PREFIX[c] || c})` : ''), its, c);
       }
     }
   }
-  const resXml = sheetXml(rs, { widths: [40, 12, 18, 18], selected: true, footer });
-  return buildXlsx([{ name: 'Resumen', xml: resXml }, { name: 'Facturas', xml: factXml }], {
+  r++;
+  rs[r++] = [{ v: 'Control', s: XS.head }, { v: 'Facturas', s: XS.headR }];
+  const ctl = [
+    ['Sin orden de compra', list.filter((i) => needsOrder(i, D)).length],
+    ['Con la orden todavía sin firmar', list.filter((i) => i.order && i.order.status !== 'autorizada').length],
+    ['Con otros avisos por revisar', list.filter((i) => reviewFlags(i, D).some((f) => f !== 'Sin orden')).length],
+    ['De consumo (no sirven para crédito fiscal)', list.filter((i) => RD.parseNcf(i.number).consumo).length],
+    ['Electrónicas verificables (QR o XML de la DGII)', list.filter((i) => i.fiscal === 'qr' || i.fiscal === 'xml').length],
+    ['Proveedores distintos', supplierGroups(list).length],
+  ];
+  for (const [label, n] of ctl) rs[r++] = [{ v: label }, { v: n, s: n && /Sin orden|sin firmar|avisos|consumo/.test(label) ? XS.warn : XS.int }];
+  sheets.push({ name: 'Resumen', xml: sheetXml(rs, { widths: [46, 12, 18, 18, 18], selected: true, footer }) });
+
+  // Facturas: una fila por factura con todo su detalle.
+  const ORIGIN = (i) => (i.fiscal === 'xml' ? 'XML de la DGII' : i.fiscal === 'qr' ? (i.ai === 'done' ? 'QR de la DGII y lectura automática' : 'QR de la DGII') : i.ai === 'done' ? 'Lectura automática' : 'A mano');
+  const facturaCols = [
+    { k: '#', w: 5, num: true, v: (i, n) => ({ v: n + 1, s: XS.int }) },
+    { k: 'Proyecto', w: 22, ind: true, v: (i) => ({ v: i.project ? i.project.name : 'Sin proyecto', s: XS.ind }) },
+    { k: 'Proveedor', w: 30, v: (i) => ({ v: i.supplier || '' }) },
+    { k: 'RNC', w: 13, v: (i) => ({ v: RD.normRnc(i.rnc) }) },
+    { k: 'NCF', w: 16, v: (i) => ({ v: RD.normNcf(i.number) }) },
+    { k: 'Tipo', w: 26, v: (i) => { const n = RD.parseNcf(i.number); return { v: n.ok ? n.label : '' }; } },
+    { k: 'Vence NCF', w: 11, v: (i) => Dt(i.ncfExpiry) },
+    { k: 'Fecha', w: 11, v: (i) => Dt(i.date) },
+    { k: 'Concepto', w: 36, v: (i) => ({ v: i.concept || '' }) },
+    { k: 'Orden de compra', w: 15, v: (i) => ({ v: i.order ? orderNo(i.order) : '' }) },
+    { k: 'Estado de la orden', w: 16, v: (i) => (i.order ? { v: ORDER_LABEL[i.order.status] || '', s: i.order.status === 'autorizada' ? undefined : XS.warn } : i.noOrder ? { v: 'No lleva' } : needsOrder(i, D) ? { v: 'Falta', s: XS.warn } : { v: '' }) },
+    { k: 'Solicitado por', w: 20, v: (i) => ({ v: (i.order && i.order.requestedBy) || '' }) },
+    { k: 'Referencia', w: 14, v: (i) => ({ v: i.ref || '' }) },
+    { k: 'Subtotal', w: 15, money: true, raw: subOf, v: (i) => M(subOf(i), i.currency) },
+    { k: 'ITBIS', w: 14, money: true, raw: (i) => i.itbis, v: (i) => M(i.itbis, i.currency) },
+    { k: 'Total', w: 15, money: true, raw: (i) => i.amount, v: (i) => M(i.amount, i.currency) },
+    ...(multi ? [{ k: 'Moneda', w: 9, v: (i) => ({ v: normCur(i.currency) }) }] : []),
+    { k: 'Estado', w: 21, ind: true, v: (i) => ({ v: XL_STATUS[i.status] || '', s: XS.ind }) },
+    { k: 'Pago', w: 24, v: (i) => ({ v: i.pay ? i.pay.name || 'Pago' : '' }) },
+    { k: 'Fecha del pago', w: 13, v: (i) => Dt(i.pay ? (i.pay.status === 'pagado' && i.pay.paidAt ? i.pay.paidAt : i.pay.date) : '') },
+    { k: 'Datos tomados de', w: 30, v: (i) => ({ v: ORIGIN(i) }) },
+    { k: 'Avisos', w: 32, v: (i) => { const f = reviewFlags(i, D); return f.length ? { v: f.join('; '), s: XS.warn } : { v: '' }; } },
+    { k: 'Verificar en la DGII', w: 17, v: (i) => (RD.isDgiiUrl(i.qrUrl) && i.qrUrl.length < 250 && !/"/.test(i.qrUrl) ? { f: `HYPERLINK("${i.qrUrl}","Verificar")`, v: 'Verificar', s: XS.link } : { v: '' }) },
+    { k: 'Agregada', w: 11, v: (i) => Dt(i.createdAt) },
+  ];
+  addSheet('Facturas', facturaCols, list, { fitWidth: 3, titleCols: 5, countKey: 'Proyecto', countAt: '#', curKey: multi ? 'Moneda' : null, curOf: (i) => normCur(i.currency) });
+
+  // Por proveedor: para las transferencias.
+  const sups = supplierGroups(list, multi);
+  const sumF = (its, f) => round2(its.reduce((t, i) => t + (isNum(f(i)) ? f(i) : 0), 0));
+  addSheet('Por proveedor', [
+    { k: 'Proveedor', w: 34, v: (g) => ({ v: g.name || 'Sin nombre' }) },
+    { k: 'RNC', w: 13, v: (g) => ({ v: g.rnc || '' }) },
+    { k: 'Facturas', w: 10, num: true, sumInt: true, raw: (g) => g.items.length, v: (g) => ({ v: g.items.length, s: XS.int }) },
+    { k: 'NCF', w: 40, v: (g) => ({ v: g.items.map((i) => RD.normNcf(i.number)).filter(Boolean).join(', ') }) },
+    { k: 'Proyectos', w: 30, v: (g) => ({ v: uniqList(g.items.map((i) => (i.project ? i.project.name : 'Sin proyecto'))).join(', ') }) },
+    ...(multi ? [{ k: 'Moneda', w: 9, v: (g) => ({ v: g.cur }) }] : []),
+    { k: 'Subtotal', w: 16, money: true, raw: (g) => sumF(g.items, subOf), v: (g) => M(sumF(g.items, subOf), g.cur) },
+    { k: 'ITBIS', w: 15, money: true, raw: (g) => sumF(g.items, (i) => i.itbis), v: (g) => M(sumF(g.items, (i) => i.itbis), g.cur) },
+    { k: 'Total a pagar', w: 16, money: true, raw: (g) => sumF(g.items, (i) => i.amount), v: (g) => M(sumF(g.items, (i) => i.amount), g.cur) },
+  ], sups, { curKey: multi ? 'Moneda' : null, curOf: (g) => g.cur, title: 'Por proveedor' });
+
+  // Órdenes de compra de estas facturas y sus artículos.
+  const ords = [...new Map(list.filter((i) => i.order).map((i) => [i.order.id, i.order])).values()].sort((a, b) => (Number(a.number) || 0) - (Number(b.number) || 0));
+  if (ords.length) {
+    const invOf = (o) => D.invByOrder.get(o.id) || [];
+    addSheet('Órdenes', [
+      { k: 'No. de orden', w: 13, v: (o) => ({ v: orderNo(o) }) },
+      { k: 'Fecha', w: 11, v: (o) => Dt(o.date) },
+      { k: 'Proyecto', w: 22, v: (o) => ({ v: o.project ? o.project.name : '' }) },
+      { k: 'Proveedor', w: 30, v: (o) => ({ v: o.supplier || '' }) },
+      { k: 'Solicitado por', w: 20, v: (o) => ({ v: o.requestedBy || '' }) },
+      { k: 'Departamento', w: 15, v: (o) => ({ v: o.department || '' }) },
+      { k: 'Fecha requerida', w: 13, v: (o) => Dt(o.neededDate) },
+      { k: 'Lugar de entrega', w: 28, v: (o) => ({ v: o.place || '' }) },
+      { k: 'Estado', w: 12, v: (o) => ({ v: ORDER_LABEL[o.status] || '', s: o.status === 'autorizada' ? undefined : XS.warn }) },
+      { k: 'Firmada el', w: 11, v: (o) => Dt(o.signedAt) },
+      { k: 'Artículos', w: 10, num: true, v: (o) => ({ v: (o.items || []).length, s: XS.int }) },
+      { k: 'Facturas', w: 10, num: true, v: (o) => ({ v: invOf(o).length, s: XS.int }) },
+      { k: 'NCF de las facturas', w: 36, v: (o) => ({ v: invOf(o).map((i) => RD.normNcf(i.number)).filter(Boolean).join(', ') }) },
+      { k: 'Observaciones', w: 30, v: (o) => ({ v: o.notes || '' }) },
+    ], ords, { title: 'Órdenes de compra', fitWidth: 2, titleCols: 1 });
+    const items = ords.flatMap((o) => (o.items || []).map((it, k) => ({ o, it, k })));
+    addSheet('Artículos', [
+      { k: 'No. de orden', w: 13, v: (x) => ({ v: orderNo(x.o) }) },
+      { k: 'Proyecto', w: 22, v: (x) => ({ v: x.o.project ? x.o.project.name : '' }) },
+      { k: 'Proveedor', w: 30, v: (x) => ({ v: x.o.supplier || '' }) },
+      { k: '#', w: 5, num: true, v: (x) => ({ v: x.k + 1, s: XS.int }) },
+      { k: 'Cantidad', w: 10, num: true, v: (x) => ({ v: isNum(x.it.qty) ? x.it.qty : String(x.it.qty ?? '') }) },
+      { k: 'Unidad', w: 12, v: (x) => ({ v: x.it.unit || '' }) },
+      { k: 'Descripción', w: 60, v: (x) => ({ v: x.it.desc || '' }) },
+    ], items, { title: 'Artículos de las órdenes' });
+  }
+  return buildXlsx(sheets, {
     title: heading + ' - ' + scope, creator: st.preparedBy || 'Facturas de Proyectos',
-    names: [{ name: '_xlnm._FilterDatabase', sheet: 1, hidden: true, ref: `Facturas!$A$${H}:$${lastCol}$${last}` }, { name: '_xlnm.Print_Titles', sheet: 1, ref: `Facturas!$${H}:$${H}` }],
+    names: names.sort((a, b) => a.sheet - b.sheet || a.name.localeCompare(b.name)),
   });
 }
 function exportPaymentExcel(payId) {
@@ -1907,7 +2201,7 @@ function onClick(e) {
   const a = t.dataset.act, id = t.dataset.id;
   switch (a) {
     case 'tab': S.tab = t.dataset.tab; if (S.tab !== 'pagos') S.paymentId = null; S.payDel = false; renderAll(); window.scrollTo(0, 0); break;
-    case 'filter': S.filter = t.dataset.f; renderAll(); break;
+    case 'filter': S.filter = t.dataset.f; S.focus = null; renderAll(); break;
     case 'projf': S.projectFilter = t.dataset.p; renderAll(); break;
     case 'add': pickFiles(); break;
     case 'open-inv': openInvoice(id); break;
@@ -1955,6 +2249,22 @@ function onClick(e) {
     case 'order-fill': fillOrderFromMessage(t, null); break;
     case 'order-fill-photo': $('#fill-photo-input').click(); break;
     case 'link-order': linkOrder(id, t.dataset.order); break;
+    case 'itbis18': {
+      const v = Number(t.dataset.v);
+      if (S.sheet && S.sheet.type === 'inv' && S.sheet.id === id && S.sheet.dirty) { if ($('#f-itbis')) $('#f-itbis').value = String(v); const m = t.closest('.msg'); if (m) m.remove(); }
+      else write(() => db.doc('invoices/' + id).update({ itbis: v }), 'ITBIS guardado');
+      break;
+    }
+    case 'read-all': { const D = derive(); readMany(D.invoices.filter((i) => needsReading(i) && i.ai !== 'pending')); break; }
+    case 'focus': S.focus = t.dataset.f; S.projectFilter = 'all'; S.search = ''; if ($('#f-search')) $('#f-search').value = ''; renderAll(); { const l = $('#f-sum'); if (l) l.scrollIntoView({ block: 'start', behavior: 'smooth' }); } break;
+    case 'focus-off': S.focus = null; renderAll(); break;
+    case 'go-orders': S.tab = 'ordenes'; S.orderFilter = t.dataset.f; S.paymentId = null; renderAll(); window.scrollTo(0, 0); break;
+    case 'pay-ready': { const D = derive(); openPicker('new', D.invoices.filter((i) => readyToPay(i, D)).map((i) => i.id)); break; }
+    case 'order-repeat': openOrder(null, false, id); break;
+    case 'order-paste': pasteOrderMessage(t); break;
+    case 'order-share-signed': shareSigned(id); break;
+    case 'no-order': write(() => db.doc('invoices/' + id).update({ noOrder: true }), 'Listo: no lleva orden'); break;
+    case 'no-order-undo': write(() => db.doc('invoices/' + id).update({ noOrder: false })); break;
     case 'settings': closeSheet(); openSettings(); break;
     case 'ai-test': testKey(t); break;
     case 'backup': closeSheet(); makeBackup(); break;
@@ -2007,7 +2317,21 @@ async function hintCreate(id, btn) {
 function onChange(e) {
   const t = e.target;
   if (t.id === 'f-proj') { $('#f-newproj-wrap').hidden = t.value !== '__new'; if (t.value === '__new') $('#f-newproj').focus(); }
-  if (t.id === 'o-proj' && t.value && !$('#o-place').value) { const prev = S.orders.find((x) => x.projectId === t.value && x.place); if (prev) $('#o-place').value = prev.place; }
+  if (t.id === 'o-proj' && t.value) {
+    const prev = derive().orders.filter((x) => x.projectId === t.value);
+    for (const [sel, f] of [['#o-place', 'place'], ['#o-by', 'requestedBy'], ['#o-dept', 'department']]) {
+      const hit = prev.find((x) => x[f]);
+      if (hit && $(sel) && !$(sel).value.trim()) $(sel).value = hit[f];
+    }
+  }
+  // Artículo conocido: se pone la unidad que se usó la última vez.
+  if (t.matches && t.matches('#o-items [data-f="desc"]') && t.value.trim()) {
+    const u = t.closest('[data-row]').querySelector('[data-f="unit"]');
+    if (u && !u.value.trim()) {
+      const k = norm(t.value);
+      for (const o of derive().orders) { const it = (o.items || []).find((x) => x.unit && norm(x.desc) === k); if (it) { u.value = it.unit; break; } }
+    }
+  }
   if (t.dataset && t.dataset.pick === 'group') { for (const b of $$(`#sheet-root input[data-pick="inv"][data-g="${t.dataset.g}"]`)) b.checked = t.checked; syncPicker(); } else if (t.dataset && t.dataset.pick === 'inv') syncPicker();
   if ((t.id === 'pd-name' || t.id === 'pd-date') && S.paymentId) {
     const v = t.value.trim();
@@ -2048,7 +2372,7 @@ function onSubmit(e) {
   } else if (f.id === 'settings-form') {
     const rncv = RD.normRnc($('#st-rnc').value);
     if (rncv && rncv.length !== 9 && rncv.length !== 11) { toast('El RNC debe tener 9 dígitos (u 11 si es cédula).'); return; }
-    const data = { company: $('#st-company').value.trim().slice(0, 100), companyRnc: rncv, area: $('#st-area').value.trim().slice(0, 80), preparedBy: $('#st-name').value.trim().slice(0, 80), orderPrefix: $('#st-oc-prefix').value.trim().slice(0, 8), orderNext: Math.max(1, parseInt($('#st-oc-next').value, 10) || 1), orderNote: $('#st-oc-note').value.trim().slice(0, 500), updatedAt: new Date().toISOString() };
+    const data = { company: $('#st-company').value.trim().slice(0, 100), companyRnc: rncv, area: $('#st-area').value.trim().slice(0, 80), preparedBy: $('#st-name').value.trim().slice(0, 80), orderPrefix: $('#st-oc-prefix').value.trim().slice(0, 8), orderNext: Math.max(1, parseInt($('#st-oc-next').value, 10) || 1), orderNote: $('#st-oc-note').value.trim().slice(0, 500), orderQr: $('#st-oc-qr').checked, updatedAt: new Date().toISOString() };
     const key = $('#st-key').value.trim();
     if (key !== ai.getKey()) S.aiState = 'ok';
     ai.setKey(key);
@@ -2078,7 +2402,7 @@ function bind() {
     img.dataset.fb = '1';
     RT.assets.objectUrl(decodeURIComponent(m[1])).then((u) => { if (u) img.src = u; });
   }, true);
-  window.addEventListener('online', () => { if (S.aiState !== 'ok') scheduleRender(); });
+  window.addEventListener('online', () => { if (S.aiState !== 'ok') scheduleRender(); retryOffline(); });
 }
 
 /* ---------- service worker (funciona sin internet y se actualiza sola) ---------- */
@@ -2097,7 +2421,7 @@ function registerSW() {
 /* ---------- arranque ---------- */
 function subscribe() {
   db.doc('settings/general').onSnapshot((snap) => { S.settings = (snap.exists && snap.data()) || {}; scheduleRender(); }, (err) => console.warn(err));
-  const done = () => { if (S.got.projects && S.got.invoices && S.got.payments && S.got.orders && S.dbState === 'loading') S.dbState = 'ready'; };
+  const done = () => { if (S.got.projects && S.got.invoices && S.got.payments && S.got.orders && S.dbState === 'loading') { S.dbState = 'ready'; setTimeout(retryOffline, 1500); } };
   for (const name of ['projects', 'invoices', 'payments', 'orders']) {
     db.collection(name).onSnapshot((snap) => {
       S[name] = snap.docs.map((d) => ({ ...d.data(), id: d.id }));

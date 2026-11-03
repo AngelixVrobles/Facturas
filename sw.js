@@ -1,9 +1,9 @@
 /* Service worker: guarda la app para que abra sin internet
    y sirve las fotos y PDF guardados en el teléfono (rutas ./_blob/<id>). */
-const VERSION = 'facturas-1.1.2';
+const VERSION = 'facturas-1.2.0';
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest',
-  'js/rd.js', 'js/xlsx-zip.js', 'js/runtime.js', 'js/app.js',
+  'js/rd.js', 'js/qr.js', 'js/xlsx-zip.js', 'js/runtime.js', 'js/app.js',
   'fonts/archivo-latin.woff2', 'fonts/plexmono-400.woff2', 'fonts/plexmono-500.woff2', 'fonts/plexmono-600.woff2',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/maskable-512.png', 'icons/apple-touch-icon.png', 'icons/favicon-32.png',
   'vendor/pdf-lib.min.js', 'vendor/pdf.min.js', 'vendor/pdf.worker.min.js', 'vendor/jsQR.min.js', 'vendor/anthropic-sdk.mjs',
