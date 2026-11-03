@@ -37,7 +37,7 @@ No necesita servidor, base de datos ni cuenta: se publica gratis en GitHub Pages
 - **Lectura sin internet:** si una factura no se pudo leer por falta de conexión, se lee sola cuando vuelve el internet. Si pones la clave de API después de cargar facturas, **Leer todas** las lee de una vez.
 - **Funciona sin internet**, salvo la lectura automática de facturas de papel y de pedidos.
 
-## Publicarla en GitHub Pages
+## Publicarla en GitHub Pages (para el autor)
 
 1. Crea un repositorio **público** en GitHub, por ejemplo `facturas`. GitHub Pages gratis pide repositorio público: el código queda público, pero las facturas no, porque se guardan en cada teléfono.
 2. Sube todo el contenido de esta carpeta a la rama `main`, con sus carpetas (`js`, `vendor`, `fonts`, `icons`). Incluye el archivo `.nojekyll`.
@@ -78,7 +78,9 @@ En Android: Chrome → menú → **Instalar app**.
 
 ## Actualizar la app
 
-Al cambiar archivos, sube también `sw.js` con un número nuevo en `VERSION` (por ejemplo `facturas-1.2.1`). Al abrirla, la app avisa que hay una versión nueva y se actualiza con un toque.
+Al cambiar archivos, sube también `sw.js` con un número nuevo en `VERSION` (por ejemplo `facturas-1.2.2`). Cada teléfono instala la versión nueva solo, al abrir la app o al volver a ella, siempre que no se esté llenando nada (si hay una hoja abierta, espera a que se cierre). Después avisa «La app se actualizó sola». Actualizar no cuesta nada: no pasa por la App Store.
+
+Cada versión que se sube les llega a todos los que usan la app a la vez: hay que probarla antes de subirla.
 
 ## Archivos
 
@@ -102,7 +104,11 @@ Al cambiar archivos, sube también `sw.js` con un número nuevo en `VERSION` (po
 - [Anthropic TypeScript SDK](https://github.com/anthropics/anthropic-sdk-typescript) 1.3.0, empaquetado en un solo archivo: Apache 2.0
 - Fuentes [Archivo](https://fonts.google.com/specimen/Archivo) e [IBM Plex Mono](https://fonts.google.com/specimen/IBM+Plex+Mono): SIL Open Font License 1.1
 
-Los textos de las licencias de las librerías están en `vendor/licencias/`.
+Los textos de las licencias de las librerías y de las fuentes están en `vendor/licencias/`.
+
+## Licencia
+
+© 2026 AngelixVrobles. **Uso gratuito**: cualquier persona o empresa puede instalarla y usarla sin pagar. No se permite venderla ni copiar, modificar o publicar el código sin permiso por escrito del autor. Se entrega sin garantía; los datos son de quien los carga y se quedan en su equipo. El texto completo está en [`LICENSE`](LICENSE).
 
 ## Límites conocidos
 

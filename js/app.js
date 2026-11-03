@@ -10,7 +10,7 @@ const LIB = {
   qrgen: 'js/qr.js',
 };
 const PDF_CREATOR = 'Facturas de Proyectos';
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '1.2.1';
 const SVG = (d) => `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ICON = {
   plus: SVG('<path d="M12 5v14M5 12h14"/>'),
@@ -31,7 +31,17 @@ const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const round2 = (n) => Math.round(n * 100) / 100;
-const assetUrl = (id) => (RT.assets.cachedUrl && RT.assets.cachedUrl(id)) || './_blob/' + encodeURIComponent(id);
+// Fotos y PDF guardados: los sirve el service worker (./_blob/<id>). En el primer momento, antes de que tome
+// control de la página, se leen directo del teléfono en vez de pedirlos al servidor (que no los tiene).
+const BLANK_IMG = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+const assetUrl = (id) => {
+  const c = RT.assets.cachedUrl && RT.assets.cachedUrl(id);
+  if (c) return c;
+  if ('serviceWorker' in navigator && navigator.serviceWorker.controller) return './_blob/' + encodeURIComponent(id);
+  const ph = BLANK_IMG + '#' + id;
+  RT.assets.objectUrl(id).then((u) => { if (u) for (const img of document.querySelectorAll('img')) if (img.getAttribute('src') === ph) img.src = u; }).catch(() => {});
+  return ph;
+};
 const norm = (s) => String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 const ROMAN = { i: '1', ii: '2', iii: '3', iv: '4', v: '5', vi: '6', vii: '7', viii: '8', ix: '9', x: '10' };
@@ -436,7 +446,7 @@ function renderBanner(D) {
   const parts = [];
   if (S.dbState === 'absent') parts.push('<div class="note warn"><span class="grow"><b>Este navegador no deja guardar datos.</b> Si estás en modo privado, ábrela en una ventana normal.</span></div>');
   else if (S.dbState === 'error') parts.push('<div class="note warn"><span class="grow">No se pudieron cargar tus datos. Cierra la app y vuelve a abrirla.</span></div>');
-  if (S.updateReg) parts.push('<div class="note example"><span class="grow"><b>Hay una versión nueva de la app.</b></span><span class="acts"><button type="button" class="btn sm" data-act="update-app">Actualizar</button></span></div>');
+  if (S.updateReg) parts.push('<div class="note example"><span class="grow"><b>Hay una versión nueva.</b> Se instala sola la próxima vez que abras la app, o actualízala ahora.</span><span class="acts"><button type="button" class="btn sm" data-act="update-app">Actualizar</button></span></div>');
   if (isIOS() && !isStandalone() && !lsGet('facturas.installHintOff')) parts.push('<div class="note example"><span class="grow"><b>Instálala antes de empezar:</b> toca Compartir y luego <b>Agregar a pantalla de inicio</b>. En iPhone, lo que guardes en Safari no pasa a la app instalada.</span><span class="acts"><button type="button" class="btn sm" data-act="install-off">Entendido</button></span></div>');
   if (S.aiState === 'badkey') parts.push('<div class="note warn"><span class="grow">La clave de API no funciona, así que las facturas no se están leyendo solas.</span><span class="acts"><button type="button" class="btn sm" data-act="settings">Revisar</button></span></div>');
   const last = Number(lsGet('facturas.lastBackup')) || 0;
@@ -661,7 +671,7 @@ function openSheet(html, data) {
   S.sheet = data;
   lockBody();
 }
-function closeSheet() { const root = $('#sheet-root'); root.hidden = true; root.innerHTML = ''; S.sheet = null; S.ready = null; lockBody(); }
+function closeSheet() { const root = $('#sheet-root'); root.hidden = true; root.innerHTML = ''; S.sheet = null; S.ready = null; lockBody(); if (S.updateReg) setTimeout(tryAutoUpdate, 300); }
 function lockBody() { document.body.classList.toggle('locked', !!S.sheet || !$('#viewer').hidden); }
 const sheetHead = (title) => `<div class="sheet-h"><h2>${title}</h2><button type="button" class="icon-btn plain" data-act="sheet-close" aria-label="Cerrar">${ICON.close}</button></div>`;
 
@@ -835,7 +845,7 @@ async function openSettings() {
       <div class="actions"><button type="button" class="btn" data-act="backup">${ICON.down} Descargar respaldo</button><button type="button" class="btn" data-act="restore">Restaurar un respaldo</button></div>
       <div id="restore-box" hidden></div>
       <p class="usage" id="st-usage">Calculando espacio…</p>
-      <p class="usage">Versión ${APP_VERSION}</p>
+      <p class="usage">Versión ${APP_VERSION}. Se actualiza sola.<br>© 2026 AngelixVrobles. Uso gratuito; no se permite venderla ni copiarla sin permiso del autor.</p>
     </div>
     <div class="sheet-f"><button type="submit" class="btn primary block">Guardar</button></div>
   </form>`, { type: 'settings' });
@@ -2406,14 +2416,35 @@ function bind() {
 }
 
 /* ---------- service worker (funciona sin internet y se actualiza sola) ---------- */
+// Actualización sola: la versión nueva se instala al abrir la app o al volver a ella, siempre que no se esté
+// llenando nada (ninguna hoja abierta, sin archivos en proceso, sin lecturas ni PDF en curso).
+let lastShown = Date.now();
+function busyNow() {
+  return !!(S.sheet || !$('#viewer').hidden || S.busyPdf || S.queue.some((x) => !x.done) || aiRunning || aiJobs.length || readingMany);
+}
+function tryAutoUpdate() {
+  const reg = S.updateReg;
+  if (!reg || !reg.waiting || S.updating || Date.now() - lastShown > 60000 || busyNow()) return false;
+  S.updating = true;
+  lsSet('facturas.justUpdated', '1');
+  reg.waiting.postMessage('skipWaiting');
+  return true;
+}
 function registerSW() {
   if (!('serviceWorker' in navigator)) return;
   navigator.serviceWorker.register('sw.js').then((reg) => {
-    const check = () => { if (reg.waiting && navigator.serviceWorker.controller) { S.updateReg = reg; renderAll(); } };
+    S.swReg = reg;
+    const check = () => { if (reg.waiting && navigator.serviceWorker.controller) { S.updateReg = reg; if (!tryAutoUpdate()) renderAll(); } };
     check();
     reg.addEventListener('updatefound', () => { const w = reg.installing; if (w) w.addEventListener('statechange', () => { if (w.state === 'installed') check(); }); });
     setInterval(() => reg.update().catch(() => {}), 3600000);
   }).catch((e) => console.warn('SW', e));
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    lastShown = Date.now();
+    if (S.swReg) S.swReg.update().catch(() => {});
+    tryAutoUpdate();
+  });
   let reloaded = false;
   navigator.serviceWorker.addEventListener('controllerchange', () => { if (S.updating && !reloaded) { reloaded = true; location.reload(); } });
 }
@@ -2441,6 +2472,7 @@ function boot() {
   });
   RT.use('assets').then((a) => { assets = a; renderAll(); });
   registerSW();
+  if (lsGet('facturas.justUpdated')) { lsSet('facturas.justUpdated', ''); setTimeout(() => toast(`La app se actualizó sola (versión ${APP_VERSION})`), 600); }
 }
 boot();
 })();

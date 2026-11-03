@@ -1,0 +1,37 @@
+Facturas de Proyectos
+Copyright (c) 2026 AngelixVrobles. Todos los derechos reservados.
+
+LICENCIA DE USO GRATUITO
+
+1. Uso gratis. Cualquier persona o empresa puede instalar y usar esta
+   aplicación sin pagar, para su propio trabajo, en los teléfonos y
+   computadoras que quiera.
+
+2. Lo que no se permite sin permiso por escrito del autor:
+   a) venderla o cobrar por ella, por instalarla o por usarla;
+   b) copiar, modificar, traducir o publicar el código, completo o en
+      parte, ni hacer otra aplicación a partir de él;
+   c) quitar o cambiar este aviso o el nombre del autor.
+
+3. Los datos son de quien los carga. Las facturas, órdenes, pagos y
+   archivos que se agregan en la aplicación se guardan en el teléfono o
+   la computadora de quien la usa. El autor no los recibe ni los ve.
+   Solo salen del equipo los archivos que el usuario decide compartir y,
+   si el usuario pone su propia clave de API, las fotos o textos que se
+   mandan a ese servicio para leerlos.
+
+4. Actualizaciones. El autor puede publicar versiones nuevas cuando
+   quiera y la aplicación las instala sola. El autor no está obligado a
+   dar mantenimiento ni soporte.
+
+5. Sin garantía. La aplicación se entrega tal como está, sin garantías
+   de ningún tipo. El autor no responde por pérdida de datos, por
+   errores en los documentos que genera ni por decisiones tomadas con
+   ellos. Quien la usa debe revisar sus datos y guardar respaldos.
+
+6. Componentes de terceros. Las librerías de la carpeta vendor/ y las
+   fuentes de la carpeta fonts/ no son del autor y mantienen sus propias
+   licencias, que están en vendor/licencias/. Esta licencia no cambia
+   esos términos.
+
+7. Si no se cumplen estas condiciones, el permiso de uso termina.
