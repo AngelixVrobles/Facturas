@@ -8,7 +8,7 @@ const LIB = {
   pdfjsWorker: 'vendor/pdf.worker.min.js',
   jsqr: 'vendor/jsQR.min.js',
 };
-const APP_VERSION = '1.1.1';
+const APP_VERSION = '1.1.2';
 const SVG = (d) => `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ICON = {
   plus: SVG('<path d="M12 5v14M5 12h14"/>'),
@@ -647,7 +647,7 @@ function openInvoice(id, keepScroll) {
         <div class="field full"><label for="f-proj">Proyecto</label><select id="f-proj" ${dis}><option value="">Sin proyecto</option>${opts}${edit ? '<option value="__new">+ Proyecto nuevo…</option>' : ''}</select></div>
         <div class="field full" id="f-newproj-wrap" hidden><label for="f-newproj">Nombre del proyecto nuevo</label><input id="f-newproj" maxlength="80" placeholder="Ej. Torre Piantini" value="${esc(i.projectHint || '')}"></div>
         <div class="field full"><label for="f-sup">Proveedor</label><input id="f-sup" maxlength="120" value="${esc(i.supplier || '')}" ${dis}></div>
-        <div class="field"><label for="f-rnc">RNC o cédula del proveedor</label><input id="f-rnc" class="mono" inputmode="numeric" maxlength="15" value="${esc(RD.normRnc(i.rnc))}" ${dis}><small class="help" id="f-rnc-help">${esc(rnc.ok ? (rnc.kind === 'rnc' ? 'RNC ' : 'Cédula ') + RD.fmtRnc(rnc.value) : '9 dígitos (RNC) u 11 (cédula)')}</small></div>
+        <div class="field"><label for="f-rnc">RNC o cédula</label><input id="f-rnc" class="mono" inputmode="numeric" maxlength="15" value="${esc(RD.normRnc(i.rnc))}" ${dis}><small class="help" id="f-rnc-help">${esc(rnc.ok ? (rnc.kind === 'rnc' ? 'RNC ' : 'Cédula ') + RD.fmtRnc(rnc.value) : '9 dígitos (RNC) u 11 (cédula)')}</small></div>
         <div class="field"><label for="f-num">NCF o e-NCF</label><input id="f-num" class="mono" maxlength="20" autocapitalize="characters" value="${esc(RD.normNcf(i.number))}" ${dis}><small class="help" id="f-num-help">${esc(ncf.ok ? ncf.label + (i.ncfExpiry ? ' · válido hasta ' + fmtDmy(i.ncfExpiry) : '') : 'Ej. B0100004521 o E310000000123')}</small></div>
         <div class="field"><label for="f-date">Fecha</label><input id="f-date" type="date" value="${esc(i.date || '')}" ${dis}></div>
         <div class="field"><label for="f-cur">Moneda</label><select id="f-cur" ${dis}><option value="DOP"${cur === 'DOP' ? ' selected' : ''}>RD$ pesos</option><option value="USD"${cur === 'USD' ? ' selected' : ''}>US$ dólares</option><option value="EUR"${cur === 'EUR' ? ' selected' : ''}>€ euros</option></select></div>

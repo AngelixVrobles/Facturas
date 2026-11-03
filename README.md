@@ -67,7 +67,7 @@ En Android: Chrome → menú → **Instalar app**.
 
 ## Actualizar la app
 
-Al cambiar archivos, sube también `sw.js` con un número nuevo en `VERSION` (por ejemplo `facturas-1.1.2`). Al abrirla, la app avisa que hay una versión nueva y se actualiza con un toque.
+Al cambiar archivos, sube también `sw.js` con un número nuevo en `VERSION` (por ejemplo `facturas-1.1.3`). Al abrirla, la app avisa que hay una versión nueva y se actualiza con un toque.
 
 ## Archivos
 
