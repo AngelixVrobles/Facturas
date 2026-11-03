@@ -112,6 +112,7 @@
       comprador: g('RazonSocialComprador'),
       total: num('MontoTotal'),
       itbis: num('TotalITBIS'),
+      ordenCompra: g('NumeroOrdenCompra').slice(0, 40),
       monedaExtranjera: g('TipoMoneda'),
     };
   }

@@ -8,6 +8,8 @@ No necesita servidor, base de datos ni cuenta: se publica gratis en GitHub Pages
 
 - **Agregar facturas** desde la galería, la cámara o Archivos: fotos, PDF y XML de e-CF (varias a la vez).
 - **Facturas electrónicas (e-CF):** lee el código QR de la DGII y toma el e-NCF, el RNC del emisor y del comprador, la fecha y el monto. También importa el XML y toma además el ITBIS. Si llega la foto y el XML de la misma factura, los junta. No necesita la clave de API ni tiene costo. Cada factura con QR trae el enlace **Verificar en la DGII**.
+  - El QR no trae el nombre del proveedor: la app lo toma de una factura anterior con el mismo RNC (o del XML, que sí lo trae).
+  - Busca el QR en la foto original y por partes, porque en muchas facturas mide 2 o 3 cm. Si una foto llega muy comprimida y el QR no se lee, pide la factura en PDF o mándala por WhatsApp como *documento*.
 - **Facturas de papel (serie B):** con una clave de API, lee proveedor, RNC, NCF, fecha, ITBIS, total, obra y orden de compra o cubicación. Sin clave, los datos se llenan a mano.
 - **Avisos:** factura de consumo (B02 o E32, no sirve para crédito fiscal), NCF vencido según su fecha "Válida hasta", NCF incompleto, dígito verificador del RNC, factura a nombre de otro RNC, posibles repetidas, facturas sin proyecto o sin monto y facturas sin orden de compra.
 - **Obra:** la toma de campos como *Nota: CAPERUZA 2* y reconoce variantes como "caperuza II" para no duplicar proyectos. El NCF impreso con ceros delante (`00000000B0100003467`) se guarda limpio (`B0100003467`).
@@ -16,7 +18,7 @@ No necesita servidor, base de datos ni cuenta: se publica gratis en GitHub Pages
   - Con la clave de API, se puede pegar el mensaje del pedido (por ejemplo, de WhatsApp) o usar una foto de la lista, y la orden se llena sola para revisarla.
   - **Guardar y sacar PDF** genera la orden en carta, igual al formato impreso: encabezado de la empresa, 12 renglones por página (sigue en otra página si hay más), firmas del solicitante y de quien autoriza, sello y la nota obligatoria. Se comparte por WhatsApp o correo para firmarla y sellarla.
   - Con la foto o el PDF de la orden firmada y sellada, la orden pasa de *Por firmar* a *Firmada*.
-  - Cada factura se enlaza a su orden: sola, si la factura menciona el número ("OC-0012"); con la sugerencia **Asignar OC-…** cuando hay una orden del mismo proveedor para esa obra; o eligiéndola en la factura.
+  - Cada factura se enlaza a su orden: sola, si la factura trae el número (el XML de la e-CF en *NumeroOrdenCompra*, un PDF que dice "Orden de compra: 0012", o la lectura automática que encuentra "OC-0012"); con la sugerencia **Asignar OC-…** cuando hay una orden del mismo proveedor (por nombre o por RNC); o eligiéndola en la factura. Si a la factura le falta la obra o el proveedor, los toma de la orden.
   - Una orden sin facturas se puede eliminar; si ya tiene facturas, solo se anula y queda en el registro.
 - **Pagos:** eliges qué facturas entran (o un proyecto completo) y sale:
   - **PDF para presentar:** portada con el total y el ITBIS, totales por proyecto, detalle con RNC, NCF, orden de compra, fecha, ITBIS y total, firmas *Elaboró / Revisó / Autorizó*, y después cada factura seguida de su orden firmada y sellada, como pide la nota de la orden. Si la orden todavía no tiene la copia firmada, entra la orden marcada *COPIA SIN FIRMA*, y la pantalla del pago avisa qué facturas no tienen orden. Si una orden tiene varias facturas, la copia va una sola vez, después de la primera.
@@ -65,7 +67,7 @@ En Android: Chrome → menú → **Instalar app**.
 
 ## Actualizar la app
 
-Al cambiar archivos, sube también `sw.js` con un número nuevo en `VERSION` (por ejemplo `facturas-1.1.1`). Al abrirla, la app avisa que hay una versión nueva y se actualiza con un toque.
+Al cambiar archivos, sube también `sw.js` con un número nuevo en `VERSION` (por ejemplo `facturas-1.1.2`). Al abrirla, la app avisa que hay una versión nueva y se actualiza con un toque.
 
 ## Archivos
 
