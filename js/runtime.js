@@ -1,7 +1,8 @@
 /* Motor local de la app.
    - Guarda los datos y los archivos en el propio teléfono (IndexedDB). No hay servidor.
    - Lee las facturas de papel con una API externa, con una clave que se guarda solo en este dispositivo.
-   - Expone RT.use('db' | 'assets' | 'sample' | 'user') para la app. */
+   - Expone RT.use('db' | 'assets' | 'sample' | 'user') para la app.
+   - Opcional: comparte los datos con otros teléfonos por la nube del equipo (RT.sync). */
 (function () {
   'use strict';
 
@@ -102,6 +103,7 @@
     await run('docs', 'readwrite', (s) => s.put(value, path));
     cache.set(path, freeze(value));
     notify(path);
+    markDirty(path);
   }
   function docRef(path) {
     return {
@@ -115,7 +117,7 @@
         if (!cur) throw { code: 'invalid_argument', message: 'El documento no existe' };
         await putDoc(path, { ...clone(cur), ...clone(data) });
       },
-      async delete() { await run('docs', 'readwrite', (s) => s.delete(path)); cache.delete(path); notify(path); },
+      async delete() { await run('docs', 'readwrite', (s) => s.delete(path)); cache.delete(path); notify(path); markDirty(path); },
       onSnapshot(cb, err) {
         const l = { kind: 'doc', path, cb };
         listeners.add(l);
@@ -148,11 +150,13 @@
       const buf = await blob.arrayBuffer();
       const id = randomHex(32);
       await run('files', 'readwrite', (s) => s.put({ buf, type, size: buf.byteLength, createdAt: new Date().toISOString() }, id));
+      markFile(id);
       return { id, url: './_blob/' + id, sizeBytes: buf.byteLength, contentType: type };
     },
     async get(id) {
       const rec = await run('files', 'readonly', (s) => s.get(id));
-      return rec ? new Blob([rec.buf], { type: rec.type }) : null;
+      if (rec) return new Blob([rec.buf], { type: rec.type });
+      return fetchFile(id); // puede venir de otro teléfono
     },
     cachedUrl: (id) => urlCache.get(id) || null,
     async objectUrl(id) {
@@ -172,6 +176,7 @@
     },
     async delete(id) {
       await run('files', 'readwrite', (s) => s.delete(id));
+      if (pendingFiles.delete(id)) saveFiles();
       if (urlCache.has(id)) { URL.revokeObjectURL(urlCache.get(id)); urlCache.delete(id); }
       return { deleted: true };
     },
@@ -245,6 +250,259 @@
     },
   };
 
+  /* ---------- Compartir con otros teléfonos (nube del equipo, opcional) ----------
+     Cada teléfono sigue guardando todo en sí mismo y funciona sin internet. Si se conecta a la nube del equipo
+     (Supabase: tabla "docs" y carpeta privada "archivos"), sube sus cambios y baja los de los demás.
+     Si dos teléfonos cambian el mismo documento, queda el último que llegó a la nube. */
+  const SK = { conf: 'facturas.nube', dirty: 'facturas.nube.pendientes', files: 'facturas.nube.archivos', last: 'facturas.nube.ultimo', at: 'facturas.nube.hora' };
+  const FILE_KEYS = ['fileId', 'thumbId', 'xmlId', 'signedFileId', 'signedThumbId'];
+  const jget = (k, d) => { try { const v = JSON.parse(lsGet(k)); return v == null ? d : v; } catch (e) { return d; } };
+  const jset = (k, v) => lsSet(k, v == null ? '' : JSON.stringify(v));
+  // Horas de la nube con microsegundos ("…45.123456+00:00"): se recortan a milisegundos para leerlas en cualquier navegador.
+  const tms = (t) => Date.parse(String(t || '').replace(/(\.\d{3})\d+/, '$1'));
+  const stable = (v) => (Array.isArray(v) ? '[' + v.map(stable).join(',') + ']' : v && typeof v === 'object' ? '{' + Object.keys(v).sort().map((k) => JSON.stringify(k) + ':' + stable(v[k])).join(',') + '}' : JSON.stringify(v));
+  let nube = jget(SK.conf, null);
+  const dirty = new Map(Object.entries(jget(SK.dirty, {})));
+  const pendingFiles = new Set(jget(SK.files, []));
+  let lastPulled = lsGet(SK.last);
+  let seq = 0;
+  const nubeState = { status: nube ? 'idle' : 'off', at: Number(lsGet(SK.at)) || 0, error: '', code: '', progress: '' };
+  const nubeSubs = new Set();
+  const saveDirty = () => jset(SK.dirty, Object.fromEntries(dirty));
+  const saveFiles = () => jset(SK.files, [...pendingFiles]);
+  const baseUrl = (c = nube) => String(c.url).replace(/\/+$/, '');
+  function syncStatus() {
+    return { on: !!nube, email: nube ? nube.email : '', url: nube ? nube.url : '', status: nubeState.status, at: nubeState.at, error: nubeState.error, code: nubeState.code, progress: nubeState.progress, pendingDocs: dirty.size, pendingFiles: pendingFiles.size };
+  }
+  function nubeEmit() { const st = syncStatus(); for (const f of nubeSubs) { try { f(st); } catch (e) { /* nada */ } } }
+  function markDirty(path) { if (!nube) return; dirty.set(path, ++seq + '-' + Date.now()); saveDirty(); scheduleSync(); }
+  function markFile(id) { if (!nube) return; pendingFiles.add(id); saveFiles(); scheduleSync(); }
+  async function markEverything() {
+    await loadAll();
+    for (const path of cache.keys()) dirty.set(path, ++seq + '-' + Date.now());
+    saveDirty();
+    for (const k of await run('files', 'readonly', (st) => st.getAllKeys())) pendingFiles.add(k);
+    saveFiles();
+  }
+
+  // Sesión (correo y contraseña). La contraseña no se guarda: solo la sesión, que se renueva sola.
+  async function authCall(grant, body, conf) {
+    let r;
+    try { r = await fetch(baseUrl(conf) + '/auth/v1/token?grant_type=' + grant, { method: 'POST', headers: { apikey: conf.key, 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); } catch (e) { throw { code: 'offline', message: 'No se pudo llegar a la nube' }; }
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw { code: r.status >= 400 && r.status < 500 ? 'auth' : 'server', message: j.error_description || j.msg || j.message || 'Error ' + r.status };
+    return j;
+  }
+  function keepSession(j) { nube.access = j.access_token; nube.refresh = j.refresh_token || nube.refresh; nube.exp = Date.now() + (Number(j.expires_in) || 3600) * 1000; jset(SK.conf, nube); }
+  let refreshing = null;
+  function ensureSession(force) {
+    if (!nube) return Promise.reject({ code: 'off' });
+    if (!force && nube.access && nube.exp - Date.now() > 90000) return Promise.resolve();
+    if (!refreshing) refreshing = authCall('refresh_token', { refresh_token: nube.refresh }, nube).then(keepSession).finally(() => { refreshing = null; });
+    return refreshing;
+  }
+  async function api(path, opts = {}, again = true) {
+    await ensureSession(false);
+    let r;
+    try { r = await fetch(baseUrl() + path, { ...opts, headers: { apikey: nube.key, Authorization: 'Bearer ' + nube.access, ...(opts.headers || {}) } }); } catch (e) { throw { code: 'offline', message: 'Sin conexión' }; }
+    if ((r.status === 401 || r.status === 403) && again) { await ensureSession(true); return api(path, opts, false); }
+    if (!r.ok) { const t = await r.text().catch(() => ''); throw { code: r.status === 401 || r.status === 403 ? 'auth' : 'server', status: r.status, message: t.slice(0, 300) }; }
+    return r;
+  }
+
+  // Subir: primero los archivos y después los documentos que los usan.
+  async function pushFiles() {
+    const ids = [...pendingFiles];
+    let n = 0;
+    for (const id of ids) {
+      n++;
+      nubeState.progress = ids.length > 1 ? `Subiendo archivos: ${n} de ${ids.length}` : 'Subiendo un archivo';
+      nubeEmit();
+      const rec = await run('files', 'readonly', (st) => st.get(id));
+      if (rec) await api('/storage/v1/object/archivos/' + encodeURIComponent(id), { method: 'POST', headers: { 'Content-Type': rec.type || 'application/octet-stream', 'x-upsert': 'true' }, body: rec.buf });
+      pendingFiles.delete(id);
+      saveFiles();
+    }
+  }
+  async function pushDocs() {
+    const entries = [...dirty.entries()];
+    for (let i = 0; i < entries.length; i += 200) {
+      const batch = entries.slice(i, i + 200);
+      nubeState.progress = entries.length > 200 ? `Subiendo cambios: ${Math.min(i + 200, entries.length)} de ${entries.length}` : 'Subiendo cambios';
+      nubeEmit();
+      const rows = batch.map(([path]) => (cache.has(path) ? { path, data: cache.get(path), deleted: false } : { path, data: null, deleted: true }));
+      await api('/rest/v1/docs?on_conflict=path', { method: 'POST', headers: { 'Content-Type': 'application/json', Prefer: 'resolution=merge-duplicates,return=minimal' }, body: JSON.stringify(rows) });
+      for (const [path, v] of batch) if (dirty.get(path) === v) dirty.delete(path);
+      saveDirty();
+    }
+  }
+  // Bajar: lo que cambió en la nube desde la última vez (con 2 minutos de margen). Lo que este teléfono tiene
+  // pendiente de subir no se pisa.
+  async function applyRemote(rows) {
+    rows = rows.filter((r) => !dirty.has(r.path));
+    if (!rows.length) return;
+    const d = await openIdb();
+    await new Promise((res, rej) => {
+      const t = d.transaction('docs', 'readwrite');
+      const st = t.objectStore('docs');
+      for (const r of rows) { if (r.deleted) st.delete(r.path); else st.put(clone(r.data), r.path); }
+      t.oncomplete = () => res();
+      t.onerror = () => rej(storeErr(t.error));
+      t.onabort = () => rej(storeErr(t.error));
+    });
+    const late = [];
+    for (const r of rows) {
+      if (dirty.has(r.path)) { late.push(r.path); continue; } // se cambió aquí mientras se guardaba: manda lo de aquí
+      if (r.deleted) cache.delete(r.path); else cache.set(r.path, freeze(clone(r.data)));
+    }
+    if (late.length) await run('docs', 'readwrite', (st) => { for (const path of late) { const v = cache.get(path); if (v === undefined) st.delete(path); else st.put(clone(v), path); } });
+    const paths = new Set(rows.map((r) => r.path).filter((x) => !late.includes(x)));
+    const colls = new Set([...paths].map(parentOf));
+    for (const l of listeners) if ((l.kind === 'coll' && colls.has(l.path)) || (l.kind === 'doc' && paths.has(l.path))) deliver(l);
+  }
+  async function pull(seen) {
+    const since = lastPulled ? new Date(tms(lastPulled) - 120000).toISOString() : '1970-01-01T00:00:00.000Z';
+    let offset = 0, maxSeen = lastPulled;
+    const wanted = [];
+    for (;;) {
+      nubeState.progress = 'Bajando cambios';
+      nubeEmit();
+      const r = await api(`/rest/v1/docs?select=path,data,deleted,updated_at&updated_at=gte.${encodeURIComponent(since)}&order=updated_at.asc,path.asc&limit=500&offset=${offset}`);
+      const rows = await r.json();
+      const apply = [];
+      for (const row of rows) {
+        if (!maxSeen || tms(row.updated_at) > tms(maxSeen)) maxSeen = row.updated_at;
+        if (seen) seen.add(row.path);
+        if (dirty.has(row.path)) continue;
+        const cur = cache.get(row.path);
+        if (row.deleted) { if (cur !== undefined) apply.push(row); continue; }
+        if (cur !== undefined && stable(cur) === stable(row.data)) continue;
+        apply.push(row);
+        const x = row.data || {};
+        for (const k of ['thumbId', 'signedThumbId']) if (x[k]) wanted.push(x[k]);
+        if (String(x.fileType || '').startsWith('image/') && x.fileId) wanted.push(x.fileId);
+        if (String(x.signedFileType || '').startsWith('image/') && x.signedFileId) wanted.push(x.signedFileId);
+      }
+      await applyRemote(apply);
+      if (rows.length < 500) break;
+      offset += rows.length;
+    }
+    if (maxSeen && maxSeen !== lastPulled) { lastPulled = maxSeen; lsSet(SK.last, lastPulled); }
+    return wanted;
+  }
+  // Archivos que llegaron de otro teléfono: se bajan cuando hacen falta (y las fotos, de una vez).
+  const fetching = new Map();
+  function fetchFile(id) {
+    if (!nube || !id) return Promise.resolve(null);
+    if (!fetching.has(id)) {
+      fetching.set(id, (async () => {
+        try {
+          const r = await api('/storage/v1/object/authenticated/archivos/' + encodeURIComponent(id));
+          const buf = await r.arrayBuffer();
+          const type = (r.headers.get('content-type') || 'application/octet-stream').split(';')[0];
+          await run('files', 'readwrite', (st) => st.put({ buf, type, size: buf.byteLength, createdAt: new Date().toISOString() }, id));
+          return new Blob([buf], { type });
+        } catch (e) { return null; } finally { fetching.delete(id); }
+      })());
+    }
+    return fetching.get(id);
+  }
+  async function prefetch(ids) {
+    for (const id of [...new Set(ids)].slice(0, 300)) {
+      if (!nube) return;
+      const have = await run('files', 'readonly', (st) => st.count(id)).catch(() => 1);
+      if (!have) await fetchFile(id);
+    }
+  }
+
+  let syncTimer = 0, syncing = null, syncAgain = false;
+  function scheduleSync(ms = 1500) { if (!nube) return; clearTimeout(syncTimer); syncTimer = setTimeout(() => { syncNow(); }, ms); }
+  async function doSync() {
+    nubeState.status = 'syncing'; nubeState.error = ''; nubeState.code = '';
+    nubeEmit();
+    let wanted = [];
+    try {
+      if (!navigator.onLine) throw { code: 'offline' };
+      await loadAll();
+      await pushFiles();
+      await pushDocs();
+      wanted = await pull();
+      nubeState.status = 'ok';
+      nubeState.at = Date.now();
+      lsSet(SK.at, String(nubeState.at));
+    } catch (e) {
+      if (!nube) return syncStatus();
+      nubeState.status = 'error';
+      nubeState.code = (e && e.code) || 'server';
+      nubeState.error = { offline: 'Sin internet: se pone al día sola cuando vuelva.', auth: 'Hay que volver a entrar con el correo y la contraseña.' }[nubeState.code] || 'No se pudo sincronizar; se vuelve a intentar sola.';
+      if (nubeState.code !== 'offline') console.warn('nube', e);
+    } finally {
+      nubeState.progress = '';
+      nubeEmit();
+    }
+    if (wanted.length) prefetch(wanted);
+    return syncStatus();
+  }
+  // Una sola sincronización a la vez. La marca de "en curso" se quita cuando de verdad terminó (aunque termine
+  // al instante, por ejemplo sin internet), para que la siguiente sí corra.
+  function syncNow() {
+    if (!nube) return Promise.resolve(syncStatus());
+    if (syncing) { syncAgain = true; return syncing; }
+    const p = doSync().finally(() => {
+      if (syncing === p) syncing = null;
+      if (syncAgain) { syncAgain = false; scheduleSync(800); }
+    });
+    syncing = p;
+    return p;
+  }
+  const normUrl = (u) => { const t = String(u || '').trim().replace(/\/+$/, ''); return !t ? '' : /^https?:\/\//i.test(t) ? t : 'https://' + t; };
+  async function connect({ url, key, email, password }) {
+    const conf = { url: normUrl(url), key: String(key || '').trim(), email: String(email || '').trim().toLowerCase() };
+    if (!conf.url || !conf.key || !conf.email || !password) throw { code: 'bad_input', message: 'Faltan datos' };
+    const j = await authCall('password', { email: conf.email, password }, conf);
+    nube = conf;
+    keepSession(j);
+    lastPulled = ''; lsSet(SK.last, '');
+    dirty.clear(); saveDirty();
+    // Primero se baja lo que ya hay en la nube (eso manda) y después se sube solo lo que la nube no tiene.
+    await loadAll();
+    const remote = new Set();
+    try { prefetch(await pull(remote)); } catch (e) { nube = null; jset(SK.conf, null); throw e; }
+    for (const path of cache.keys()) if (!remote.has(path)) dirty.set(path, ++seq + '-' + Date.now());
+    saveDirty();
+    for (const k of await run('files', 'readonly', (st) => st.getAllKeys())) pendingFiles.add(k);
+    saveFiles();
+    nubeState.status = 'idle';
+    nubeEmit();
+    return syncNow();
+  }
+  async function relogin(password) {
+    if (!nube) throw { code: 'off' };
+    keepSession(await authCall('password', { email: nube.email, password }, nube));
+    return syncNow();
+  }
+  function disconnect() {
+    nube = null;
+    jset(SK.conf, null);
+    dirty.clear(); saveDirty();
+    pendingFiles.clear(); saveFiles();
+    lastPulled = ''; lsSet(SK.last, ''); lsSet(SK.at, '');
+    Object.assign(nubeState, { status: 'off', at: 0, error: '', code: '', progress: '' });
+    nubeEmit();
+  }
+  // Código para conectar otro teléfono (URL y clave pública; sin la contraseña).
+  const shareCode = () => (nube ? 'FACTURAS-NUBE:' + btoa(JSON.stringify({ url: nube.url, key: nube.key })) : '');
+  function parseShareCode(text) {
+    const m = /FACTURAS-NUBE:([A-Za-z0-9+/=]+)/.exec(String(text || ''));
+    if (!m) return null;
+    try { const o = JSON.parse(atob(m[1])); return o && o.url && o.key ? { url: String(o.url), key: String(o.key) } : null; } catch (e) { return null; }
+  }
+  setInterval(() => { if (nube && document.visibilityState === 'visible') syncNow(); }, 30000);
+  window.addEventListener('online', () => scheduleSync(500));
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') scheduleSync(400); });
+  if (nube) scheduleSync(1200);
+  const sync = { status: syncStatus, onChange(f) { nubeSubs.add(f); return () => nubeSubs.delete(f); }, connect, relogin, disconnect, syncNow, shareCode, parseShareCode };
+
   /* ---------- Respaldo completo ---------- */
   async function exportAll() {
     await loadAll();
@@ -270,6 +528,7 @@
     loaded = null;
     await loadAll();
     notifyAll();
+    if (nube) { await markEverything(); scheduleSync(500); } // con la nube activa, lo restaurado también se sube
   }
 
   async function persist() {
@@ -287,5 +546,5 @@
     return { db, assets, user, sample: ai }[name] || null;
   }
 
-  window.RT = { db, assets, ai, exportAll, importAll, persist, openIdb, use };
+  window.RT = { db, assets, ai, sync, exportAll, importAll, persist, openIdb, use };
 })();

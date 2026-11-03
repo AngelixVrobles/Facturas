@@ -16,9 +16,11 @@ LICENCIA DE USO GRATUITO
 3. Los datos son de quien los carga. Las facturas, órdenes, pagos y
    archivos que se agregan en la aplicación se guardan en el teléfono o
    la computadora de quien la usa. El autor no los recibe ni los ve.
-   Solo salen del equipo los archivos que el usuario decide compartir y,
-   si el usuario pone su propia clave de API, las fotos o textos que se
-   mandan a ese servicio para leerlos.
+   Solo salen del equipo los archivos que el usuario decide compartir; si
+   el usuario pone su propia clave de API, las fotos o textos que se
+   mandan a ese servicio para leerlos; y, si conecta la opción de
+   compartir con otros teléfonos, la copia que se guarda en la nube que
+   él mismo configure (su propia cuenta).
 
 4. Actualizaciones. El autor puede publicar versiones nuevas cuando
    quiera y la aplicación las instala sola. El autor no está obligado a

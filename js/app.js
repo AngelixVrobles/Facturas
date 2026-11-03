@@ -10,7 +10,7 @@ const LIB = {
   qrgen: 'js/qr.js',
 };
 const PDF_CREATOR = 'Facturas de Proyectos';
-const APP_VERSION = '1.2.1';
+const APP_VERSION = '1.3.0';
 const SVG = (d) => `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ICON = {
   plus: SVG('<path d="M12 5v14M5 12h14"/>'),
@@ -448,10 +448,12 @@ function renderBanner(D) {
   else if (S.dbState === 'error') parts.push('<div class="note warn"><span class="grow">No se pudieron cargar tus datos. Cierra la app y vuelve a abrirla.</span></div>');
   if (S.updateReg) parts.push('<div class="note example"><span class="grow"><b>Hay una versión nueva.</b> Se instala sola la próxima vez que abras la app, o actualízala ahora.</span><span class="acts"><button type="button" class="btn sm" data-act="update-app">Actualizar</button></span></div>');
   if (isIOS() && !isStandalone() && !lsGet('facturas.installHintOff')) parts.push('<div class="note example"><span class="grow"><b>Instálala antes de empezar:</b> toca Compartir y luego <b>Agregar a pantalla de inicio</b>. En iPhone, lo que guardes en Safari no pasa a la app instalada.</span><span class="acts"><button type="button" class="btn sm" data-act="install-off">Entendido</button></span></div>');
+  { const ns = RT.sync.status(); if (ns.on && ns.code === 'auth') parts.push('<div class="note warn"><span class="grow"><b>La nube pide que vuelvas a entrar</b> para seguir compartiendo los datos con los otros teléfonos.</span><span class="acts"><button type="button" class="btn sm" data-act="settings">Entrar</button></span></div>'); }
   if (S.aiState === 'badkey') parts.push('<div class="note warn"><span class="grow">La clave de API no funciona, así que las facturas no se están leyendo solas.</span><span class="acts"><button type="button" class="btn sm" data-act="settings">Revisar</button></span></div>');
   const last = Number(lsGet('facturas.lastBackup')) || 0;
   const snooze = Number(lsGet('facturas.backupSnooze')) || 0;
-  if (S.dbState === 'ready' && S.invoices.length && Date.now() - last > 7 * 864e5 && Date.now() > snooze) {
+  const synced = (() => { const ns = RT.sync.status(); return ns.on && ns.at && Date.now() - ns.at < 7 * 864e5; })(); // con la nube al día, el recordatorio no hace falta
+  if (S.dbState === 'ready' && S.invoices.length && !synced && Date.now() - last > 7 * 864e5 && Date.now() > snooze) {
     parts.push(`<div class="note warn"><span class="grow"><b>${last ? 'Haz un respaldo:' : 'Todavía no tienes respaldo.'}</b> Tus facturas solo están en este teléfono. Guarda una copia en iCloud Drive o en tu computadora.</span><span class="acts"><button type="button" class="btn sm" data-act="backup">Respaldar ahora</button><button type="button" class="btn sm ghost" data-act="backup-later">Mañana</button></span></div>`);
   }
   const el = $('#banner');
@@ -841,9 +843,11 @@ async function openSettings() {
         <label class="field full check-row"><input type="checkbox" id="st-oc-qr"${st.orderQr !== false ? ' checked' : ''}><span>Poner un código QR en la orden. Así, al agregar con <b>+</b> la foto de la orden firmada, la app la reconoce y la adjunta sola a su orden.</span></label>
       </div>
       <h3 class="h2">Respaldo</h3>
-      <p class="hint">Tus facturas solo están en este teléfono. Descarga un respaldo cada semana y guárdalo en iCloud Drive o en tu computadora. ${last ? 'Último respaldo: ' + esc(fmtDate(new Date(last).toISOString().slice(0, 10))) + '.' : 'Todavía no has hecho ninguno.'}</p>
+      <p class="hint">${RT.sync.status().on ? "Tus datos están en este teléfono y en la nube del equipo. Igual conviene un respaldo de vez en cuando:" : "Tus facturas solo están en este teléfono."} Descarga un respaldo cada semana y guárdalo en iCloud Drive o en tu computadora. ${last ? 'Último respaldo: ' + esc(fmtDate(new Date(last).toISOString().slice(0, 10))) + '.' : 'Todavía no has hecho ninguno.'}</p>
       <div class="actions"><button type="button" class="btn" data-act="backup">${ICON.down} Descargar respaldo</button><button type="button" class="btn" data-act="restore">Restaurar un respaldo</button></div>
       <div id="restore-box" hidden></div>
+      <h3 class="h2">Compartir con otros teléfonos (prueba)</h3>
+      <div id="nube-box" data-k="${nubeKey(RT.sync.status())}">${nubeBoxHTML()}</div>
       <p class="usage" id="st-usage">Calculando espacio…</p>
       <p class="usage">Versión ${APP_VERSION}. Se actualiza sola.<br>© 2026 AngelixVrobles. Uso gratuito; no se permite venderla ni copiarla sin permiso del autor.</p>
     </div>
@@ -855,6 +859,87 @@ async function openSettings() {
     const el = $('#st-usage');
     if (el) el.textContent = `${plural(u.files || 0, 'archivo', 'archivos')} · ${fmtBytes(u.bytes)}${isNum(u.maxBytes) ? ` (el navegador permite hasta ${fmtBytes(u.maxBytes)})` : ''}${persisted ? ' · protegido contra borrado automático' : ''}.`;
   } catch (e) { const el = $('#st-usage'); if (el) el.textContent = ''; }
+}
+
+/* ---------- compartir con otros teléfonos (nube del equipo) ---------- */
+const nubeKey = (s) => `${s.on}|${s.code === 'auth'}`;
+function relTime(ms) {
+  if (!ms) return '';
+  const sec = Math.round((Date.now() - ms) / 1000);
+  if (sec < 45) return 'hace un momento';
+  if (sec < 3600) return `hace ${Math.max(1, Math.round(sec / 60))} min`;
+  const d = new Date(ms);
+  const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  return `el ${fmtDate(day)} a las ${d.toLocaleTimeString('es-DO', { hour: 'numeric', minute: '2-digit' })}`;
+}
+function nubeLine(s) {
+  const pend = s.pendingDocs || s.pendingFiles ? ` Falta subir: ${[s.pendingDocs ? plural(s.pendingDocs, 'cambio', 'cambios') : '', s.pendingFiles ? plural(s.pendingFiles, 'archivo', 'archivos') : ''].filter(Boolean).join(' y ')}.` : '';
+  if (s.status === 'syncing') return esc(s.progress || 'Poniéndose al día…');
+  if (s.status === 'error') return esc(s.error + pend);
+  if (s.status === 'ok') return esc(`Al día (${relTime(s.at)}).${pend}`);
+  return esc('Conectado.' + pend);
+}
+function nubeBoxHTML() {
+  const s = RT.sync.status();
+  if (!s.on) {
+    return `<p class="hint">Conecta tu teléfono y el del dueño a la nube del equipo para que los dos vean lo mismo: lo que agregas aquí le aparece solo, y al revés. Cada teléfono sigue funcionando sin internet y se pone al día cuando hay conexión. La nube se crea una sola vez; los pasos están en la guía de la app.</p>
+      <div class="fields">
+        <div class="field full"><label for="nb-code">Datos de conexión</label><textarea id="nb-code" rows="2" spellcheck="false" autocapitalize="off" placeholder="Pega el código FACTURAS-NUBE que te mandaron, o la URL del proyecto"></textarea></div>
+        <div class="field full"><label for="nb-key">Clave pública del proyecto (solo si pegaste la URL)</label><input id="nb-key" spellcheck="false" autocapitalize="off" autocomplete="off"></div>
+        <div class="field"><label for="nb-email">Correo</label><input id="nb-email" type="email" inputmode="email" autocapitalize="off" autocomplete="username" spellcheck="false"></div>
+        <div class="field"><label for="nb-pass">Contraseña</label><input id="nb-pass" type="password" autocomplete="current-password"></div>
+      </div>
+      <div class="actions"><button type="button" class="btn primary" data-act="nube-connect">Conectar este teléfono</button></div>
+      <p class="usage" id="nb-msg"></p>`;
+  }
+  const relog = s.code === 'auth' ? `<div class="fields"><div class="field full"><label for="nb-pass">Contraseña de ${esc(s.email)}</label><input id="nb-pass" type="password" autocomplete="current-password"></div></div><div class="actions"><button type="button" class="btn primary" data-act="nube-relogin">Volver a entrar</button></div>` : '';
+  return `<p class="nube-line ${esc(s.status)}" id="nb-status">${nubeLine(s)}</p>
+    <p class="hint">Conectado como <b>${esc(s.email)}</b>. Lo que se agrega o cambia en un teléfono les aparece a los demás conectados.</p>
+    ${relog}
+    <div class="actions"><button type="button" class="btn" data-act="nube-sync">Sincronizar ahora</button><button type="button" class="btn" data-act="nube-share">${ICON.share} Datos para otro teléfono</button></div>
+    <div><button type="button" class="btn danger sm" data-act="nube-off">Desconectar este teléfono</button></div>
+    <div id="nb-confirm" hidden></div>
+    <p class="usage" id="nb-msg"></p>`;
+}
+function refreshNubeBox(s) {
+  const box = $('#nube-box');
+  if (!box) return;
+  if (box.dataset.k !== nubeKey(s)) { box.dataset.k = nubeKey(s); box.innerHTML = nubeBoxHTML(); return; }
+  const line = $('#nb-status');
+  if (line) { line.className = 'nube-line ' + s.status; line.innerHTML = nubeLine(s); }
+}
+async function nubeConnect(btn) {
+  const msg = $('#nb-msg');
+  const raw = $('#nb-code').value.trim();
+  const code = RT.sync.parseShareCode(raw);
+  const url = code ? code.url : raw;
+  const key = code ? code.key : $('#nb-key').value.trim();
+  const email = $('#nb-email').value.trim(), password = $('#nb-pass').value;
+  if (!url || !key || !email || !password) { msg.textContent = 'Faltan datos: el código (o la URL y la clave), el correo y la contraseña.'; return; }
+  btn.disabled = true;
+  msg.textContent = 'Conectando…';
+  try {
+    await RT.sync.connect({ url, key, email, password });
+    toast('Conectado. Los datos se están poniendo al día.');
+  } catch (e) {
+    if (msg.isConnected) msg.textContent = { auth: 'El correo o la contraseña no son correctos, o falta crear ese usuario en la nube.', offline: 'No se pudo llegar a la nube. Revisa el internet y la URL.', bad_input: 'Faltan datos.' }[e && e.code] || 'No se pudo conectar. Revisa la URL y la clave.';
+    btn.disabled = false;
+  }
+}
+async function nubeRelogin(btn) {
+  const pass = $('#nb-pass') ? $('#nb-pass').value : '';
+  const msg = $('#nb-msg');
+  if (!pass) { if (msg) msg.textContent = 'Escribe la contraseña.'; return; }
+  btn.disabled = true;
+  try { await RT.sync.relogin(pass); toast('Listo, conectado otra vez.'); } catch (e) { if (msg) msg.textContent = e && e.code === 'offline' ? 'Sin internet.' : 'La contraseña no es correcta.'; btn.disabled = false; }
+}
+async function nubeShare() {
+  const code = RT.sync.shareCode();
+  let ok = false;
+  try { await navigator.clipboard.writeText(code); ok = true; } catch (e) { ok = false; }
+  if (ok) toast('Copiado. Mándalo por WhatsApp al otro teléfono.');
+  const msg = $('#nb-msg');
+  if (msg) msg.innerHTML = `${ok ? 'Copiado.' : 'Copia este código.'} En el otro teléfono: instala la app, ve a Ajustes → Compartir con otros teléfonos, pega el código y entra con el correo y la contraseña de esa persona. El código no lleva tu contraseña.<span class="nube-code">${esc(code)}</span>`;
 }
 
 /* ---------- archivo listo para compartir o guardar ---------- */
@@ -2181,7 +2266,7 @@ async function restoreBackup(file) {
     S.restoreFile = { docs: meta.docs, files, exportedAt: meta.exportedAt };
     if (box) {
       box.hidden = false;
-      box.innerHTML = `<div class="confirm"><p>Este respaldo es del ${esc(fmtDate(String(meta.exportedAt || '').slice(0, 10)) || 'día desconocido')} y tiene ${plural(invN, 'factura', 'facturas')}${ordN ? ' y ' + plural(ordN, 'orden de compra', 'órdenes de compra') : ''}. Al restaurarlo se <b>reemplaza todo</b> lo que hay ahora en la app.</p><div class="actions"><button type="button" class="btn danger solid" data-act="restore-yes">Reemplazar y restaurar</button><button type="button" class="btn" data-act="restore-no">Cancelar</button></div></div>`;
+      box.innerHTML = `<div class="confirm"><p>Este respaldo es del ${esc(fmtDate(String(meta.exportedAt || '').slice(0, 10)) || 'día desconocido')} y tiene ${plural(invN, 'factura', 'facturas')}${ordN ? ' y ' + plural(ordN, 'orden de compra', 'órdenes de compra') : ''}. Al restaurarlo se <b>reemplaza todo</b> lo que hay ahora en la app.${RT.sync.status().on ? ' Como este teléfono está conectado a la nube, lo restaurado también se sube y les llega a los otros teléfonos.' : ''}</p><div class="actions"><button type="button" class="btn danger solid" data-act="restore-yes">Reemplazar y restaurar</button><button type="button" class="btn" data-act="restore-no">Cancelar</button></div></div>`;
     }
   } catch (e) {
     console.error(e);
@@ -2259,6 +2344,13 @@ function onClick(e) {
     case 'order-fill': fillOrderFromMessage(t, null); break;
     case 'order-fill-photo': $('#fill-photo-input').click(); break;
     case 'link-order': linkOrder(id, t.dataset.order); break;
+    case 'nube-connect': nubeConnect(t); break;
+    case 'nube-relogin': nubeRelogin(t); break;
+    case 'nube-sync': RT.sync.syncNow(); break;
+    case 'nube-share': nubeShare(); break;
+    case 'nube-off': { const b = $('#nb-confirm'); if (b) { b.hidden = false; b.innerHTML = '<div class="confirm"><p>¿Desconectar este teléfono de la nube? Sus datos se quedan aquí, pero ya no se ponen al día con los otros teléfonos.</p><div class="actions"><button type="button" class="btn danger solid" data-act="nube-off-yes">Desconectar</button><button type="button" class="btn" data-act="nube-off-no">Cancelar</button></div></div>'; } break; }
+    case 'nube-off-yes': RT.sync.disconnect(); toast('Este teléfono ya no se sincroniza. Sus datos se quedan aquí.'); break;
+    case 'nube-off-no': { const b = $('#nb-confirm'); if (b) b.hidden = true; break; }
     case 'itbis18': {
       const v = Number(t.dataset.v);
       if (S.sheet && S.sheet.type === 'inv' && S.sheet.id === id && S.sheet.dirty) { if ($('#f-itbis')) $('#f-itbis').value = String(v); const m = t.closest('.msg'); if (m) m.remove(); }
@@ -2464,6 +2556,7 @@ function subscribe() {
 }
 function boot() {
   bind();
+  RT.sync.onChange((s) => { refreshNubeBox(s); scheduleRender(); });
   renderAll();
   RT.use('db').then((d) => {
     db = d;

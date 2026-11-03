@@ -347,6 +347,11 @@ details.edit .fields { padding: 12px 14px 14px; }
 .todo-row .btn { flex: none; }
 .focus-line { display: flex; align-items: center; gap: 10px; background: var(--pend-bg); border-radius: 11px; padding: 8px 12px; font-size: 14px; }
 .focus-line .grow { flex: 1; min-width: 0; }
+.nube-line { margin: 0; font-size: 14.5px; font-weight: 650; }
+.nube-line.ok { color: var(--paid); }
+.nube-line.error { color: var(--warn); }
+.nube-line.syncing { color: var(--pend); }
+.nube-code { display: block; margin-top: 6px; font: 12px/1.4 var(--font-data); word-break: break-all; background: var(--surface-2); border-radius: 8px; padding: 8px; color: var(--ink); }
 .check-row { display: flex; flex-direction: row; align-items: flex-start; gap: 10px; font-size: 15px; cursor: pointer; }
 .check-row input { width: 20px; height: 20px; margin: 1px 0 0; flex: none; accent-color: var(--accent); }
 /* En la hoja que se desplaza nada se encoge: sin esto la vista previa de la factura (overflow: hidden) quedaba en 0 px. */

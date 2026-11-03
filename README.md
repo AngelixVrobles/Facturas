@@ -56,10 +56,39 @@ En Android: Chrome → menú → **Instalar app**.
 
 ## Dónde quedan los datos
 
-- En el propio teléfono, en el almacenamiento del navegador (IndexedDB). No hay servidor ni nube.
+- En el propio teléfono, en el almacenamiento del navegador (IndexedDB). Si conectas los teléfonos a la nube del equipo (ver *Compartir los datos entre teléfonos*), también se guarda una copia ahí.
 - **Respaldo:** Ajustes → **Descargar respaldo** genera un `.zip` con los datos y los archivos (facturas, órdenes y sus copias firmadas). Guárdalo en iCloud Drive o en la computadora. Se recupera con **Restaurar un respaldo**, que reemplaza todo. La app recuerda hacerlo cada 7 días.
 - Si se borra la app o los datos de Safari, o se pierde el teléfono, sin respaldo se pierde la información.
 - Solo salen del teléfono las fotos de facturas de papel y los pedidos (mensaje o foto) que se mandan a la API para leerlos (si configuras la clave), y los archivos que tú compartas.
+
+## Compartir los datos entre teléfonos (prueba)
+
+Con esto, lo que se agrega o cambia en un teléfono (facturas con sus fotos, órdenes, pagos, proyectos y los datos de la empresa) les aparece solo a los demás teléfonos conectados, por ejemplo al del dueño. Cada teléfono sigue guardando todo en sí mismo y funcionando sin internet; cuando hay conexión, sube lo suyo y baja lo de los demás (al abrir la app, cada 30 segundos mientras está abierta y después de cada cambio).
+
+La nube es una cuenta de [Supabase](https://supabase.com) a nombre de la empresa. Se crea una sola vez:
+
+1. Crea una cuenta en supabase.com y un proyecto nuevo (por ejemplo `facturas`), con una contraseña fuerte para la base de datos y la región más cercana (por ejemplo, *East US*).
+2. En el proyecto, abre **SQL Editor**, pega todo el contenido de [`nube/supabase.sql`](nube/supabase.sql) y toca **Run**. Crea la tabla de los datos, la carpeta privada de los archivos y los permisos: solo entran los usuarios que tú crees.
+3. En **Authentication**:
+   - En la configuración de acceso (*Sign In / Providers*), apaga **Allow new users to sign up**, para que nadie más pueda crearse una cuenta.
+   - En **Users → Add user → Create new user**, crea un usuario para ti y otro para el dueño, cada uno con su correo y su contraseña. Marca **Auto Confirm User**.
+4. Copia la **URL del proyecto** (`https://….supabase.co`) y la **clave pública** (*publishable* o *anon public*). Están en el botón **Connect** del proyecto o en *Project Settings → API Keys*. Esa clave puede ir en el teléfono: lo que protege los datos son los usuarios y los permisos del paso 2. La clave secreta (*secret* o *service_role*) no se pone nunca en la app.
+
+En los teléfonos:
+
+1. En tu teléfono: **Ajustes → Compartir con otros teléfonos**. Pega la URL, la clave pública, tu correo y tu contraseña, y toca **Conectar este teléfono**. La primera vez sube todo lo que ya tienes.
+2. Toca **Datos para otro teléfono** y manda el código por WhatsApp al dueño. El código lleva la URL y la clave pública, no tu contraseña.
+3. En el teléfono del dueño: instala la app, ve a **Ajustes → Compartir con otros teléfonos**, pega el código y entra con su correo y su contraseña. Baja todo; las fotos llegan al abrirlas o poco después.
+
+Cómo se comporta:
+
+- Sin internet, los cambios quedan pendientes y se suben solos cuando vuelve la conexión. Ajustes muestra si está al día o cuántos cambios faltan por subir.
+- Si dos teléfonos cambian lo mismo antes de ponerse al día, queda el último cambio que llegó a la nube.
+- Si la sesión vence, la app la renueva sola. Si ya no se puede, avisa arriba y pide la contraseña otra vez.
+- **Desconectar este teléfono** deja de sincronizarlo; sus datos se quedan en él.
+- Conviene conectar el teléfono del dueño cuando todavía está vacío. Y que las órdenes las haga una sola persona, o con internet, para que los números no se repitan.
+- La clave de la lectura automática no se comparte: cada teléfono usa la suya, si la tiene.
+- Plan gratis de Supabase (según su página al momento de escribir esto; revísalo): base de datos de unos 500 MB y 1 GB para archivos, y el proyecto se pausa si pasa una semana sin usarse. Si se llena, hay planes de pago.
 
 ## Lectura automática de facturas de papel y pedidos (opcional)
 
@@ -78,7 +107,7 @@ En Android: Chrome → menú → **Instalar app**.
 
 ## Actualizar la app
 
-Al cambiar archivos, sube también `sw.js` con un número nuevo en `VERSION` (por ejemplo `facturas-1.2.2`). Cada teléfono instala la versión nueva solo, al abrir la app o al volver a ella, siempre que no se esté llenando nada (si hay una hoja abierta, espera a que se cierre). Después avisa «La app se actualizó sola». Actualizar no cuesta nada: no pasa por la App Store.
+Al cambiar archivos, sube también `sw.js` con un número nuevo en `VERSION` (por ejemplo `facturas-1.3.1`). Cada teléfono instala la versión nueva solo, al abrir la app o al volver a ella, siempre que no se esté llenando nada (si hay una hoja abierta, espera a que se cierre). Después avisa «La app se actualizó sola». Actualizar no cuesta nada: no pasa por la App Store.
 
 Cada versión que se sube les llega a todos los que usan la app a la vez: hay que probarla antes de subirla.
 
@@ -90,7 +119,8 @@ Cada versión que se sube les llega a todos los que usan la app a la vez: hay qu
 | `js/app.js` | Lógica de la app: facturas, órdenes de compra, pagos, PDF, Excel y respaldos |
 | `js/rd.js` | NCF y e-NCF, RNC, código QR y XML de la DGII |
 | `js/qr.js` | Código QR de cada orden de compra |
-| `js/runtime.js` | Almacenamiento en el teléfono y lectura de facturas y pedidos por API |
+| `js/runtime.js` | Almacenamiento en el teléfono, sincronización con la nube del equipo y lectura de facturas y pedidos por API |
+| `nube/supabase.sql` | Lo que se corre una vez para crear la nube del equipo |
 | `js/xlsx-zip.js` | Archivos Excel y `.zip` |
 | `sw.js` | Funcionamiento sin internet |
 | `manifest.webmanifest`, `icons/` | Instalación como app |
@@ -112,6 +142,6 @@ Los textos de las licencias de las librerías y de las fuentes están en `vendor
 
 ## Límites conocidos
 
-- Cada teléfono tiene sus propios datos: no se sincronizan entre dispositivos. Para pasarlos de uno a otro, usa el respaldo.
+- Sin conectar a la nube, cada teléfono tiene sus propios datos. Para pasarlos de uno a otro, usa el respaldo o la nube del equipo.
 - No consulta a la DGII por su cuenta: el enlace del QR abre la consulta oficial para verificar.
-- Está pensada para el trabajo de una persona. Para varios usuarios con permisos y respaldo central hace falta un servidor.
+- La sincronización entre teléfonos está en prueba: todos los usuarios conectados pueden ver y cambiar todo (no hay permisos por persona), no guarda un historial de cambios y, si dos cambian lo mismo a la vez, queda el último.
