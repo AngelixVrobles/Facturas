@@ -10,7 +10,7 @@ const LIB = {
   qrgen: 'js/qr.js',
 };
 const PDF_CREATOR = 'Facturas de Proyectos';
-const APP_VERSION = '1.3.1';
+const APP_VERSION = '1.3.2';
 const SVG = (d) => `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ICON = {
   plus: SVG('<path d="M12 5v14M5 12h14"/>'),
@@ -73,7 +73,7 @@ const DEFAULT_ORDER_NOTE = 'Toda factura recibida por compras deberá estar acom
 
 const S = {
   tab: 'facturas', filter: 'pendientes', projectFilter: 'all', search: '', paymentId: null,
-  projects: [], invoices: [], payments: [], orders: [], settings: {}, got: { projects: false, invoices: false, payments: false, orders: false }, orderFilter: 'todas', orderSearch: '', focus: null,
+  projects: [], invoices: [], payments: [], orders: [], settings: {}, got: { projects: false, invoices: false, payments: false, orders: false }, orderFilter: 'todas', orderSearch: '', focus: null, invOrder: 'all',
   dbState: 'loading', aiState: 'ok', queue: [], sheet: null, payDel: false, busyPdf: false, pdfMsg: '',
   updateReg: null, updating: false, ready: null, restoreFile: null,
 };
@@ -295,7 +295,8 @@ function visibleList(D) {
   let list = D.invoices.filter(inProject);
   if (S.focus) list = list.filter((i) => i.status !== 'pagada' && (S.focus === 'revisar' ? reviewFlags(i, D).some((f) => f !== 'Sin orden') : needsOrder(i, D)));
   else list = list.filter((i) => S.filter === 'todas' || GROUP_OF[i.status] === S.filter);
-  if (q) list = list.filter((i) => norm([i.supplier, i.number, i.rnc, i.concept, i.ref, i.project && i.project.name, i.fileName].join(' ')).includes(q));
+  if (!S.focus && D.orders.length && S.invOrder !== 'all') list = list.filter((i) => (S.invOrder === 'con' ? !!i.order : !i.order));
+  if (q) list = list.filter((i) => norm([i.supplier, i.number, i.rnc, i.concept, i.ref, i.project && i.project.name, i.fileName, i.order ? orderNo(i.order) : ''].join(' ')).includes(q));
   return list.sort(sortByDateDesc);
 }
 
@@ -487,6 +488,15 @@ function cardHTML(i, D, opts = {}) {
   if (!opts.hideStatus) tags.push(`<span class="pill ${i.status}">${INV_LABEL[i.status]}</span>`);
   if (i.fiscal === 'qr' || i.fiscal === 'xml') tags.push(`<span class="pill official">${i.fiscal === 'xml' ? 'XML' : 'QR'} DGII</span>`);
   if (reading) tags.push('<span class="pill reading">Leyendo…</span>');
+  if (D.orders.length) {
+    if (i.order) {
+      const st = i.order.status;
+      const cls = st === 'autorizada' ? 'ok' : st === 'anulada' ? 'bad' : 'pend';
+      tags.push(`<span class="pill oc ${cls}" title="Orden de compra ${esc(orderNo(i.order))}: ${esc(ORDER_LABEL[st] || '')}"><b>${esc(orderNo(i.order))}</b>${st === 'autorizada' ? '' : `<span> ${esc((ORDER_LABEL[st] || '').toLowerCase())}</span>`}</span>`);
+    }
+    else if (i.noOrder) tags.push('<span class="pill nooc">No lleva orden</span>');
+    else if (!needsOrder(i, D)) tags.push('<span class="pill nooc">Sin orden</span>');
+  }
   for (const r of reviewFlags(i, D)) tags.push(`<span class="pill warn">${esc(r)}</span>`);
   return `<button type="button" class="inv" data-act="open-inv" data-id="${esc(i.id)}">${thumbHTML(i)}<span class="inv-main"><span class="inv-top"><span class="supplier${i.supplier ? '' : ' muted'}">${esc(name)}</span><span class="amount">${esc(money(i.amount, i.currency))}</span></span><span class="inv-meta">${esc(meta)}</span><span class="tags">${tags.join('')}</span></span></button>`;
 }
@@ -503,6 +513,14 @@ function renderFacturas(D) {
   if (noneN || S.projectFilter === 'none') chips.push(`<button type="button" class="chip" data-act="projf" data-p="none" aria-pressed="${S.projectFilter === 'none'}"><i class="dot ring"></i><span>Sin proyecto</span></button>`);
   for (const p of D.projects) chips.push(`<button type="button" class="chip" data-act="projf" data-p="${esc(p.id)}" aria-pressed="${S.projectFilter === p.id}"><i class="dot" style="--c:${p.color}"></i><span>${esc(p.name)}</span></button>`);
   $('#f-chips').innerHTML = chips.join('');
+  const och = $('#f-ochips');
+  if (D.orders.length && !S.focus) {
+    const pool = base.filter((i) => S.filter === 'todas' || GROUP_OF[i.status] === S.filter);
+    const con = pool.filter((i) => i.order).length;
+    och.hidden = false;
+    och.innerHTML = [['all', 'Todas', pool.length], ['con', 'Con orden', con], ['sin', 'Sin orden', pool.length - con]]
+      .map(([k, label, n]) => `<button type="button" class="chip" data-act="invorder" data-o="${k}" aria-pressed="${S.invOrder === k}"><span>${label}</span><span class="n">${n}</span></button>`).join('');
+  } else { och.hidden = true; och.innerHTML = ''; }
 
   const q = norm(S.search);
   const list = visibleList(D);
@@ -522,7 +540,9 @@ function renderFacturas(D) {
   }
   if (!list.length) {
     const what = { pendientes: 'pendientes', tramite: 'en trámite', pagadas: 'pagadas', todas: '' }[S.filter];
-    el.innerHTML = `<div class="empty"><p>${q ? 'Nada coincide con tu búsqueda.' : `No hay facturas ${what}${S.projectFilter !== 'all' ? ' en este proyecto' : ''}.`}</p></div>`;
+    const oc = !S.focus && D.orders.length && S.invOrder !== 'all' ? (S.invOrder === 'con' ? 'con orden de compra' : 'sin orden de compra') : '';
+    const proj = S.projectFilter !== 'all' ? 'en este proyecto' : '';
+    el.innerHTML = `<div class="empty"><p>${q ? 'Nada coincide con tu búsqueda.' : ['No hay facturas', what, oc, proj].filter(Boolean).join(' ') + '.'}</p></div>`;
     return;
   }
   if (S.projectFilter === 'all') {
@@ -1980,7 +2000,7 @@ async function buildPackage(pay, D, onProgress) {
   ensure(70); T('Detalle', M, y, 11.5, bold); y -= 20; head();
   invs.forEach((i, n) => {
     ensure(20, head);
-    const vals = [String(n + 1), i.project ? i.project.name : 'Sin proyecto', i.supplier || 'Sin nombre', RD.normRnc(i.rnc) || '-', RD.normNcf(i.number) || '-', i.order ? orderNo(i.order) : '-', fmtDmy(i.date) || '-', isNum(i.itbis) ? money(i.itbis, i.currency) : '-', money(i.amount, i.currency)];
+    const vals = [String(n + 1), i.project ? i.project.name : 'Sin proyecto', i.supplier || 'Sin nombre', RD.normRnc(i.rnc) || '-', RD.normNcf(i.number) || '-', i.order ? orderNo(i.order) : !D.orders.length ? '-' : i.noOrder ? 'No lleva' : 'Sin OC', fmtDmy(i.date) || '-', isNum(i.itbis) ? money(i.itbis, i.currency) : '-', money(i.amount, i.currency)];
     cols.forEach((c, k) => { const t = fit(vals[k], font, 8, c.w); if (c.xr) R(t, c.xr, y, 8); else T(t, c.x, y, 8); });
     y -= 7; hr(y, C.line, 0.5); y -= 12;
   });
@@ -2178,15 +2198,21 @@ function invoicesWorkbook({ heading, scope, invs, D, isPayment }) {
   }
   r++;
   rs[r++] = [{ v: 'Control', s: XS.head }, { v: 'Facturas', s: XS.headR }];
+  // [texto, cantidad, en rojo]: "Sin orden de compra" va en rojo solo si alguna la debía llevar.
+  const sinOc = list.filter((i) => !i.order && !i.noOrder);
   const ctl = [
-    ['Sin orden de compra', list.filter((i) => needsOrder(i, D)).length],
+    ...(D.orders.length ? [
+      ['Con orden de compra', list.filter((i) => i.order).length, false],
+      ['Sin orden de compra', sinOc.length, sinOc.some((i) => needsOrder(i, D))],
+      ['Marcadas como que no llevan orden', list.filter((i) => !i.order && i.noOrder).length, false],
+    ] : []),
     ['Con la orden todavía sin firmar', list.filter((i) => i.order && i.order.status !== 'autorizada').length],
     ['Con otros avisos por revisar', list.filter((i) => reviewFlags(i, D).some((f) => f !== 'Sin orden')).length],
     ['De consumo (no sirven para crédito fiscal)', list.filter((i) => RD.parseNcf(i.number).consumo).length],
     ['Electrónicas verificables (QR o XML de la DGII)', list.filter((i) => i.fiscal === 'qr' || i.fiscal === 'xml').length],
     ['Proveedores distintos', supplierGroups(list).length],
   ];
-  for (const [label, n] of ctl) rs[r++] = [{ v: label }, { v: n, s: n && /Sin orden|sin firmar|avisos|consumo/.test(label) ? XS.warn : XS.int }];
+  for (const [label, n, red] of ctl) rs[r++] = [{ v: label }, { v: n, s: n && (red ?? /sin firmar|avisos|consumo/.test(label)) ? XS.warn : XS.int }];
   sheets.push({ name: 'Resumen', xml: sheetXml(rs, { widths: [46, 12, 18, 18, 18], selected: true, footer }) });
 
   // Facturas: una fila por factura con todo su detalle.
@@ -2202,7 +2228,7 @@ function invoicesWorkbook({ heading, scope, invs, D, isPayment }) {
     { k: 'Fecha', w: 11, v: (i) => Dt(i.date) },
     { k: 'Concepto', w: 36, v: (i) => ({ v: i.concept || '' }) },
     { k: 'Orden de compra', w: 15, v: (i) => ({ v: i.order ? orderNo(i.order) : '' }) },
-    { k: 'Estado de la orden', w: 16, v: (i) => (i.order ? { v: ORDER_LABEL[i.order.status] || '', s: i.order.status === 'autorizada' ? undefined : XS.warn } : i.noOrder ? { v: 'No lleva' } : needsOrder(i, D) ? { v: 'Falta', s: XS.warn } : { v: '' }) },
+    { k: 'Estado de la orden', w: 16, v: (i) => (i.order ? { v: ORDER_LABEL[i.order.status] || '', s: i.order.status === 'autorizada' ? undefined : XS.warn } : !D.orders.length ? { v: '' } : i.noOrder ? { v: 'No lleva' } : { v: 'Sin orden', s: needsOrder(i, D) ? XS.warn : undefined }) },
     { k: 'Solicitado por', w: 20, v: (i) => ({ v: (i.order && i.order.requestedBy) || '' }) },
     { k: 'Referencia', w: 14, v: (i) => ({ v: i.ref || '' }) },
     { k: 'Subtotal', w: 15, money: true, raw: subOf, v: (i) => M(subOf(i), i.currency) },
@@ -2285,7 +2311,8 @@ function exportListExcel() {
   if (!invs.length) { toast('No hay facturas en esta lista.'); return; }
   const heading = { pendientes: 'Facturas pendientes', tramite: 'Facturas en trámite', pagadas: 'Facturas pagadas', todas: 'Todas las facturas' }[S.filter] || 'Facturas';
   const proj = S.projectFilter === 'all' ? 'Todos los proyectos' : S.projectFilter === 'none' ? 'Sin proyecto' : (D.projById.get(S.projectFilter) || {}).name || 'Proyecto';
-  const scope = [proj, S.search.trim() ? `Búsqueda: "${S.search.trim()}"` : ''].filter(Boolean).join(' · ');
+  const ocScope = D.orders.length && !S.focus && S.invOrder !== 'all' ? (S.invOrder === 'con' ? 'Con orden de compra' : 'Sin orden de compra') : '';
+  const scope = [proj, ocScope, S.search.trim() ? `Búsqueda: "${S.search.trim()}"` : ''].filter(Boolean).join(' · ');
   deliverFile(invoicesWorkbook({ heading, scope, invs, D, isPayment: false }), fileSafe(`${heading} - ${proj} - ${todayISO()}`) + '.xlsx');
 }
 
@@ -2349,6 +2376,7 @@ function onClick(e) {
   switch (a) {
     case 'tab': S.tab = t.dataset.tab; if (S.tab !== 'pagos') S.paymentId = null; S.payDel = false; renderAll(); window.scrollTo(0, 0); break;
     case 'filter': S.filter = t.dataset.f; S.focus = null; renderAll(); break;
+    case 'invorder': S.invOrder = t.dataset.o; renderAll(); break;
     case 'projf': S.projectFilter = t.dataset.p; renderAll(); break;
     case 'add': pickFiles(); break;
     case 'open-inv': openInvoice(id); break;

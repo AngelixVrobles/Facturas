@@ -361,6 +361,13 @@ details.edit .fields { padding: 12px 14px 14px; }
 .o-pick b, .o-pick small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .o-pick small { color: var(--muted); font: 12px var(--font-data); }
 .o-pick .num { font: 600 14px var(--font-data); white-space: nowrap; }
+.pill.oc { gap: .4em; }
+.pill.oc b { font-family: var(--font-data); font-weight: 600; }
+.pill.oc.ok { color: var(--paid); background: var(--paid-bg); }
+.pill.oc.pend { color: var(--pend); background: var(--pend-bg); }
+.pill.oc.bad { color: var(--warn); background: var(--warn-bg); }
+.pill.nooc { color: var(--muted); background: var(--surface-2); }
+.chip .n { font: 600 12.5px var(--font-data); opacity: .75; }
 .check-row { display: flex; flex-direction: row; align-items: flex-start; gap: 10px; font-size: 15px; cursor: pointer; }
 .check-row input { width: 20px; height: 20px; margin: 1px 0 0; flex: none; accent-color: var(--accent); }
 /* En la hoja que se desplaza nada se encoge: sin esto la vista previa de la factura (overflow: hidden) quedaba en 0 px. */
@@ -414,6 +421,7 @@ input[type="date"]::-webkit-calendar-picker-indicator { margin: 0 0 0 4px; paddi
     <div id="todo" hidden></div>
     <div class="seg" id="f-seg" role="group" aria-label="Estado de las facturas"></div>
     <div class="chips" id="f-chips" role="group" aria-label="Proyecto"></div>
+    <div class="chips" id="f-ochips" role="group" aria-label="Orden de compra" hidden></div>
     <label class="search-box">
       <span class="sr">Buscar facturas</span>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>
