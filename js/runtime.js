@@ -200,6 +200,12 @@
     });
   }
   function apiErr(e, A) {
+    // Causas que el usuario puede arreglar en la consola: se reconocen por el mensaje de la API.
+    const msg = String((e && e.message) || e || '');
+    if (/credit balance/i.test(msg)) return { code: 'no_credit', message: msg };
+    if (/anthropic-workspace-id|not scoped to a workspace/i.test(msg)) return { code: 'no_workspace', message: msg };
+    if (/CORS requests are not allowed/i.test(msg)) return { code: 'cors_blocked', message: msg };
+    if (A && A.NotFoundError && e instanceof A.NotFoundError && /model/i.test(msg)) return { code: 'bad_model', message: msg };
     if (A && e instanceof A.AuthenticationError) return { code: 'bad_key', message: e.message };
     if (A && e instanceof A.PermissionDeniedError) return { code: 'bad_key', message: e.message };
     if (A && e instanceof A.RateLimitError) return { code: 'rate_limited', message: e.message };

@@ -352,6 +352,15 @@ details.edit .fields { padding: 12px 14px 14px; }
 .nube-line.error { color: var(--warn); }
 .nube-line.syncing { color: var(--pend); }
 .nube-code { display: block; margin-top: 6px; font: 12px/1.4 var(--font-data); word-break: break-all; background: var(--surface-2); border-radius: 8px; padding: 8px; color: var(--ink); }
+.o-inv { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.o-inv .link { text-align: left; }
+.o-picks { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 12px; max-height: 340px; overflow-y: auto; }
+.o-pick { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; border: 0; border-top: 1px solid var(--line); background: var(--surface); color: var(--ink); text-align: left; font-size: 15px; }
+.o-pick:first-child { border-top: 0; }
+.o-pick span:first-child { display: flex; flex-direction: column; min-width: 0; }
+.o-pick b, .o-pick small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.o-pick small { color: var(--muted); font: 12px var(--font-data); }
+.o-pick .num { font: 600 14px var(--font-data); white-space: nowrap; }
 .check-row { display: flex; flex-direction: row; align-items: flex-start; gap: 10px; font-size: 15px; cursor: pointer; }
 .check-row input { width: 20px; height: 20px; margin: 1px 0 0; flex: none; accent-color: var(--accent); }
 /* En la hoja que se desplaza nada se encoge: sin esto la vista previa de la factura (overflow: hidden) quedaba en 0 px. */

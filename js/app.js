@@ -10,7 +10,7 @@ const LIB = {
   qrgen: 'js/qr.js',
 };
 const PDF_CREATOR = 'Facturas de Proyectos';
-const APP_VERSION = '1.3.0';
+const APP_VERSION = '1.3.1';
 const SVG = (d) => `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ICON = {
   plus: SVG('<path d="M12 5v14M5 12h14"/>'),
@@ -56,6 +56,17 @@ const SEGS = [['pendientes', 'Pendientes'], ['tramite', 'En trámite'], ['pagada
 const Q_LABEL = { espera: 'En espera', preparando: 'Preparando…', subiendo: 'Guardando…', leyendo: 'Leyendo la factura…', lista: 'Lista', qr: 'Lista: datos del QR de la DGII', xml: 'Lista: datos del XML', manual: 'Guardada; llena los datos', orden: 'Orden firmada', error: 'No se pudo agregar' };
 const CUR_PREFIX = { DOP: 'RD$', USD: 'US$', EUR: '€' };
 const ORDER_LABEL = { borrador: 'Borrador', enviada: 'Por firmar', autorizada: 'Firmada', anulada: 'Anulada' };
+// Por qué no se pudo usar la clave de API, en palabras del usuario (lo que se arregla en la consola).
+const AI_ERR = {
+  bad_key: 'La clave no es válida, venció o la desactivaron. Crea otra en la consola y pégala aquí.',
+  no_credit: 'La cuenta de API no tiene saldo. En la consola, entra a Billing (Facturación), compra créditos y vuelve a probar.',
+  no_workspace: 'La clave no está asignada a un espacio de trabajo. Crea una clave nueva y, al crearla, elige el workspace (por ejemplo «Facturas»).',
+  cors_blocked: 'La cuenta de API de la empresa no permite usarla desde el teléfono (tiene activada la retención cero de datos o el Compliance API).',
+  bad_model: 'La cuenta no tiene acceso a ese modelo. Elige otro en «Modelo» y vuelve a probar.',
+  rate_limited: 'La cuenta llegó a su límite de uso por ahora; intenta en unos minutos.',
+  offline: 'No hay internet en este momento.',
+};
+const AI_STOP = new Set(['bad_key', 'no_credit', 'no_workspace', 'cors_blocked', 'bad_model']);
 const ORDER_SEGS = [['porfirmar', 'Por firmar'], ['sinfactura', 'Sin factura'], ['completas', 'Completas'], ['todas', 'Todas']];
 const UNITS = ['Unidad', 'Funda', 'Saco', 'Galón', 'Cubeta', 'Caja', 'Rollo', 'Metro', 'Pie', 'Pulgada', 'Libra', 'Quintal', 'Plancha', 'Varilla', 'Tubo', 'Lámina', 'Juego', 'Par', 'Litro', 'm²', 'm³', 'Viaje', 'Servicio'];
 const DEFAULT_ORDER_NOTE = 'Toda factura recibida por compras deberá estar acompañada, como mínimo, de una fotocopia de la orden de compra debidamente autorizada y sellada. Esta orden debe presentarse junto con la factura para su recepción, verificación y trámite.';
@@ -449,7 +460,7 @@ function renderBanner(D) {
   if (S.updateReg) parts.push('<div class="note example"><span class="grow"><b>Hay una versión nueva.</b> Se instala sola la próxima vez que abras la app, o actualízala ahora.</span><span class="acts"><button type="button" class="btn sm" data-act="update-app">Actualizar</button></span></div>');
   if (isIOS() && !isStandalone() && !lsGet('facturas.installHintOff')) parts.push('<div class="note example"><span class="grow"><b>Instálala antes de empezar:</b> toca Compartir y luego <b>Agregar a pantalla de inicio</b>. En iPhone, lo que guardes en Safari no pasa a la app instalada.</span><span class="acts"><button type="button" class="btn sm" data-act="install-off">Entendido</button></span></div>');
   { const ns = RT.sync.status(); if (ns.on && ns.code === 'auth') parts.push('<div class="note warn"><span class="grow"><b>La nube pide que vuelvas a entrar</b> para seguir compartiendo los datos con los otros teléfonos.</span><span class="acts"><button type="button" class="btn sm" data-act="settings">Entrar</button></span></div>'); }
-  if (S.aiState === 'badkey') parts.push('<div class="note warn"><span class="grow">La clave de API no funciona, así que las facturas no se están leyendo solas.</span><span class="acts"><button type="button" class="btn sm" data-act="settings">Revisar</button></span></div>');
+  if (S.aiState && S.aiState !== 'ok') parts.push(`<div class="note warn"><span class="grow"><b>Las facturas no se están leyendo solas.</b> ${esc(AI_ERR[S.aiState === 'badkey' ? 'bad_key' : S.aiState] || AI_ERR.bad_key)}</span><span class="acts"><button type="button" class="btn sm" data-act="settings">Revisar</button></span></div>`);
   const last = Number(lsGet('facturas.lastBackup')) || 0;
   const snooze = Number(lsGet('facturas.backupSnooze')) || 0;
   const synced = (() => { const ns = RT.sync.status(); return ns.on && ns.at && Date.now() - ns.at < 7 * 864e5; })(); // con la nube al día, el recordatorio no hace falta
@@ -741,7 +752,7 @@ function openInvoice(id, keepScroll) {
         <div class="field"><label for="f-itbis">ITBIS</label><input id="f-itbis" class="mono" inputmode="decimal" maxlength="20" placeholder="0.00" value="${esc(amountInput(i.itbis))}" ${dis}></div>
         <div class="field"><label for="f-amt">Total a pagar</label><input id="f-amt" class="mono" inputmode="decimal" maxlength="20" placeholder="0.00" value="${esc(amountInput(i.amount))}" ${dis}></div>
         <div class="field full"><label for="f-con">Concepto</label><textarea id="f-con" maxlength="140" rows="2" ${dis}>${esc(i.concept || '')}</textarea></div>
-        <div class="field full"><label for="f-order">Orden de compra</label><select id="f-order" ${dis}><option value="">Sin orden</option>${orderOpts}</select></div>
+        <div class="field full"><label for="f-order">Orden de compra</label><select id="f-order" ${dis}><option value="">Sin orden</option>${orderOpts}</select>${i.order ? `<button type="button" class="link" data-act="open-order" data-id="${esc(i.order.id)}">Abrir ${esc(orderNo(i.order))}</button>` : ''}</div>
         <div class="field full"><label for="f-ref">Otra referencia (cubicación, contrato)</label><input id="f-ref" maxlength="60" placeholder="Opcional" value="${esc(i.ref || '')}" ${dis}></div>
       </div>
       ${delBtn}
@@ -828,7 +839,7 @@ async function openSettings() {
         <div class="field full"><label for="st-name">Elaboró (tu nombre)</label><input id="st-name" maxlength="80" value="${esc(st.preparedBy || '')}"></div>
       </div>
       <h3 class="h2">Lectura automática (opcional)</h3>
-      <p class="hint">Las facturas electrónicas se leen solas por su QR o su XML. Para que la app lea también las de papel y llene las órdenes desde el mensaje del pedido, pon una clave de API (se crea en platform.claude.com y se paga por uso). La clave se guarda solo en este teléfono y no va en los respaldos.</p>
+      <p class="hint">Las facturas electrónicas se leen solas por su QR o su XML. Para que la app lea también las de papel y llene las órdenes desde el mensaje del pedido, pon una clave de API (se crea en platform.claude.com y se paga por uso; al crearla, asígnala a un espacio de trabajo y elige que no venza; los pasos están en la guía de la app). La clave se guarda solo en este teléfono: no va en los respaldos ni se comparte con los otros teléfonos.</p>
       <div class="fields">
         <div class="field full"><label for="st-key">Clave de API</label><input id="st-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-…" value="${esc(ai.getKey())}"></div>
         <div class="field full"><label for="st-model">Modelo</label><select id="st-model">${models}</select></div>
@@ -1268,11 +1279,11 @@ async function readWithAI(invId, input) {
     out = await ai.json(buildPrompt(input.text, useImg), { images: useImg ? [input.image] : [], schema: AI_SCHEMA });
   } catch (e) {
     console.warn('lectura', e);
-    if (e && e.code === 'bad_key') { S.aiState = 'badkey'; scheduleRender(); }
+    if (e && AI_STOP.has(e.code)) { S.aiState = e.code === 'bad_key' ? 'badkey' : e.code; scheduleRender(); }
     await ref.update({ ai: e && e.code === 'no_key' ? 'off' : 'failed', aiErr: String((e && e.code) || '') }).catch(() => {});
     return 'failed';
   }
-  if (S.aiState === 'badkey') { S.aiState = 'ok'; scheduleRender(); }
+  if (S.aiState !== 'ok') { S.aiState = 'ok'; scheduleRender(); }
   const cur = S.invoices.find((x) => x.id === invId);
   if (!cur) return 'failed';
   const upd = parseAI(out, cur);
@@ -1476,7 +1487,7 @@ function openOrder(id, keepScroll, copyFrom) {
   const signedBox = o ? `<div class="card"><h2>Orden firmada y sellada</h2>${signed ? `<button type="button" class="preview" data-act="order-view-signed" data-id="${esc(o.id)}">${signedThumb ? `<img src="${esc(assetUrl(signedThumb))}" alt="">` : '<span class="ph">PDF</span>'}<span class="preview-tag">Ver</span></button>` : `<p class="hint">Cuando la firmen y la sellen, tómale una foto y adjúntala aquí${S.settings.orderQr !== false ? ', o agrégala con <b>+</b> desde Facturas: la app reconoce el código QR de la orden y la adjunta sola' : ''}. Esa copia es la que va con la factura en el PDF del pago.</p>`}<div class="actions">${signed ? `<button type="button" class="btn" data-act="order-share-signed" data-id="${esc(o.id)}">${ICON.share} Compartir la firmada</button>` : ''}${edit ? `<button type="button" class="btn" data-act="order-signed">${ICON.plus} ${signed ? 'Cambiar la copia firmada' : 'Adjuntar la orden firmada'}</button>` : ''}</div></div>` : '';
   const repeat = o && canEdit() ? `<div><button type="button" class="btn sm" data-act="order-repeat" data-id="${esc(o.id)}">Repetir esta orden</button></div>` : '';
   const copyNote = src ? `<div class="msg hint"><span>Copia de la orden <b>${esc(orderNo(src))}</b>. Revisa las cantidades antes de guardar.</span></div>` : '';
-  const invBox = invs.length ? `<div class="card"><h2>Facturas de esta orden</h2><div class="list">${invs.map((i) => `<button type="button" class="link" data-act="open-inv" data-id="${esc(i.id)}">${esc((i.supplier || 'Factura') + (i.number ? ' · ' + RD.normNcf(i.number) : '') + ' · ' + money(i.amount, i.currency))}</button>`).join('')}</div></div>` : '';
+  const invBox = o ? orderInvBoxHTML(o, D, edit) : '';
   const prevScroll = keepScroll && $('.sheet-b') ? $('.sheet-b').scrollTop : 0;
   const danger = o && canEdit() ? `<div>${invs.length ? (o.status !== 'anulada' ? '<button type="button" class="btn danger sm" data-act="order-annul">Anular orden</button>' : '') : `<button type="button" class="btn danger sm" data-act="order-del">${ICON.trash} Eliminar orden</button>`}</div><div id="o-confirm" hidden></div>` : '';
   openSheet(`<form id="order-form" data-id="${o ? esc(o.id) : ''}" autocomplete="off">${sheetHead(o ? esc(orderNo(o)) : 'Nueva orden de compra')}
@@ -1506,6 +1517,47 @@ function openOrder(id, keepScroll, copyFrom) {
     <div class="sheet-f">${edit ? '<button type="submit" class="btn">Guardar</button>' : ''}<button type="button" class="btn primary" data-act="order-pdf">${ICON.down} ${edit ? 'Guardar y sacar PDF' : 'Sacar PDF'}</button></div>
   </form>${dl('dl-units', uniqList([...UNITS, ...D.orders.flatMap((x) => (x.items || []).map((it) => it.unit))]))}${dl('dl-people', uniqList(D.orders.map((x) => x.requestedBy)))}${dl('dl-sups', uniqList([...D.orders.map((x) => x.supplier), ...S.invoices.map((x) => x.supplier)]))}${dl('dl-depts', uniqList(D.orders.map((x) => x.department)))}${dl('dl-items', uniqList(D.orders.flatMap((x) => (x.items || []).map((it) => it.desc))).slice(0, 400))}`, { type: 'order', id: o ? o.id : null, dirty: !!src, sig: o ? orderSig(o, D) : null });
   if (keepScroll && $('.sheet-b')) $('.sheet-b').scrollTop = prevScroll;
+}
+// Facturas de la orden: abrirlas, quitarlas, o enlazar una que llegó por separado.
+function orderInvBoxHTML(o, D, edit) {
+  const invs = D.invByOrder.get(o.id) || [];
+  const rows = invs.map((i) => `<div class="o-inv"><button type="button" class="link" data-act="open-inv" data-id="${esc(i.id)}">${esc((i.supplier || 'Factura') + (i.number ? ' · ' + RD.normNcf(i.number) : '') + ' · ' + money(i.amount, i.currency))}</button>${edit ? `<button type="button" class="btn ghost sm" data-act="order-unlink-inv" data-id="${esc(i.id)}" data-order="${esc(o.id)}">Quitar</button>` : ''}</div>`).join('');
+  const linkBtn = edit ? `<div><button type="button" class="btn sm" data-act="order-link-open" data-id="${esc(o.id)}">${ICON.plus} Enlazar una factura</button></div><div id="o-link-box" hidden></div>` : '';
+  if (!invs.length && !linkBtn) return '';
+  return `<div class="card" id="o-invs"><h2>Facturas de esta orden</h2>${invs.length ? `<div class="list">${rows}</div>` : '<p class="hint">Todavía no tiene facturas. Si la factura llegó por separado, enlázala aquí.</p>'}${linkBtn}</div>`;
+}
+function orderLinkResultsHTML(orderId, q) {
+  const D = derive();
+  const o = D.orderById.get(orderId);
+  if (!o) return '';
+  const same = (i) => sameName(o.supplier, i.supplier) || (!!i.rnc && (D.namesByRnc.get(i.rnc) || []).some((n) => sameName(o.supplier, n)));
+  const score = (i) => (same(i) ? 2 : 0) + (o.projectId && i.projectId === o.projectId ? 1 : 0);
+  const nq = norm(q);
+  let list = D.invoices.filter((i) => !i.orderId);
+  if (nq) list = list.filter((i) => norm([i.supplier, i.number, i.rnc, i.concept, i.project && i.project.name, isNum(i.amount) ? String(i.amount) : ''].join(' ')).includes(nq));
+  list.sort((a, b) => score(b) - score(a) || String(b.date || b.createdAt || '').localeCompare(String(a.date || a.createdAt || '')));
+  const rows = list.slice(0, 30).map((i) => `<button type="button" class="o-pick" data-act="order-link-inv" data-id="${esc(i.id)}" data-order="${esc(o.id)}"><span><b>${esc(i.supplier || 'Factura sin datos')}</b><small>${esc([i.number ? 'NCF ' + RD.normNcf(i.number) : '', fmtDate(i.date), i.project ? i.project.name : 'Sin proyecto'].filter(Boolean).join(' · '))}</small></span><span class="num">${esc(money(i.amount, i.currency))}</span></button>`).join('');
+  if (!rows) return `<p class="hint">${nq ? 'Ninguna factura sin orden coincide con la búsqueda.' : 'No hay facturas sin orden. Si la factura está en otra orden, cámbiala desde la factura.'}</p>`;
+  return `<div class="o-picks">${rows}</div>${list.length > 30 ? `<p class="usage">Se muestran 30 de ${list.length}; usa el buscador.</p>` : ''}`;
+}
+function openOrderLinkBox(orderId) {
+  const box = $('#o-link-box');
+  if (!box) return;
+  box.hidden = false;
+  box.innerHTML = `<div class="field"><label for="o-link-q">Facturas sin orden (primero las de este proveedor y esta obra)</label><input id="o-link-q" type="search" placeholder="Buscar proveedor, NCF o monto" autocomplete="off" data-order="${esc(orderId)}"></div><div id="o-link-results">${orderLinkResultsHTML(orderId, '')}</div>`;
+  box.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+// Después de enlazar o quitar: se redibuja la tarjeta de facturas (aunque haya cambios sin guardar en la orden).
+function refreshOrderInvBox(orderId) {
+  setTimeout(() => {
+    const card = $('#o-invs');
+    if (!card || !S.sheet || S.sheet.type !== 'order' || S.sheet.id !== orderId) return;
+    const D = derive();
+    const o = D.orderById.get(orderId);
+    if (!o) return;
+    card.outerHTML = orderInvBoxHTML(o, D, canEdit() && o.status !== 'anulada');
+    if (S.sheet) S.sheet.sig = S.sheet.dirty ? S.sheet.sig : orderSig(o, D);
+  }, 80);
 }
 function renumberItems() { $$('#o-items [data-row]').forEach((r, k) => { r.querySelector('.o-n').textContent = String(k + 1); }); }
 function addItemRow(it = {}) { const box = $('#o-items'); if (!box) return; box.insertAdjacentHTML('beforeend', itemRowHTML(it, box.children.length + 1, '')); renumberItems(); }
@@ -1644,13 +1696,13 @@ async function shareSigned(id) {
     toast('No se pudo preparar el archivo.');
   }
 }
-async function linkOrder(invId, orderId) {
+async function linkOrder(invId, orderId, okMsg = 'Orden asignada') {
   const inv = S.invoices.find((x) => x.id === invId), o = S.orders.find((x) => x.id === orderId);
   if (!inv || !o) return;
   const upd = fillFromOrder({}, inv, o);
   upd.orderAuto = false;
   upd.noOrder = false;
-  if (!(await write(() => db.doc('invoices/' + invId).update(upd), 'Orden asignada'))) return;
+  if (!(await write(() => db.doc('invoices/' + invId).update(upd), okMsg))) return;
   if (S.sheet && S.sheet.type === 'inv' && S.sheet.id === invId && S.sheet.dirty) {
     if ($('#f-order')) $('#f-order').value = orderId;
     if (upd.projectId && $('#f-proj') && !$('#f-proj').value) $('#f-proj').value = upd.projectId;
@@ -2344,6 +2396,9 @@ function onClick(e) {
     case 'order-fill': fillOrderFromMessage(t, null); break;
     case 'order-fill-photo': $('#fill-photo-input').click(); break;
     case 'link-order': linkOrder(id, t.dataset.order); break;
+    case 'order-link-open': openOrderLinkBox(id); break;
+    case 'order-link-inv': linkOrder(id, t.dataset.order, 'Factura enlazada a la orden').then(() => refreshOrderInvBox(t.dataset.order)); break;
+    case 'order-unlink-inv': write(() => db.doc('invoices/' + id).update({ orderId: null, orderAuto: false }), 'Factura quitada de la orden').then(() => refreshOrderInvBox(t.dataset.order)); break;
     case 'nube-connect': nubeConnect(t); break;
     case 'nube-relogin': nubeRelogin(t); break;
     case 'nube-sync': RT.sync.syncNow(); break;
@@ -2394,8 +2449,8 @@ async function testKey(btn) {
     status.textContent = 'La clave funciona. Las facturas nuevas se van a leer solas.';
     S.aiState = 'ok';
   } catch (e) {
-    status.textContent = { bad_key: 'La clave no es válida o no tiene permiso.', offline: 'No hay internet en este momento.', rate_limited: 'La cuenta llegó a su límite; intenta más tarde.' }[e && e.code] || 'No se pudo comprobar la clave. Intenta de nuevo.';
-    if (e && e.code === 'bad_key') S.aiState = 'badkey';
+    status.textContent = AI_ERR[e && e.code] || 'No se pudo comprobar la clave. Intenta de nuevo.';
+    if (e && AI_STOP.has(e.code)) S.aiState = e.code === 'bad_key' ? 'badkey' : e.code;
   } finally { btn.disabled = false; renderBanner(derive()); }
 }
 async function hintCreate(id, btn) {
@@ -2445,6 +2500,7 @@ function onInput(e) {
   const t = e.target;
   if (t.id === 'f-search') { S.search = t.value; renderAll(); return; }
   if (t.id === 'o-search') { S.orderSearch = t.value; renderAll(); return; }
+  if (t.id === 'o-link-q') { const r = $('#o-link-results'); if (r) r.innerHTML = orderLinkResultsHTML(t.dataset.order, t.value); return; }
   if (S.sheet && S.sheet.type === 'order' && t.closest && t.closest('#order-form') && t.id !== 'o-msg') S.sheet.dirty = true;
   if (t.id === 'f-rnc' || t.id === 'f-num') liveHelp(t);
   if (S.sheet && S.sheet.type === 'inv' && t.closest && t.closest('#inv-form')) S.sheet.dirty = true;

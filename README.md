@@ -92,15 +92,25 @@ Cómo se comporta:
 
 ## Lectura automática de facturas de papel y pedidos (opcional)
 
-- Crea una clave en [platform.claude.com](https://platform.claude.com) (sección API Keys) y pégala en **Ajustes → Lectura automática → Probar la clave**. Conviene una clave solo para esta app, en un espacio de trabajo con límite de gasto.
-- La clave se guarda solo en el teléfono y no va en los respaldos. Como la app llama a la API directo desde el teléfono, quien tenga el teléfono desbloqueado podría verla: si pierdes el equipo, revócala en la consola.
+Para conectarla, en la consola de Claude ([platform.claude.com](https://platform.claude.com)), con una cuenta de la empresa:
+
+1. **Saldo:** en *Billing* (facturación), agrega una tarjeta y compra créditos. Sin saldo, la API no responde.
+2. **Espacio de trabajo con tope de gasto:** en [Workspaces](https://platform.claude.com/settings/workspaces), crea uno (por ejemplo `Facturas`), ábrelo y en **Spend limits** pon el tope del mes (por ejemplo US$20) y los avisos. Al *Default Workspace* no se le puede poner tope; por eso conviene uno aparte.
+3. **Clave:** en [API keys](https://platform.claude.com/settings/keys), toca **Create key**, ponle un nombre (por ejemplo `Teléfono facturas`), asígnala al espacio de trabajo `Facturas` y en la expiración elige **Never** (o una fecha lejana: cuando vence, la app deja de leer y lo avisa). Copia la clave (empieza con `sk-ant-`).
+4. En la app: **Ajustes → Lectura automática**, pega la clave, elige el modelo y toca **Probar la clave**. Si algo falla, el mensaje dice qué arreglar: sin saldo, clave sin espacio de trabajo, clave vencida o inválida, modelo no disponible o cuenta que no permite usarla desde el teléfono. Después toca **Guardar**.
+5. Si ya tenías facturas cargadas, en **Para hacer** toca **Leer todas**.
+
+Si la lectura se detiene después (por ejemplo, se acabó el saldo), la app lo avisa arriba; al arreglarlo, **Leer todas** lee las que quedaron pendientes.
+
+- Con la nube del equipo, basta con la clave en el teléfono que carga las facturas: los demás reciben los datos ya leídos. La clave no se comparte con los otros teléfonos.
+- La clave se guarda solo en el teléfono y no va en los respaldos. Como la app llama a la API directo desde el teléfono, quien tenga el teléfono desbloqueado podría verla: si pierdes el equipo, desactívala o bórrala en la consola (*API keys*).
 - Costo aproximado por factura (una foto, a precios de lista de noviembre de 2026; varía con cada factura, revisa el uso real en la consola):
 
   | Modelo | Costo aproximado por factura |
   |---|---|
-  | Más precisa (Opus 5.5, la predeterminada) | US$0.02 a 0.05 |
+  | Más precisa (Opus 5.5, la predeterminada) | US$0.02 a 0.06 |
   | Equilibrada (Sonnet 5.5) | US$0.01 a 0.03 |
-  | Más económica (Haiku 5.5) | alrededor de US$0.001 |
+  | Más económica (Haiku 5.5) | alrededor de US$0.002 |
 
 - Llenar una orden desde el mensaje del pedido cuesta menos que leer una factura, porque casi siempre es solo texto.
 - Las facturas electrónicas con QR o XML no necesitan esta lectura para los datos fiscales.
