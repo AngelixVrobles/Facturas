@@ -250,10 +250,13 @@ function itemsSummary(items) {
   return (its.length > 1 ? `${its[0].desc} y ${plural(its.length - 1, 'artículo más', 'artículos más')}` : its[0].desc).slice(0, 140);
 }
 // Una sola orden abierta (por firmar o firmada, todavía sin facturas) de este proveedor, en su obra si ya la tiene: se enlaza sola.
+// Una orden que otra factura acaba de tomar (y todavía se está guardando) ya no cuenta como abierta.
+const autoClaims = new Map();
 function soleOpenOrder(inv, D) {
   const names = [inv.supplier, ...((inv.rnc && D.namesByRnc.get(inv.rnc)) || [])].filter(Boolean);
   if (!names.length) return null;
   const open = D.orders.filter((o) => (o.status === 'enviada' || o.status === 'autorizada') && !(D.invByOrder.get(o.id) || []).some((x) => x.id !== inv.id)
+    && !(autoClaims.has(o.id) && autoClaims.get(o.id) !== inv.id)
     && (!inv.projectId || o.projectId === inv.projectId) && names.some((n) => sameName(o.supplier, n)));
   return open.length === 1 ? open[0] : null;
 }
@@ -1529,7 +1532,13 @@ async function readWithAI(invId, input) {
   if (!upd.orderId && !(cur.orderId && !cur.orderAuto)) {
     const merged = { ...cur, ...upd, orderId: null };
     const so = soleOpenOrder(merged, derive());
-    if (so) { fillFromOrder(upd, merged, so); upd.orderAuto = true; }
+    if (so) {
+      fillFromOrder(upd, merged, so);
+      upd.orderAuto = true;
+      // Mientras se guarda, otra lectura que termine al mismo tiempo no se lleva la misma orden.
+      autoClaims.set(so.id, invId);
+      setTimeout(() => { if (autoClaims.get(so.id) === invId) autoClaims.delete(so.id); }, 5000);
+    }
   }
   await dbw(() => ref.update(upd)).catch((e) => console.error(e));
   scheduleLink();
