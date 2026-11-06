@@ -10,7 +10,7 @@ const LIB = {
   qrgen: 'js/qr.js',
 };
 const PDF_CREATOR = 'Facturas de Proyectos';
-const APP_VERSION = '1.6.0';
+const APP_VERSION = '1.7.0';
 const SVG = (d) => `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ICON = {
   plus: SVG('<path d="M12 5v14M5 12h14"/>'),
@@ -562,10 +562,16 @@ async function inspectPdf(bytes) {
     }
     const page = await renderPdfCanvas(pdf, 1, 1800);
     const qr = await scanQr(page);
+    // Páginas con el código de una orden (factura y orden engrapadas y escaneadas juntas).
+    const orderPages = qr && qr.kind === 'order' ? [1] : [];
+    let orderQr = qr && qr.kind === 'order' ? qr : null;
+    for (let n = 2; n <= Math.min(pdf.numPages, 8); n++) {
+      try { const q = await scanQr(await renderPdfCanvas(pdf, n, 1600)); if (q && q.kind === 'order' && (!orderQr || q.id === orderQr.id)) { orderPages.push(n); orderQr = orderQr || q; } } catch (e) { /* página sin código */ }
+    }
     const thumb = await canvasToJpeg(scaledCanvas(page, 1400), 0.85);
     let creator = '';
     try { const md = await pdf.getMetadata(); creator = String((md && md.info && md.info.Creator) || ''); } catch (e) { /* sin metadatos */ }
-    return { pages: pdf.numPages, text: text.replace(/[ \t]+/g, ' ').slice(0, 12000), thumb, qr, creator };
+    return { pages: pdf.numPages, text: text.replace(/[ \t]+/g, ' ').slice(0, 12000), thumb, qr, creator, orderPages, orderQr };
   } finally { try { pdf.destroy(); } catch (e) { /* nada */ } }
 }
 async function getBlob(id) { const b = await RT.assets.get(id); if (!b) throw new Error('No se encontró el archivo.'); return b; }
@@ -919,7 +925,7 @@ function closeSheet() { const root = $('#sheet-root'); root.hidden = true; root.
 function lockBody() { document.body.classList.toggle('locked', !!S.sheet || !$('#viewer').hidden); }
 const sheetHead = (title) => `<div class="sheet-h"><h2>${title}</h2><button type="button" class="icon-btn plain" data-act="sheet-close" aria-label="Cerrar">${ICON.close}</button></div>`;
 
-function invSig(i, D) { return JSON.stringify([i.orderId, i.orderAuto, i.noOrder, i.order && i.order.status, i.ncfExpiry, i.supplier, i.number, i.rnc, i.date, i.amount, i.itbis, i.currency, i.concept, i.ref, i.projectId, i.projectHint, i.ai, i.notInvoice, i.pay && i.pay.id, i.pay && i.pay.status, i.dup, i.fiscal, i.xmlId, i.fileId, i.buyerRnc, i.condOverOk, i.condRefsOk, i.qtyOk, (i.conduceRefs || []).join(), (i.order && i.order.items || []).length, (i.conduces || []).map((c) => [c.id, c.number, c.date, c.total, c.material, c.qty, c.ai, c.auto, c.dup]), D ? D.conduces.filter((c) => !c.invoiceId).map((c) => c.id + c.ai).join() : '']); }
+function invSig(i, D) { return JSON.stringify([i.orderId, i.orderAuto, i.noOrder, i.order && i.order.status, i.ncfExpiry, i.supplier, i.number, i.rnc, i.date, i.amount, i.itbis, i.currency, i.concept, i.ref, i.projectId, i.projectHint, i.ai, i.notInvoice, i.pay && i.pay.id, i.pay && i.pay.status, i.dup, i.fiscal, i.xmlId, i.fileId, i.pages, (i.extraPages || []).length, i.buyerRnc, i.condOverOk, i.condRefsOk, i.qtyOk, (i.conduceRefs || []).join(), (i.order && i.order.items || []).length, (i.conduces || []).map((c) => [c.id, c.number, c.date, c.total, c.material, c.qty, c.ai, c.auto, c.dup]), D ? D.conduces.filter((c) => !c.invoiceId).map((c) => c.id + c.ai).join() : '']); }
 function openInvoice(id, keepScroll) {
   const D = derive();
   const i = D.invoices.find((x) => x.id === id);
@@ -950,7 +956,7 @@ function openInvoice(id, keepScroll) {
   if (i.notInvoice) msgs.push(`<div class="msg warn">${ICON.alert}<span>Este archivo no parece una factura. Revísalo antes de meterlo a un pago.</span></div>`);
   if (i.dup) msgs.push(`<div class="msg warn">${ICON.alert}<span>Puede estar repetida: hay otra factura del mismo proveedor con el mismo NCF.</span></div>`);
   if (i.projectHint && !i.project && edit) msgs.push(`<div class="msg hint"><span>La factura dice que es del proyecto <b>${esc(i.projectHint)}</b>, que no está en tu lista.</span><button type="button" class="link" data-act="hint-create" data-id="${esc(i.id)}">Crear “${esc(i.projectHint)}” y asignarla</button></div>`);
-  if (edit && !i.number && !i.fiscal && !i.pay && i.ai !== 'pending' && !(i.conduces || []).length) msgs.push(`<div class="msg"><span>¿Este archivo es un conduce (la nota de entrega del material) y no una factura? <button type="button" class="link" data-act="inv-to-cond" data-id="${esc(i.id)}">Es un conduce</button></span></div>`);
+  if (edit && !i.number && !i.fiscal && !i.pay && i.ai !== 'pending' && !(i.conduces || []).length) msgs.push(`<div class="msg"><span>¿Este archivo no es una factura sino un conduce (la nota de entrega del material) o la otra página de una factura? <button type="button" class="link" data-act="inv-to-cond" data-id="${esc(i.id)}">Es un conduce</button> <button type="button" class="link" data-act="inv-to-page" data-id="${esc(i.id)}">Es otra página</button></span></div>`);
   if (i.xmlId && i.fileType !== 'application/xml') msgs.push(`<div class="msg">${ICON.check}<span>También tiene su XML de factura electrónica. <button type="button" class="link" data-act="xml-view" data-id="${esc(i.id)}">Ver XML</button></span></div>`);
   const where = i.pay
     ? `<span class="pill ${i.status}">${INV_LABEL[i.status]}</span><span>En <button type="button" class="link" data-act="open-pay" data-id="${esc(i.pay.id)}">${esc(i.pay.name || 'Pago')}</button></span>`
@@ -973,6 +979,7 @@ function openInvoice(id, keepScroll) {
   const html = `<form id="inv-form" data-id="${esc(i.id)}" autocomplete="off">${sheetHead('Factura')}
     <div class="sheet-b">
       ${preview}
+      ${pagesLineHTML(i, edit)}
       <div class="status-line">${where}</div>
       ${msgs.join('')}
       <div class="fields">
@@ -1327,7 +1334,34 @@ function readySave() {
 function openViewer(id, forceXml) {
   const i = S.invoices.find((x) => x.id === id);
   if (!i) return;
+  if (!forceXml && (i.extraPages || []).length) { showFiles(i.supplier || i.fileName || 'Factura', [{ fileId: i.fileId, fileType: i.fileType }, ...i.extraPages]); return; }
   showFile({ title: i.supplier || i.fileName || 'Factura', fileId: forceXml ? i.xmlId : i.fileId, fileType: forceXml ? 'application/xml' : i.fileType });
+}
+// Varias páginas (fotos y PDF) una debajo de otra.
+async function showFiles(title, files) {
+  const v = $('#viewer');
+  const token = Symbol('v');
+  v._token = token;
+  v.innerHTML = `<div class="viewer-h"><span>${esc(title)}</span><button type="button" class="icon-btn" data-act="viewer-close" aria-label="Cerrar">${ICON.close}</button></div><div class="viewer-b" id="viewer-b">${files.map((f, n) => (f.fileType === 'application/pdf' ? `<div class="viewer-pdf" data-n="${n}"><p class="viewer-msg">Abriendo…</p></div>` : `<img src="${esc(assetUrl(f.fileId))}" alt="${esc(title)}">`)).join('')}</div>`;
+  v.hidden = false;
+  lockBody();
+  const body = $('#viewer-b');
+  const w = Math.min(1800, Math.max(600, (body.clientWidth || 800) * Math.min(2, window.devicePixelRatio || 1)));
+  for (let n = 0; n < files.length; n++) {
+    if (files[n].fileType !== 'application/pdf') continue;
+    const box = body.querySelector(`.viewer-pdf[data-n="${n}"]`);
+    try {
+      const doc = await openPdf(await (await getBlob(files[n].fileId)).arrayBuffer());
+      if (v._token !== token) return;
+      box.innerHTML = '';
+      for (let p = 1; p <= doc.numPages; p++) {
+        if (v._token !== token || v.hidden) return;
+        const c = await renderPdfCanvas(doc, p, w);
+        c.className = 'viewer-page';
+        box.appendChild(c);
+      }
+    } catch (e) { console.error(e); if (box) box.innerHTML = '<p class="viewer-msg">No se pudo abrir esta página.</p>'; }
+  }
 }
 async function showFile({ title, fileId, fileType }) {
   if (!fileId) return;
@@ -1422,14 +1456,30 @@ async function addOne(item) {
     const isImg = !isXml && !isPdf && (type.startsWith('image/') || /\.(jpe?g|png|webp|gif|heic|heif|bmp)$/i.test(name));
     if (!isXml && !isPdf && !isImg) throw new UserError('Solo se pueden agregar fotos, PDF o XML de factura electrónica');
     if (isXml) { await addXml(item, f); return; }
-    let blob, ftype, thumb = null, text = '', pages = 1, aiImage = null, qr = null, creator = '';
+    let blob, ftype, thumb = null, text = '', pages = 1, aiImage = null, qr = null, creator = '', staple = null;
     if (isPdf) {
       if (f.size > 25 * 1048576) throw new UserError('El PDF pesa más de 25 MB');
-      const bytes = await f.arrayBuffer();
+      let bytes = await f.arrayBuffer();
       blob = new Blob([bytes], { type: 'application/pdf' });
       ftype = 'application/pdf';
-      try { const r = await inspectPdf(bytes); pages = r.pages; text = r.text; thumb = r.thumb; qr = r.qr; creator = r.creator; } catch (e) { console.warn('PDF', e); }
+      let r = null;
+      try { r = await inspectPdf(bytes); pages = r.pages; text = r.text; thumb = r.thumb; qr = r.qr; creator = r.creator; } catch (e) { console.warn('PDF', e); }
       if (creator === PDF_CREATOR) throw new UserError(qr && qr.kind === 'order' ? 'Es el PDF de la orden sin firmar. Agrega la foto o el escaneo de la orden ya firmada y sellada' : 'Este PDF lo hizo esta app; no es una factura');
+      // Factura y orden firmada engrapadas en un solo PDF: la orden va a su orden y lo demás sigue como factura enlazada a ella.
+      const so = r && r.orderPages && r.orderPages.length && r.orderPages.length < r.pages ? S.orders.find((x) => x.id === r.orderQr.id) : null;
+      if (so) {
+        setQ(item, 'subiendo');
+        const keep = Array.from({ length: r.pages }, (_, k) => k + 1).filter((n) => !r.orderPages.includes(n));
+        const ob = await pdfPick(bytes, r.orderPages);
+        const oi = await inspectPdf(ob).catch(() => null);
+        await saveSignedCopy(so, new Blob([ob], { type: 'application/pdf' }), 'application/pdf', oi ? oi.thumb : null);
+        bytes = await pdfPick(bytes, keep);
+        blob = new Blob([bytes], { type: 'application/pdf' });
+        const rr = await inspectPdf(bytes).catch(() => null);
+        pages = rr ? rr.pages : keep.length; text = rr ? rr.text : ''; thumb = rr ? rr.thumb : null; qr = rr ? rr.qr : null;
+        if (qr && qr.kind === 'order') qr = null;
+        staple = so;
+      }
       if (thumb && !hasText(text)) aiImage = thumb;
     } else {
       const r = await prepImage(f);
@@ -1461,6 +1511,7 @@ async function addOne(item) {
       finishQ(item, 'qr');
       return;
     }
+    const note = staple ? `con la orden ${orderNo(staple)} firmada, ya adjunta a su orden` : '';
     const willRead = ai.hasKey() && (!!aiImage || hasText(text));
     const doc = {
       projectId: item.projectId || null, supplier: '', rnc: '', number: '', date: '', amount: null, itbis: null, currency: 'DOP',
@@ -1472,7 +1523,7 @@ async function addOne(item) {
     signAmounts(doc);
     if (doc.rnc && !doc.supplier) doc.supplier = knownSupplier(doc.rnc);
     if (!doc.projectId && text) { const pm = projectMentionIn(text); if (pm) doc.projectId = pm.id; }
-    const om = text ? orderMentionIn(text, doc.projectId) : null;
+    const om = staple || (text ? orderMentionIn(text, doc.projectId) : null);
     if (om) fillFromOrder(doc, doc, om);
     else { const so = soleOpenOrder(doc, derive()); if (so) { fillFromOrder(doc, doc, so); doc.orderAuto = true; } }
     const ref = db.collection('invoices').doc();
@@ -1483,9 +1534,9 @@ async function addOne(item) {
       setQ(item, 'leyendo');
       enqueueAI({ invId: ref.id, input: { image: aiImage, text } }).then((r) => {
         if (r === 'conduce') { item.condId = convertedTo.get(ref.id) || null; finishQ(item, 'conduce', 'esperando su factura'); return; }
-        finishQ(item, r === 'done' ? (qr ? 'qr' : 'lista') : qr ? 'qr' : 'manual');
+        finishQ(item, r === 'done' ? (qr ? 'qr' : 'lista') : qr ? 'qr' : 'manual', note);
       });
-    } else finishQ(item, qr ? 'qr' : 'manual');
+    } else finishQ(item, qr ? 'qr' : 'manual', note);
   } catch (e) {
     if (e instanceof UserError) console.warn(e.message); else console.error(e);
     finishQ(item, 'error', upErr(e));
@@ -1567,7 +1618,7 @@ function buildPrompt(text, withImage) {
   const companyRnc = RD.normRnc(S.settings.companyRnc);
   return [
     'Lee esta factura de República Dominicana y saca sus datos para registrarla en una relación de pagos de una constructora.',
-    withImage ? 'La imagen adjunta es una foto o captura de la factura (o nota/recibo) que mandó el proveedor.' : `Este es el texto de la factura en PDF:\n<<<\n${t.slice(0, 9000)}\n>>>`,
+    withImage ? (withImage > 1 ? 'Las imágenes adjuntas son las páginas de la misma factura, en orden.' : 'La imagen adjunta es una foto o captura de la factura (o nota/recibo) que mandó el proveedor.') : `Este es el texto de la factura en PDF:\n<<<\n${t.slice(0, 9000)}\n>>>`,
     'A veces el archivo no es la factura sino el conduce (la nota de entrega del material) que viene con ella.',
     withImage && t ? `Texto que se pudo sacar del mismo archivo (puede estar incompleto):\n<<<\n${t.slice(0, 4000)}\n>>>` : '',
     'Proyectos u obras que ya existen: ' + (names.length ? JSON.stringify(names.slice(0, 200)) : '(todavía ninguno)'),
@@ -1636,11 +1687,11 @@ function parseAI(out, inv) {
 }
 async function readWithAI(invId, input) {
   const ref = db.doc('invoices/' + invId);
-  const useImg = !!input.image;
-  if (!ai.hasKey() || (!useImg && !hasText(input.text))) { await ref.update({ ai: 'off' }).catch(() => {}); return 'off'; }
+  const imgs = input.images || (input.image ? [input.image] : []);
+  if (!ai.hasKey() || (!imgs.length && !hasText(input.text))) { await ref.update({ ai: 'off' }).catch(() => {}); return 'off'; }
   let out;
   try {
-    out = await ai.json(buildPrompt(input.text, useImg), { images: useImg ? [input.image] : [], schema: AI_SCHEMA });
+    out = await ai.json(buildPrompt(input.text, imgs.length), { images: imgs, schema: AI_SCHEMA });
   } catch (e) {
     console.warn('lectura', e);
     if (e && AI_STOP.has(e.code)) { S.aiState = e.code === 'bad_key' ? 'badkey' : e.code; scheduleRender(); }
@@ -1671,12 +1722,22 @@ async function readWithAI(invId, input) {
   return 'done';
 }
 async function aiInputFor(i) {
+  let input = null;
   if (i.fileType === 'application/pdf') {
     const r = await inspectPdf(await (await getBlob(i.fileId)).arrayBuffer());
-    return { text: r.text, image: hasText(r.text) ? null : r.thumb };
+    input = { text: r.text, image: hasText(r.text) ? null : r.thumb };
+  } else if (i.fileType && i.fileType.startsWith('image/')) input = { image: await getBlob(i.fileId), text: '' };
+  if (!input) return null;
+  // Las otras páginas de la factura también se leen (hasta 3 más).
+  const extra = [];
+  for (const x of (i.extraPages || []).slice(0, 3)) {
+    try {
+      if (String(x.fileType || '').startsWith('image/')) extra.push(await getBlob(x.fileId));
+      else if (x.fileType === 'application/pdf') { const r = await inspectPdf(await (await getBlob(x.fileId)).arrayBuffer()); if (hasText(r.text)) input.text = (input.text || '') + '\n' + r.text; else if (r.thumb) extra.push(r.thumb); }
+    } catch (e) { console.warn('página', e); }
   }
-  if (i.fileType && i.fileType.startsWith('image/')) return { image: await getBlob(i.fileId), text: '' };
-  return null;
+  if (extra.length) input.images = [...(input.image ? [input.image] : []), ...extra];
+  return input;
 }
 let readingMany = false;
 async function readMany(list, quiet) {
@@ -1800,7 +1861,7 @@ async function deleteInvoice(id) {
   }, 'Factura eliminada');
   if (!ok) return;
   closeSheet();
-  for (const a of new Set([i.fileId, i.thumbId, i.xmlId])) if (a) { try { await assets.delete(a); } catch (e) { console.warn(e); } }
+  for (const a of new Set([i.fileId, i.thumbId, i.xmlId, ...(i.extraPages || []).flatMap((x) => [x.fileId, x.thumbId])])) if (a) { try { await assets.delete(a); } catch (e) { console.warn(e); } }
 }
 /* ---------- conduces: guardar, leer y enlazar ---------- */
 let condTarget = null;
@@ -2478,6 +2539,183 @@ async function attExport(kind) {
   } catch (e) { console.error(e); toast('No se pudo preparar el archivo.'); }
 }
 
+/* ---------- páginas de una factura y separar la grapa ---------- */
+// Páginas elegidas (1, 2, …) de un PDF, en un PDF nuevo.
+async function pdfPick(bytes, nums) {
+  const { PDFDocument } = await pdflib();
+  const src = await PDFDocument.load(bytes, { ignoreEncryption: true });
+  const out = await PDFDocument.create();
+  (await out.copyPages(src, nums.map((n) => n - 1))).forEach((p) => out.addPage(p));
+  return out.save();
+}
+function pagesLineHTML(i, edit) {
+  if (i.fileType === 'application/xml') return '';
+  const extra = i.extraPages || [];
+  const total = (i.pages || 1) + extra.reduce((t, x) => t + (x.pages || 1), 0);
+  const thumbs = extra.map((x, k) => {
+    const tid = x.thumbId || (String(x.fileType || '').startsWith('image/') ? x.fileId : null);
+    return `<span class="pg"><button type="button" class="pg-img" data-act="inv-view" data-id="${esc(i.id)}" aria-label="Ver la página ${k + 2}">${tid ? `<img src="${esc(assetUrl(tid))}" alt="" loading="lazy">` : '<span class="ph">PDF</span>'}</button>${edit ? `<button type="button" class="pg-x" data-act="page-rm" data-id="${esc(i.id)}" data-k="${k}" aria-label="Quitar la página ${k + 2}">${ICON.close}</button>` : ''}</span>`;
+  }).join('');
+  const split = edit && i.fileType === 'application/pdf' && (i.pages || 1) > 1 ? `<button type="button" class="link" data-act="split-open" data-id="${esc(i.id)}">Separar páginas</button>` : '';
+  if (!extra.length && !edit) return '';
+  return `<div class="pages-line">${extra.length ? `<span class="pg-n">${plural(total, 'página', 'páginas')}</span><span class="pg-list">${thumbs}</span>` : ''}<span class="pg-acts">${edit ? `<button type="button" class="link" data-act="page-add" data-id="${esc(i.id)}">${ICON.plus} Agregar página</button>` : ''}${split}</span></div>`;
+}
+let pageTarget = null;
+async function addPages(invId, files) {
+  const inv = S.invoices.find((x) => x.id === invId);
+  if (!inv || !canUpload()) return;
+  const list = [...files].filter((f) => f && f.size > 0);
+  if (!list.length) return;
+  toast(list.length === 1 ? 'Agregando la página…' : `Agregando ${list.length} páginas…`);
+  const added = [];
+  for (const f of list) {
+    try {
+      const p = await prepFile(f);
+      const up = await assets.upload(p.blob, { type: p.ftype });
+      let thumbId = null;
+      if (p.thumb) { try { thumbId = (await assets.upload(p.thumb, { type: 'image/jpeg' })).id; } catch (e) { console.warn('miniatura', e); } }
+      added.push({ fileId: up.id, fileType: p.ftype, thumbId, pages: p.pages || 1 });
+    } catch (e) { console.error(e); toast(upErr(e)); }
+  }
+  if (!added.length) return;
+  const cur = S.invoices.find((x) => x.id === invId) || inv;
+  if (!(await write(() => db.doc('invoices/' + invId).update({ extraPages: [...(cur.extraPages || []), ...added] }), added.length === 1 ? 'Página agregada' : `${added.length} páginas agregadas`))) return;
+  // Si a la factura le faltan datos, se lee otra vez con todas sus páginas.
+  if (ai.hasKey() && (!isNum(cur.amount) || !cur.number)) setTimeout(() => readMany([S.invoices.find((x) => x.id === invId)].filter(Boolean), true), 400);
+}
+async function removePage(invId, k) {
+  const inv = S.invoices.find((x) => x.id === invId);
+  if (!inv || !inv.extraPages || !inv.extraPages[k]) return;
+  const gone = inv.extraPages[k];
+  if (await write(() => db.doc('invoices/' + invId).update({ extraPages: inv.extraPages.filter((_, j) => j !== k) }), 'Página quitada')) {
+    for (const a of [gone.fileId, gone.thumbId]) if (a) assets.delete(a).catch(() => {});
+  }
+}
+// Una foto que entró como factura aparte pero es la otra página de una factura.
+function openPagePick(fromId) {
+  const D = derive();
+  const from = D.invoices.find((x) => x.id === fromId);
+  if (!from) return;
+  const t = Date.parse(from.createdAt) || 0;
+  const list = D.invoices.filter((i) => i.id !== fromId && i.fileType !== 'application/xml').sort((a, b) => Math.abs((Date.parse(a.createdAt) || 0) - t) - Math.abs((Date.parse(b.createdAt) || 0) - t)).slice(0, 40);
+  const rows = list.map((i) => `<button type="button" class="o-pick" data-act="page-merge" data-id="${esc(fromId)}" data-to="${esc(i.id)}"><span><b>${esc(i.supplier || 'Factura sin datos')}</b><small>${esc([i.number ? 'NCF ' + RD.normNcf(i.number) : '', fmtDate(i.date), i.project ? i.project.name : ''].filter(Boolean).join(' · '))}</small></span><span class="num">${esc(money(i.amount, i.currency))}</span></button>`).join('');
+  openSheet(`${sheetHead('¿De qué factura es esta página?')}<div class="sheet-b"><p class="hint">Primero salen las que se agregaron más cerca de esta foto.</p>${rows ? `<div class="o-picks">${rows}</div>` : '<p class="hint">No hay otras facturas.</p>'}</div>`, { type: 'pagepick', id: fromId });
+}
+async function mergeAsPage(fromId, toId) {
+  const from = S.invoices.find((x) => x.id === fromId), to = S.invoices.find((x) => x.id === toId);
+  if (!from || !to) return;
+  if (S.payments.some((p) => (p.invoiceIds || []).includes(fromId))) { toast('Está en un pago; quítala del pago primero.'); return; }
+  const page = { fileId: from.fileId, fileType: from.fileType, thumbId: from.thumbId || null, pages: from.pages || 1 };
+  const ok = await write(async () => {
+    await db.doc('invoices/' + toId).update({ extraPages: [...(to.extraPages || []), page, ...(from.extraPages || [])] });
+    for (const c of S.conduces.filter((x) => x.invoiceId === fromId)) await db.doc('conduces/' + c.id).update({ invoiceId: toId });
+    await db.doc('invoices/' + fromId).delete();
+  }, 'Página agregada a la factura');
+  if (!ok) return;
+  closeSheet();
+  setTimeout(() => openInvoice(toId), 350);
+  if (ai.hasKey() && (!isNum(to.amount) || !to.number)) setTimeout(() => readMany([S.invoices.find((x) => x.id === toId)].filter(Boolean), true), 700);
+}
+// Separar un PDF que trae varias cosas engrapadas: la factura, conduces, la orden firmada u otra factura.
+let splitState = null;
+async function openSplit(invId) {
+  const i = S.invoices.find((x) => x.id === invId);
+  if (!i || i.fileType !== 'application/pdf') return;
+  openSheet(`${sheetHead('Separar páginas')}<div class="sheet-b" id="split-b"><p class="hint">Abriendo el PDF…</p></div><div class="sheet-f"><button type="button" class="btn primary block" data-act="split-go" disabled>Separar</button></div>`, { type: 'split', id: invId });
+  try {
+    const bytes = await (await getBlob(i.fileId)).arrayBuffer();
+    const pdf = await openPdf(bytes);
+    const total = pdf.numPages;
+    const pages = [];
+    for (let k = 1; k <= Math.min(total, 30); k++) {
+      const c = await renderPdfCanvas(pdf, k, 1200);
+      const q = await scanQr(c);
+      const b = await canvasToJpeg(scaledCanvas(c, 360), 0.7);
+      pages.push({ k, url: URL.createObjectURL(b), order: q && q.kind === 'order' ? S.orders.find((o) => o.id === q.id) || null : null });
+    }
+    try { pdf.destroy(); } catch (e) { /* nada */ }
+    if (!S.sheet || S.sheet.type !== 'split' || S.sheet.id !== invId) return;
+    const found = pages.find((p) => p.order);
+    const order = (found && found.order) || (i.orderId && S.orders.find((o) => o.id === i.orderId)) || null;
+    splitState = { invId, bytes, pages, total, order };
+    const opts = (p) => {
+      const def = p.order ? 'orden' : 'factura';
+      const o = [['factura', 'Factura'], ['conduce', 'Conduce'], ...(order ? [['orden', 'Orden firmada ' + orderNo(order)]] : []), ['otra', 'Otra factura'], ['quitar', 'Quitar']];
+      return `<select data-split="${p.k}" aria-label="Página ${p.k}">${o.map(([v, l]) => `<option value="${v}"${v === def ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
+    };
+    $('#split-b').innerHTML = `<p class="hint">Di qué es cada página. Las de la factura se quedan aquí, cada conduce se adjunta a esta factura, la orden firmada va a su orden y «Otra factura» queda aparte.</p><div class="split-list">${pages.map((p) => `<div class="split-row"><img src="${p.url}" alt="Página ${p.k}"><div class="split-mid"><b>Página ${p.k}</b>${p.order ? `<small>Tiene el código de ${esc(orderNo(p.order))}</small>` : ''}${opts(p)}</div></div>`).join('')}</div>${total > pages.length ? `<p class="usage">Las páginas después de la ${pages.length} se quedan con la factura.</p>` : ''}`;
+    const go = $('[data-act="split-go"]');
+    if (go) go.disabled = false;
+  } catch (e) {
+    console.error(e);
+    const b = $('#split-b');
+    if (b) b.innerHTML = '<p class="hint">No se pudo abrir el PDF.</p>';
+  }
+}
+async function applySplit(btn) {
+  const st = splitState;
+  const inv = st && S.invoices.find((x) => x.id === st.invId);
+  if (!inv) return;
+  const choice = {};
+  for (const s of $$('#split-b select[data-split]')) choice[Number(s.dataset.split)] = s.value;
+  const byKind = (k) => st.pages.filter((p) => choice[p.k] === k).map((p) => p.k);
+  const fact = byKind('factura');
+  for (let k = st.pages.length + 1; k <= st.total; k++) fact.push(k);
+  if (!fact.length) { toast('Deja al menos una página como factura.'); return; }
+  if (fact.length === st.total) { toast('No hay nada que separar: todas son de la factura.'); return; }
+  btn.disabled = true;
+  btn.textContent = 'Separando…';
+  try {
+    const mk = async (nums) => { const b = await pdfPick(st.bytes, nums); const r = await inspectPdf(b).catch(() => null); return { blob: new Blob([b], { type: 'application/pdf' }), r }; };
+    const up = async (x) => {
+      const f = await assets.upload(x.blob, { type: 'application/pdf' });
+      let t = null;
+      if (x.r && x.r.thumb) { try { t = (await assets.upload(x.r.thumb, { type: 'image/jpeg' })).id; } catch (e) { console.warn('miniatura', e); } }
+      return { fileId: f.id, thumbId: t, pages: x.r ? x.r.pages : 1 };
+    };
+    const readable = (x) => ai.hasKey() && !!x.r && (hasText(x.r.text) || !!x.r.thumb);
+    const aiIn = (x) => ({ text: x.r.text, image: hasText(x.r.text) ? null : x.r.thumb });
+    const old = [inv.fileId, inv.thumbId];
+    const main = await up(await mk(fact));
+    await dbw(() => db.doc('invoices/' + inv.id).update({ fileId: main.fileId, thumbId: main.thumbId, pages: main.pages }));
+    let nc = 0;
+    for (const k of byKind('conduce')) {
+      const x = await mk([k]);
+      const u = await up(x);
+      const ref = db.collection('conduces').doc();
+      const read = readable(x);
+      await dbw(() => ref.set({ invoiceId: inv.id, projectId: inv.projectId || null, projectHint: '', supplier: inv.supplier || '', rnc: RD.normRnc(inv.rnc) || '', number: '', date: '', total: null, currency: normCur(inv.currency), material: '', qty: '', trips: null, fileId: u.fileId, fileType: 'application/pdf', thumbId: u.thumbId, pages: 1, fileName: inv.fileName || '', createdAt: new Date().toISOString(), ai: read ? 'pending' : 'off', aiErr: '', auto: false }));
+      if (read) enqueueAI({ condId: ref.id, input: aiIn(x) });
+      nc++;
+    }
+    const ord = byKind('orden');
+    if (ord.length && st.order) {
+      const x = await mk(ord);
+      await saveSignedCopy(st.order, x.blob, 'application/pdf', x.r ? x.r.thumb : null);
+      if (!inv.orderId) await dbw(() => db.doc('invoices/' + inv.id).update({ ...fillFromOrder({}, inv, st.order), orderAuto: false }));
+    }
+    const otra = byKind('otra');
+    if (otra.length) {
+      const x = await mk(otra);
+      const u = await up(x);
+      const ref = db.collection('invoices').doc();
+      const read = readable(x);
+      await dbw(() => ref.set({ projectId: inv.projectId || null, supplier: '', rnc: '', number: '', date: '', amount: null, itbis: null, currency: 'DOP', concept: '', ref: '', buyerRnc: '', qrUrl: '', secCode: '', fiscal: '', notInvoice: false, fileId: u.fileId, fileType: 'application/pdf', thumbId: u.thumbId, pages: u.pages, fileName: inv.fileName || '', xmlId: null, createdAt: new Date().toISOString(), ai: read ? 'pending' : 'off' }));
+      if (read) enqueueAI({ invId: ref.id, input: aiIn(x) });
+    }
+    for (const a of old) if (a && a !== main.fileId) assets.delete(a).catch(() => {});
+    for (const p of st.pages) URL.revokeObjectURL(p.url);
+    splitState = null;
+    closeSheet();
+    toast(['Listo: páginas separadas', nc ? plural(nc, 'conduce adjunto', 'conduces adjuntos') : '', ord.length && st.order ? `orden ${orderNo(st.order)} firmada` : '', otra.length ? 'otra factura aparte' : ''].filter(Boolean).join(' · '));
+  } catch (e) {
+    console.error(e);
+    toast('No se pudo separar. Intenta de nuevo.');
+    btn.disabled = false;
+    btn.textContent = 'Separar';
+  }
+}
+
 async function createPayment(name, date, ids) {
   const ref = db.collection('payments').doc();
   const ok = await write(() => ref.set({ name: String(name || '').trim().slice(0, 80) || 'Pago ' + fmtDate(todayISO()), date: ymd(date) ? date : todayISO(), status: 'armando', invoiceIds: ids, createdAt: new Date().toISOString() }), 'Pago creado');
@@ -3112,6 +3350,9 @@ async function buildPackage(pay, D, onProgress) {
       T('No se pudo incluir el archivo de esta factura:', M, y - 20, 12, bold);
       T(fit(label, font, 10, W - 2 * M), M, y - 40, 10);
     }
+    for (const [n, x] of (i.extraPages || []).entries()) {
+      try { await addFile(x.fileId, x.fileType, `${label} · página ${n + 2}`); } catch (e) { console.warn('PDF página', e); }
+    }
     // Los conduces de la factura van detrás de ella.
     for (const c of i.conduces || []) {
       try { await addFile(c.fileId, c.fileType, `${condTitle(c)} · ${c.supplier || i.supplier || ''} · de la factura${i.number ? ' NCF ' + RD.normNcf(i.number) : ''} (${k} de ${invs.length})`); }
@@ -3499,6 +3740,12 @@ function onClick(e) {
     case 'cond-del-yes': deleteConduce(id); break;
     case 'cond-link': linkConduce(id, t.dataset.inv); break;
     case 'inv-to-cond': invoiceToConduce(id); break;
+    case 'inv-to-page': openPagePick(id); break;
+    case 'page-merge': mergeAsPage(id, t.dataset.to); break;
+    case 'page-add': pageTarget = id; $('#page-input').click(); break;
+    case 'page-rm': removePage(id, Number(t.dataset.k)); break;
+    case 'split-open': openSplit(id); break;
+    case 'split-go': applySplit(t); break;
     case 'xml-view': openViewer(id, true); break;
     case 'inv-ai': rereadInvoice(id, t); break;
     case 'inv-del': $('#inv-del-box').hidden = false; $('#inv-del-box').scrollIntoView({ block: 'nearest', behavior: 'smooth' }); break;
@@ -3693,6 +3940,7 @@ function bind() {
   $('#file-input').addEventListener('change', (e) => { const files = [...e.target.files]; e.target.value = ''; if (files.length) addFiles(files); });
   $('#restore-input').addEventListener('change', (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) restoreBackup(f); });
   $('#signed-input').addEventListener('change', (e) => { const f = e.target.files[0]; e.target.value = ''; if (f && S.sheet && S.sheet.type === 'order' && S.sheet.id) attachSigned(S.sheet.id, f); });
+  $('#page-input').addEventListener('change', (e) => { const files = [...e.target.files]; e.target.value = ''; const inv = pageTarget; pageTarget = null; if (files.length && inv) addPages(inv, files); });
   $('#cond-input').addEventListener('change', (e) => { const files = [...e.target.files]; e.target.value = ''; const inv = condTarget; condTarget = null; if (files.length) addConduceFiles(files, inv); });
   $('#fill-photo-input').addEventListener('change', (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) fillOrderFromMessage(null, f); });
   document.addEventListener('dragover', (e) => { if (canUpload() && e.dataTransfer && [...e.dataTransfer.types].includes('Files')) e.preventDefault(); });

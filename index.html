@@ -371,6 +371,21 @@ details.edit .fields { padding: 12px 14px 14px; }
 .chip .n { font: 600 12.5px var(--font-data); opacity: .75; }
 .pill.cond { color: var(--accent); background: var(--accent-soft); }
 .pill.nc { color: var(--paid); background: var(--paid-bg); }
+.pages-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; font-size: 14px; }
+.pages-line .pg-n { color: var(--muted); }
+.pg-list { display: flex; gap: 8px; flex-wrap: wrap; }
+.pg { position: relative; }
+.pg-img { width: 48px; height: 62px; padding: 0; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; background: var(--surface-2); display: grid; place-items: center; }
+.pg-img img { width: 100%; height: 100%; object-fit: cover; }
+.pg-x { position: absolute; top: -7px; right: -7px; width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--line); background: var(--surface); color: var(--ink); display: grid; place-items: center; padding: 0; }
+.pg-x svg { width: 12px; height: 12px; }
+.pg-acts { display: flex; gap: 12px; flex-wrap: wrap; }
+.split-list { display: flex; flex-direction: column; gap: 10px; }
+.split-row { display: flex; gap: 12px; align-items: flex-start; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 8px; }
+.split-row img { width: 96px; border: 1px solid var(--line); border-radius: 6px; flex: none; }
+.split-mid { display: flex; flex-direction: column; gap: 6px; min-width: 0; flex: 1; }
+.split-mid small { color: var(--accent); font-size: 12.5px; }
+.split-mid select { border: 1px solid var(--line); border-radius: 10px; padding: 9px 10px; background: var(--surface); color: var(--ink); font-size: 15px; }
 .att-bar { display: flex; gap: 8px; flex-wrap: wrap; }
 .att-head .att-period { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .att-head .att-period b { font: 700 16px/1.25 var(--font-display); text-align: center; }
@@ -540,6 +555,7 @@ input[type="date"]::-webkit-calendar-picker-indicator { margin: 0 0 0 4px; paddi
 <input id="signed-input" class="file-input" type="file" accept="image/*,application/pdf" tabindex="-1" aria-hidden="true">
 <input id="fill-photo-input" class="file-input" type="file" accept="image/*" tabindex="-1" aria-hidden="true">
 <input id="cond-input" class="file-input" type="file" accept="image/*,application/pdf" multiple tabindex="-1" aria-hidden="true">
+<input id="page-input" class="file-input" type="file" accept="image/*,application/pdf" multiple tabindex="-1" aria-hidden="true">
 <div id="sheet-root" class="sheet-root" hidden></div>
 <div id="viewer" class="viewer" hidden></div>
 <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
