@@ -10,7 +10,7 @@ const LIB = {
   qrgen: 'js/qr.js',
 };
 const PDF_CREATOR = 'Facturas de Proyectos';
-const APP_VERSION = '1.3.2';
+const APP_VERSION = '1.4.0';
 const SVG = (d) => `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ICON = {
   plus: SVG('<path d="M12 5v14M5 12h14"/>'),
@@ -53,7 +53,7 @@ const PAY_LABEL = { armando: 'Por presentar', presentado: 'Presentado', pagado: 
 const INV_LABEL = { pendiente: 'Pendiente', enpago: 'En pago', presentada: 'Presentada', pagada: 'Pagada' };
 const GROUP_OF = { pendiente: 'pendientes', enpago: 'tramite', presentada: 'tramite', pagada: 'pagadas' };
 const SEGS = [['pendientes', 'Pendientes'], ['tramite', 'En trámite'], ['pagadas', 'Pagadas'], ['todas', 'Todas']];
-const Q_LABEL = { espera: 'En espera', preparando: 'Preparando…', subiendo: 'Guardando…', leyendo: 'Leyendo la factura…', lista: 'Lista', qr: 'Lista: datos del QR de la DGII', xml: 'Lista: datos del XML', manual: 'Guardada; llena los datos', orden: 'Orden firmada', error: 'No se pudo agregar' };
+const Q_LABEL = { espera: 'En espera', preparando: 'Preparando…', subiendo: 'Guardando…', leyendo: 'Leyendo la factura…', lista: 'Lista', qr: 'Lista: datos del QR de la DGII', xml: 'Lista: datos del XML', manual: 'Guardada; llena los datos', orden: 'Orden firmada', conduce: 'Conduce', error: 'No se pudo agregar' };
 const CUR_PREFIX = { DOP: 'RD$', USD: 'US$', EUR: '€' };
 const ORDER_LABEL = { borrador: 'Borrador', enviada: 'Por firmar', autorizada: 'Firmada', anulada: 'Anulada' };
 // Por qué no se pudo usar la clave de API, en palabras del usuario (lo que se arregla en la consola).
@@ -73,7 +73,7 @@ const DEFAULT_ORDER_NOTE = 'Toda factura recibida por compras deberá estar acom
 
 const S = {
   tab: 'facturas', filter: 'pendientes', projectFilter: 'all', search: '', paymentId: null,
-  projects: [], invoices: [], payments: [], orders: [], settings: {}, got: { projects: false, invoices: false, payments: false, orders: false }, orderFilter: 'todas', orderSearch: '', focus: null, invOrder: 'all',
+  projects: [], invoices: [], payments: [], orders: [], conduces: [], settings: {}, got: { projects: false, invoices: false, payments: false, orders: false, conduces: false }, orderFilter: 'todas', orderSearch: '', orderProject: 'all', focus: null, invOrder: 'all',
   dbState: 'loading', aiState: 'ok', queue: [], sheet: null, payDel: false, busyPdf: false, pdfMsg: '',
   updateReg: null, updating: false, ready: null, restoreFile: null,
 };
@@ -150,19 +150,31 @@ function derive() {
   const orderById = new Map(orders.map((o) => [o.id, o]));
   const firstOrderAt = S.orders.reduce((m, o) => (o.createdAt && (!m || o.createdAt < m) ? o.createdAt : m), '');
   const now = Date.now();
+  const invIds = new Set(S.invoices.map((i) => i.id));
+  const condKey = (c) => (condNum(c.number) ? (supKey(c.supplier) || '?') + '|' + condNum(c.number) : '');
+  const cdups = new Map();
+  for (const c of S.conduces) { const k = condKey(c); if (k) cdups.set(k, (cdups.get(k) || 0) + 1); }
+  const conduces = S.conduces.map((c) => {
+    let aiSt = c.ai || 'off';
+    if (aiSt === 'pending' && !aiBusy('c:' + c.id) && now - (Date.parse(c.createdAt) || 0) > 120000) aiSt = 'failed';
+    const k = condKey(c);
+    return { ...c, ai: aiSt, invoiceId: c.invoiceId && invIds.has(c.invoiceId) ? c.invoiceId : null, project: projById.get(c.projectId) || null, dup: k ? cdups.get(k) > 1 : false };
+  }).sort(condSort);
+  const condByInv = new Map();
+  for (const c of conduces) if (c.invoiceId) { const a = condByInv.get(c.invoiceId) || []; a.push(c); condByInv.set(c.invoiceId, a); }
   const invoices = S.invoices.map((i) => {
     const pay = payOf.get(i.id) || null;
     const status = !pay ? 'pendiente' : pay.status === 'pagado' ? 'pagada' : pay.status === 'presentado' ? 'presentada' : 'enpago';
     let aiSt = i.ai || 'off';
-    if (aiSt === 'pending' && !S.queue.some((q) => q.invId === i.id && !q.done) && !aiJobs.some((j) => j.invId === i.id) && now - (Date.parse(i.createdAt) || 0) > 120000) aiSt = 'failed';
+    if (aiSt === 'pending' && !S.queue.some((q) => q.invId === i.id && !q.done) && !aiBusy(i.id) && now - (Date.parse(i.createdAt) || 0) > 120000) aiSt = 'failed';
     const k = dupKey(i);
-    return { ...i, ai: aiSt, pay, status, project: projById.get(i.projectId) || null, order: orderById.get(i.orderId) || null, dup: k ? dups.get(k) > 1 : false };
+    return { ...i, ai: aiSt, pay, status, project: projById.get(i.projectId) || null, order: orderById.get(i.orderId) || null, dup: k ? dups.get(k) > 1 : false, conduces: condByInv.get(i.id) || [] };
   });
   const invByOrder = new Map();
   const namesByRnc = new Map();
   for (const i of S.invoices) if (i.rnc && i.supplier) { const a = namesByRnc.get(i.rnc) || []; if (!a.includes(i.supplier)) a.push(i.supplier); namesByRnc.set(i.rnc, a); }
   for (const i of invoices) if (i.order) { const a = invByOrder.get(i.order.id) || []; a.push(i); invByOrder.set(i.order.id, a); }
-  return { projects: projects.map((p) => projById.get(p.id)), projById, invoices, orders, orderById, invByOrder, namesByRnc, firstOrderAt, companyRnc: RD.normRnc(S.settings.companyRnc) };
+  return { projects: projects.map((p) => projById.get(p.id)), projById, invoices, orders, orderById, invByOrder, namesByRnc, firstOrderAt, conduces, condByInv, companyRnc: RD.normRnc(S.settings.companyRnc) };
 }
 function reviewFlags(i, D) {
   const r = [];
@@ -176,6 +188,7 @@ function reviewFlags(i, D) {
   }
   if (i.ai === 'failed') r.push('Sin leer');
   if (i.dup) r.push('¿Repetida?');
+  if ((i.conduces || []).some((c) => c.dup)) r.push('¿Conduce repetido?');
   if (needsOrder(i, D)) r.push('Sin orden');
   if (i.buyerRnc && D.companyRnc && RD.normRnc(i.buyerRnc) !== D.companyRnc) r.push('Otro cliente');
   return r;
@@ -277,6 +290,51 @@ function matchOrderRef(text, projectId) {
   }
   return null;
 }
+/* ---------- conduces: utilidades ---------- */
+// El conduce es la nota de entrega del material (agregados, blocks, etc.) que viene con la factura.
+const condNum = (s) => String(s || '').replace(/\D/g, '').replace(/^0+/, '');
+const condSort = (a, b) => String(a.date || '').localeCompare(String(b.date || '')) || (Number(condNum(a.number)) || 0) - (Number(condNum(b.number)) || 0) || String(a.createdAt || '').localeCompare(String(b.createdAt || ''));
+const condTitle = (c) => (c.number ? 'Conduce ' + c.number : 'Conduce sin número');
+function condMeta(c) { return [fmtDate(c.date), [c.material, c.qty].filter(Boolean).join(' '), isNum(c.trips) ? plural(c.trips, 'viaje', 'viajes') : ''].filter(Boolean).join(' · '); }
+const sameAmount = (c, i) => isNum(c.total) && c.total > 0 && isNum(i.amount) && (Math.abs(i.amount - c.total) < 0.005 || (isNum(i.itbis) && Math.abs(i.amount - i.itbis - c.total) < 0.005));
+function condSameSup(c, i, D) {
+  if (c.rnc && i.rnc && RD.normRnc(c.rnc) === RD.normRnc(i.rnc)) return true;
+  const names = [i.supplier, ...((i.rnc && D.namesByRnc.get(i.rnc)) || [])].filter(Boolean);
+  return !!c.supplier && names.some((n) => sameName(c.supplier, n));
+}
+// A qué factura va un conduce que llegó solo: la que menciona su número; si no, la única del mismo proveedor con
+// el mismo monto; si no, la del mismo proveedor que se agregó junto con él (en los mismos 15 minutos).
+function conduceMatch(c, D) {
+  const open = D.invoices.filter((i) => i.status !== 'pagada' && (!c.projectId || !i.projectId || i.projectId === c.projectId));
+  const num = condNum(c.number);
+  if (num) {
+    const byRef = open.filter((i) => (i.conduceRefs || []).some((r) => condNum(r) === num));
+    const sameS = byRef.filter((i) => condSameSup(c, i, D));
+    if (sameS.length === 1) return { inv: sameS[0], why: 'numero' };
+    if (byRef.length === 1) return { inv: byRef[0], why: 'numero' };
+  }
+  const cands = open.filter((i) => condSameSup(c, i, D));
+  if (!cands.length) return null;
+  const byAmt = cands.filter((i) => sameAmount(c, i));
+  if (byAmt.length === 1) return { inv: byAmt[0], why: 'monto' };
+  const ct = Date.parse(c.createdAt) || 0;
+  const near = cands.map((i) => ({ i, d: Math.abs((Date.parse(i.createdAt) || 0) - ct) })).filter((x) => x.d <= 15 * 60000).sort((a, b) => a.d - b.d);
+  if (near.length === 1 || (near.length > 1 && near[0].d < near[1].d)) return { inv: near[0].i, why: 'lote' };
+  return null;
+}
+// Conduces esperando factura que pueden ser de esta (para sugerirlos en la factura).
+function condSuggestions(i, D) {
+  const it = Date.parse(i.createdAt) || 0;
+  return D.conduces.filter((c) => !c.invoiceId && c.ai !== 'pending').map((c) => {
+    let s = 0;
+    if (condSameSup(c, i, D)) s += 2;
+    if (sameAmount(c, i)) s += 2;
+    if (c.projectId && c.projectId === i.projectId) s += 1;
+    if (Math.abs((Date.parse(c.createdAt) || 0) - it) <= 15 * 60000) s += 1;
+    if (condNum(c.number) && (i.conduceRefs || []).some((r) => condNum(r) === condNum(c.number))) s += 3;
+    return { c, s };
+  }).filter((x) => x.s >= 2).sort((a, b) => b.s - a.s || String(b.c.createdAt || '').localeCompare(String(a.c.createdAt || ''))).map((x) => x.c);
+}
 function ncfExpired(i) { return !!(i.ncfExpiry && ymd(i.ncfExpiry) && i.date && ymd(i.date) && i.date > i.ncfExpiry); }
 const sortByDateDesc = (a, b) => String(b.date || '').localeCompare(String(a.date || '')) || String(b.createdAt || '').localeCompare(String(a.createdAt || ''));
 function groupByProject(list, D) {
@@ -296,7 +354,7 @@ function visibleList(D) {
   if (S.focus) list = list.filter((i) => i.status !== 'pagada' && (S.focus === 'revisar' ? reviewFlags(i, D).some((f) => f !== 'Sin orden') : needsOrder(i, D)));
   else list = list.filter((i) => S.filter === 'todas' || GROUP_OF[i.status] === S.filter);
   if (!S.focus && D.orders.length && S.invOrder !== 'all') list = list.filter((i) => (S.invOrder === 'con' ? !!i.order : !i.order));
-  if (q) list = list.filter((i) => norm([i.supplier, i.number, i.rnc, i.concept, i.ref, i.project && i.project.name, i.fileName, i.order ? orderNo(i.order) : ''].join(' ')).includes(q));
+  if (q) list = list.filter((i) => norm([i.supplier, i.number, i.rnc, i.concept, i.ref, i.project && i.project.name, i.fileName, i.order ? orderNo(i.order) : '', (i.conduces || []).map((c) => c.number).join(' ')].join(' ')).includes(q));
   return list.sort(sortByDateDesc);
 }
 
@@ -452,6 +510,7 @@ function renderAll() {
   $('#settings-btn').hidden = S.dbState === 'absent';
   refreshInvoiceSheet(D);
   refreshOrderSheet(D);
+  refreshCondSheet(D);
 }
 
 function renderBanner(D) {
@@ -497,6 +556,8 @@ function cardHTML(i, D, opts = {}) {
     else if (i.noOrder) tags.push('<span class="pill nooc">No lleva orden</span>');
     else if (!needsOrder(i, D)) tags.push('<span class="pill nooc">Sin orden</span>');
   }
+  const nc = (i.conduces || []).length;
+  if (nc) tags.push(`<span class="pill cond">${nc === 1 ? (i.conduces[0].number ? 'Conduce <b>' + esc(i.conduces[0].number) + '</b>' : 'Conduce') : nc + ' conduces'}</span>`);
   for (const r of reviewFlags(i, D)) tags.push(`<span class="pill warn">${esc(r)}</span>`);
   return `<button type="button" class="inv" data-act="open-inv" data-id="${esc(i.id)}">${thumbHTML(i)}<span class="inv-main"><span class="inv-top"><span class="supplier${i.supplier ? '' : ' muted'}">${esc(name)}</span><span class="amount">${esc(money(i.amount, i.currency))}</span></span><span class="inv-meta">${esc(meta)}</span><span class="tags">${tags.join('')}</span></span></button>`;
 }
@@ -558,7 +619,7 @@ function readyToPay(i, D) { return i.status === 'pendiente' && isNum(i.amount) &
 function renderTodo(D) {
   const el = $('#todo');
   if (!el) return;
-  if (!S.got.invoices || !S.got.orders || !S.got.payments || !canEdit()) { el.hidden = true; el.innerHTML = ''; return; }
+  if (!S.got.invoices || !S.got.orders || !S.got.payments || !S.got.conduces || !canEdit()) { el.hidden = true; el.innerHTML = ''; return; }
   const live = D.invoices.filter((i) => i.status !== 'pagada');
   const unread = live.filter((i) => needsReading(i) && i.ai !== 'pending');
   const review = live.filter((i) => reviewFlags(i, D).some((f) => f !== 'Sin orden'));
@@ -574,6 +635,8 @@ function renderTodo(D) {
     : row(unread.length, `${plural(unread.length, 'factura', 'facturas')} sin datos. Con la clave de API se llenan solas.`, b('settings', 'Ajustes')));
   if (review.length) rows.push(row(review.length, plural(review.length, 'factura con algo que revisar', 'facturas con algo que revisar'), b('focus', 'Ver', ' data-f="revisar"'), 'warn'));
   if (noOrd.length) rows.push(row(noOrd.length, plural(noOrd.length, 'factura sin orden de compra', 'facturas sin orden de compra'), b('focus', 'Ver', ' data-f="sinorden"'), 'warn'));
+  const condWait = D.conduces.filter((c) => !c.invoiceId && c.ai !== 'pending');
+  if (condWait.length) rows.push(row(condWait.length, plural(condWait.length, 'conduce esperando su factura', 'conduces esperando su factura'), b('cond-list', 'Ver')));
   if (toSign.length) rows.push(row(toSign.length, plural(toSign.length, 'orden por firmar', 'órdenes por firmar'), b('go-orders', 'Ver', ' data-f="porfirmar"')));
   if (waiting.length) rows.push(row(waiting.length, plural(waiting.length, 'orden firmada esperando factura', 'órdenes firmadas esperando factura'), b('go-orders', 'Ver', ' data-f="sinfactura"')));
   if (ready.length) rows.push(row(ready.length, `${plural(ready.length, 'factura lista', 'facturas listas')} para pagar · <b class="mono">${esc(totalStr(ready))}</b>`, b('pay-ready', 'Armar pago', '', ' primary'), 'ok'));
@@ -587,7 +650,7 @@ function renderQueue() {
   const q = S.queue;
   if (!q.length) { el.hidden = true; el.innerHTML = ''; return; }
   const left = q.filter((x) => !x.done).length;
-  const cls = { espera: 'q-busy', preparando: 'q-busy', subiendo: 'q-busy', leyendo: 'q-busy', lista: 'q-ok', qr: 'q-ok', xml: 'q-ok', orden: 'q-ok', manual: 'q-manual', error: 'q-error' };
+  const cls = { espera: 'q-busy', preparando: 'q-busy', subiendo: 'q-busy', leyendo: 'q-busy', lista: 'q-ok', qr: 'q-ok', xml: 'q-ok', orden: 'q-ok', conduce: 'q-ok', manual: 'q-manual', error: 'q-error' };
   el.hidden = false;
   el.innerHTML = `<div class="q-head"><b>${left ? `Procesando ${left} de ${q.length}…` : `Listo: ${plural(q.length, 'archivo', 'archivos')}`}</b>${left ? '' : '<button type="button" class="btn sm ghost" data-act="queue-clear">Ocultar</button>'}</div><ul class="q-list">${q.map((x) => `<li class="${cls[x.state]}"><span class="q-dot"></span><span class="q-name">${esc(x.name)}</span><span class="q-state">${esc(Q_LABEL[x.state] + (x.msg ? ': ' + x.msg : ''))}</span></li>`).join('')}</ul>`;
 }
@@ -655,28 +718,51 @@ function renderPayDetail(D, pay) {
     : `<button type="button" class="btn danger sm" data-act="pay-del">${ICON.trash} Eliminar pago</button>`;
 }
 
-function orderCardHTML(o, D) {
+function orderCardHTML(o, D, opts = {}) {
   const invs = D.invByOrder.get(o.id) || [];
   const n = (o.items || []).length;
-  const meta = [o.project ? o.project.name : 'Sin proyecto', fmtDate(o.date), plural(n, 'artículo', 'artículos'), invs.length ? plural(invs.length, 'factura', 'facturas') : o.status === 'autorizada' ? 'esperando factura' : ''].filter(Boolean).join(' · ');
+  const meta = [opts.hideProject ? '' : o.project ? o.project.name : 'Sin proyecto', fmtDate(o.date), plural(n, 'artículo', 'artículos'), invs.length ? plural(invs.length, 'factura', 'facturas') : o.status === 'autorizada' ? 'esperando factura' : ''].filter(Boolean).join(' · ');
   return `<button type="button" class="ord" data-act="open-order" data-id="${esc(o.id)}"><span class="ord-top"><b class="mono">${esc(orderNo(o))}</b><span class="pill o-${o.status}">${ORDER_LABEL[o.status]}</span></span><span class="ord-sup">${esc(o.supplier || 'Sin proveedor')}</span><span class="ord-meta">${esc(meta)}</span></button>`;
 }
 function renderOrdenes(D) {
   const el = $('#o-list');
   $('#o-new').hidden = !canEdit();
+  if (S.orderProject !== 'all' && S.orderProject !== 'none' && !D.projById.has(S.orderProject) && S.got.projects) S.orderProject = 'all';
+  const inProj = (o) => S.orderProject === 'all' || (S.orderProject === 'none' ? !o.project : o.projectId === S.orderProject);
+  const base = D.orders.filter(inProj);
   const groupOf = (o) => (o.status === 'anulada' ? 'anuladas' : o.status !== 'autorizada' ? 'porfirmar' : (D.invByOrder.get(o.id) || []).length ? 'completas' : 'sinfactura');
-  const counts = { porfirmar: 0, sinfactura: 0, completas: 0, todas: D.orders.length };
-  for (const o of D.orders) if (counts[groupOf(o)] != null) counts[groupOf(o)]++;
+  const counts = { porfirmar: 0, sinfactura: 0, completas: 0, todas: base.length };
+  for (const o of base) if (counts[groupOf(o)] != null) counts[groupOf(o)]++;
   $('#o-seg').innerHTML = ORDER_SEGS.map(([k, label]) => `<button type="button" data-act="ofilter" data-f="${k}" aria-pressed="${S.orderFilter === k}"><span>${label}</span><span class="n">${counts[k]}</span></button>`).join('');
+  // Proyectos que tienen órdenes (y el elegido), para filtrar.
+  const och = $('#o-chips');
+  const withOrders = D.projects.filter((p) => D.orders.some((o) => o.projectId === p.id) || S.orderProject === p.id);
+  const noneN = D.orders.filter((o) => !o.project).length;
+  if (D.orders.length && withOrders.length + (noneN ? 1 : 0) > 1) {
+    och.hidden = false;
+    const chips = [`<button type="button" class="chip" data-act="oprojf" data-p="all" aria-pressed="${S.orderProject === 'all'}"><span>Todos los proyectos</span></button>`];
+    for (const p of withOrders) chips.push(`<button type="button" class="chip" data-act="oprojf" data-p="${esc(p.id)}" aria-pressed="${S.orderProject === p.id}"><i class="dot" style="--c:${p.color}"></i><span>${esc(p.name)}</span></button>`);
+    if (noneN || S.orderProject === 'none') chips.push(`<button type="button" class="chip" data-act="oprojf" data-p="none" aria-pressed="${S.orderProject === 'none'}"><i class="dot ring"></i><span>Sin proyecto</span></button>`);
+    och.innerHTML = chips.join('');
+  } else { och.hidden = true; och.innerHTML = ''; }
   if (!S.got.orders) { el.innerHTML = S.dbState === 'absent' ? '' : '<p class="loading">Cargando órdenes…</p>'; return; }
   if (!D.orders.length) {
     el.innerHTML = `<div class="empty"><h2>Aquí van tus órdenes de compra</h2><ol><li>Cuando te pidan materiales, toca <b>Nueva orden de compra</b> y llénala. Si tienes la clave de API, puedes pegar el mensaje del pedido y se llena sola.</li><li>Comparte el PDF para que la firmen y la sellen.</li><li>Cuando vuelva firmada y sellada, agrega la foto con <b>+</b> en Facturas: la app reconoce el código QR de la orden y la adjunta sola.</li><li>Cuando llegue la factura, se enlaza sola a su orden si es la única abierta de ese proveedor (si no, te sugiere cuál). En el PDF del pago salen juntas.</li></ol></div>`;
     return;
   }
   const q = norm(S.orderSearch);
-  let list = D.orders.filter((o) => S.orderFilter === 'todas' || groupOf(o) === S.orderFilter);
+  let list = base.filter((o) => S.orderFilter === 'todas' || groupOf(o) === S.orderFilter);
   if (q) list = list.filter((o) => norm([orderNo(o), o.supplier, o.requestedBy, o.project && o.project.name, (o.items || []).map((x) => x.desc).join(' ')].join(' ')).includes(q));
-  el.innerHTML = list.length ? `<div class="list">${list.map((o) => orderCardHTML(o, D)).join('')}</div>` : `<div class="empty"><p>${q ? 'Nada coincide con tu búsqueda.' : 'No hay órdenes en esta lista.'}</p></div>`;
+  if (!list.length) { el.innerHTML = `<div class="empty"><p>${q ? 'Nada coincide con tu búsqueda.' : S.orderProject !== 'all' ? 'No hay órdenes de este proyecto en esta lista.' : 'No hay órdenes en esta lista.'}</p></div>`; return; }
+  if (S.orderProject !== 'all') { el.innerHTML = `<div class="list">${list.map((o) => orderCardHTML(o, D, { hideProject: true })).join('')}</div>`; return; }
+  // Divididas por proyecto, en el mismo orden que en Facturas; dentro de cada uno, la más nueva primero.
+  const groups = D.projects.map((p) => ({ name: p.name, color: p.color, items: list.filter((o) => o.projectId === p.id) })).filter((g) => g.items.length);
+  const none = list.filter((o) => !o.project);
+  if (none.length) groups.push({ name: 'Sin proyecto', color: null, items: none });
+  el.innerHTML = groups.map((g) => {
+    const toSign = g.items.filter((o) => o.status === 'borrador' || o.status === 'enviada').length;
+    return `<section class="group"><h2 class="group-h">${g.color ? `<i class="dot" style="--c:${g.color}"></i>` : '<i class="dot ring"></i>'}<span class="gname">${esc(g.name)}</span><span class="gmeta">${esc([plural(g.items.length, 'orden', 'órdenes'), toSign && S.orderFilter !== 'porfirmar' ? `${toSign} por firmar` : ''].filter(Boolean).join(' · '))}</span></h2><div class="list">${g.items.map((o) => orderCardHTML(o, D, { hideProject: true })).join('')}</div></section>`;
+  }).join('');
 }
 
 function renderProyectos(D) {
@@ -708,7 +794,7 @@ function closeSheet() { const root = $('#sheet-root'); root.hidden = true; root.
 function lockBody() { document.body.classList.toggle('locked', !!S.sheet || !$('#viewer').hidden); }
 const sheetHead = (title) => `<div class="sheet-h"><h2>${title}</h2><button type="button" class="icon-btn plain" data-act="sheet-close" aria-label="Cerrar">${ICON.close}</button></div>`;
 
-function invSig(i) { return JSON.stringify([i.orderId, i.orderAuto, i.noOrder, i.order && i.order.status, i.ncfExpiry, i.supplier, i.number, i.rnc, i.date, i.amount, i.itbis, i.currency, i.concept, i.ref, i.projectId, i.projectHint, i.ai, i.notInvoice, i.pay && i.pay.id, i.pay && i.pay.status, i.dup, i.fiscal, i.xmlId, i.fileId, i.buyerRnc]); }
+function invSig(i, D) { return JSON.stringify([i.orderId, i.orderAuto, i.noOrder, i.order && i.order.status, i.ncfExpiry, i.supplier, i.number, i.rnc, i.date, i.amount, i.itbis, i.currency, i.concept, i.ref, i.projectId, i.projectHint, i.ai, i.notInvoice, i.pay && i.pay.id, i.pay && i.pay.status, i.dup, i.fiscal, i.xmlId, i.fileId, i.buyerRnc, (i.conduces || []).map((c) => [c.id, c.number, c.date, c.total, c.material, c.qty, c.ai, c.auto, c.dup]), D ? D.conduces.filter((c) => !c.invoiceId).map((c) => c.id + c.ai).join() : '']); }
 function openInvoice(id, keepScroll) {
   const D = derive();
   const i = D.invoices.find((x) => x.id === id);
@@ -738,6 +824,7 @@ function openInvoice(id, keepScroll) {
   if (i.notInvoice) msgs.push(`<div class="msg warn">${ICON.alert}<span>Este archivo no parece una factura. Revísalo antes de meterlo a un pago.</span></div>`);
   if (i.dup) msgs.push(`<div class="msg warn">${ICON.alert}<span>Puede estar repetida: hay otra factura del mismo proveedor con el mismo NCF.</span></div>`);
   if (i.projectHint && !i.project && edit) msgs.push(`<div class="msg hint"><span>La factura dice que es del proyecto <b>${esc(i.projectHint)}</b>, que no está en tu lista.</span><button type="button" class="link" data-act="hint-create" data-id="${esc(i.id)}">Crear “${esc(i.projectHint)}” y asignarla</button></div>`);
+  if (edit && !i.number && !i.fiscal && !i.pay && i.ai !== 'pending' && !(i.conduces || []).length) msgs.push(`<div class="msg"><span>¿Este archivo es un conduce (la nota de entrega del material) y no una factura? <button type="button" class="link" data-act="inv-to-cond" data-id="${esc(i.id)}">Es un conduce</button></span></div>`);
   if (i.xmlId && i.fileType !== 'application/xml') msgs.push(`<div class="msg">${ICON.check}<span>También tiene su XML de factura electrónica. <button type="button" class="link" data-act="xml-view" data-id="${esc(i.id)}">Ver XML</button></span></div>`);
   const where = i.pay
     ? `<span class="pill ${i.status}">${INV_LABEL[i.status]}</span><span>En <button type="button" class="link" data-act="open-pay" data-id="${esc(i.pay.id)}">${esc(i.pay.name || 'Pago')}</button></span>`
@@ -775,13 +862,14 @@ function openInvoice(id, keepScroll) {
         <div class="field full"><label for="f-order">Orden de compra</label><select id="f-order" ${dis}><option value="">Sin orden</option>${orderOpts}</select>${i.order ? `<button type="button" class="link" data-act="open-order" data-id="${esc(i.order.id)}">Abrir ${esc(orderNo(i.order))}</button>` : ''}</div>
         <div class="field full"><label for="f-ref">Otra referencia (cubicación, contrato)</label><input id="f-ref" maxlength="60" placeholder="Opcional" value="${esc(i.ref || '')}" ${dis}></div>
       </div>
+      ${invCondBoxHTML(i, D, edit)}
       ${delBtn}
-      <div id="inv-del-box" hidden><div class="confirm"><p>¿Eliminar esta factura? También se borran sus archivos y se quita del pago donde esté.</p><div class="actions"><button type="button" class="btn danger solid" data-act="inv-del-yes" data-id="${esc(i.id)}">Eliminar factura</button><button type="button" class="btn" data-act="inv-del-no">Cancelar</button></div></div></div>
+      <div id="inv-del-box" hidden><div class="confirm"><p>¿Eliminar esta factura? También se borran sus archivos y se quita del pago donde esté.${(i.conduces || []).length ? ' Sus conduces quedan guardados, esperando factura.' : ''}</p><div class="actions"><button type="button" class="btn danger solid" data-act="inv-del-yes" data-id="${esc(i.id)}">Eliminar factura</button><button type="button" class="btn" data-act="inv-del-no">Cancelar</button></div></div></div>
     </div>
     ${edit ? '<div class="sheet-f"><button type="submit" class="btn primary block" id="inv-save">Guardar</button></div>' : ''}
   </form>`;
   const prevScroll = keepScroll && $('.sheet-b') ? $('.sheet-b').scrollTop : 0;
-  openSheet(html, { type: 'inv', id: i.id, dirty: false, sig: invSig(i) });
+  openSheet(html, { type: 'inv', id: i.id, dirty: false, sig: invSig(i, D) });
   if (keepScroll && $('.sheet-b')) $('.sheet-b').scrollTop = prevScroll;
 }
 function refreshInvoiceSheet(D) {
@@ -789,11 +877,120 @@ function refreshInvoiceSheet(D) {
   if (!sh || sh.type !== 'inv' || sh.dirty) return;
   const i = D.invoices.find((x) => x.id === sh.id);
   if (!i) { if (S.got.invoices) closeSheet(); return; }
-  if (invSig(i) !== sh.sig) openInvoice(i.id, true);
+  if (invSig(i, D) !== sh.sig) openInvoice(i.id, true);
 }
 function liveHelp(t) {
   if (t.id === 'f-rnc') { const r = RD.rncInfo(t.value); $('#f-rnc-help').textContent = r.ok ? (r.kind === 'rnc' ? 'RNC ' : 'Cédula ') + RD.fmtRnc(r.value) + (r.checkOk === false ? ' · revisa el dígito verificador' : '') : '9 dígitos (RNC) u 11 (cédula)'; }
   if (t.id === 'f-num') { const n = RD.parseNcf(t.value); $('#f-num-help').textContent = n.ok ? n.label + (n.consumo ? ' · no sirve para crédito fiscal' : '') : 'Ej. B0100004521 o E310000000123'; }
+}
+
+/* ---------- hojas de los conduces ---------- */
+const AUTO_WHY = { numero: 'la factura menciona su número', monto: 'es del mismo proveedor y el monto coincide', lote: 'es del mismo proveedor y se agregaron juntos' };
+function condThumbHTML(c) {
+  const tid = c.thumbId || (String(c.fileType || '').startsWith('image/') ? c.fileId : null);
+  return `<span class="thumb sm">${tid ? `<img src="${esc(assetUrl(tid))}" alt="" loading="lazy" decoding="async">` : `<span class="ph">${c.fileType === 'application/pdf' ? 'PDF' : 'FOTO'}</span>`}</span>`;
+}
+function condRowHTML(c, withSupplier) {
+  const sub = [withSupplier ? c.supplier || '' : '', condMeta(c)].filter(Boolean).join(' · ');
+  const right = c.ai === 'pending' ? '<span class="pill reading">Leyendo…</span>' : isNum(c.total) ? `<span class="num">${esc(money(c.total, c.currency))}</span>` : '';
+  return `<button type="button" class="cond-row" data-act="open-cond" data-id="${esc(c.id)}">${condThumbHTML(c)}<span class="cond-mid"><b>${esc(condTitle(c))}</b><small>${esc(sub || 'Sin datos todavía')}</small></span>${c.dup ? '<span class="pill warn">¿Repetido?</span>' : ''}${right}</button>`;
+}
+function invCondBoxHTML(i, D, edit) {
+  const list = i.conduces || [];
+  if (!list.length && !edit) return '';
+  const sugg = edit ? condSuggestions(i, D).slice(0, 3) : [];
+  const total = list.length > 1 && list.every((c) => isNum(c.total)) ? round2(list.reduce((t, c) => t + c.total, 0)) : null;
+  return `<div class="card" id="inv-conds"><h2>Conduces</h2>
+    ${list.length ? `<div class="cond-list">${list.map((c) => condRowHTML(c, false)).join('')}</div>` : '<p class="hint">Si la factura vino con conduces (la nota de entrega del material), agrégalos aquí. En el PDF del pago van detrás de la factura.</p>'}
+    ${isNum(total) ? `<p class="usage">Los ${list.length} conduces suman ${esc(money(total, list[0].currency))}.</p>` : ''}
+    ${list.filter((c) => c.auto).map((c) => `<div class="msg hint"><span>El ${esc(condTitle(c).toLowerCase())} se adjuntó solo: ${esc(AUTO_WHY[c.autoWhy] || 'es del mismo proveedor')}. Si no es de esta factura, ábrelo y cámbialo.</span></div>`).join('')}
+    ${sugg.length ? `<div class="msg hint"><span>${sugg.length === 1 ? 'Hay un conduce esperando factura que puede ser de esta:' : 'Hay conduces esperando factura que pueden ser de esta:'}</span>${sugg.map((c) => `<button type="button" class="link" data-act="cond-link" data-id="${esc(c.id)}" data-inv="${esc(i.id)}">Adjuntar ${esc(c.number ? 'el ' + c.number : 'el conduce')}${isNum(c.total) ? ' (' + esc(money(c.total, c.currency)) + ')' : ''}</button>`).join(' ')}</div>` : ''}
+    ${edit ? `<div><button type="button" class="btn sm" data-act="cond-add" data-inv="${esc(i.id)}">${ICON.plus} Agregar conduce</button></div>` : ''}
+  </div>`;
+}
+// Con cambios sin guardar en la factura, solo se redibuja la tarjeta de conduces.
+function refreshInvCondBox(invId) {
+  setTimeout(() => {
+    const card = $('#inv-conds');
+    if (!card || !S.sheet || S.sheet.type !== 'inv' || S.sheet.id !== invId || !S.sheet.dirty) return;
+    const D = derive();
+    const i = D.invoices.find((x) => x.id === invId);
+    if (i) card.outerHTML = invCondBoxHTML(i, D, canEdit());
+  }, 150);
+}
+function condSig(c) { return JSON.stringify([c.number, c.date, c.supplier, c.rnc, c.total, c.currency, c.material, c.qty, c.trips, c.invoiceId, c.projectId, c.projectHint, c.ai, c.auto, c.fileId, c.thumbId, c.dup]); }
+function openConduce(id, keepScroll) {
+  const D = derive();
+  const c = D.conduces.find((x) => x.id === id);
+  if (!c) return;
+  const edit = canEdit();
+  const dis = edit ? '' : 'disabled';
+  const inv = c.invoiceId ? D.invoices.find((x) => x.id === c.invoiceId) : null;
+  const tid = c.thumbId || (String(c.fileType || '').startsWith('image/') ? c.fileId : null);
+  const kind = c.fileType === 'application/pdf' ? 'PDF' : 'Foto';
+  const preview = `<button type="button" class="preview" data-act="cond-view" data-id="${esc(c.id)}" aria-label="Ver archivo completo">${tid ? `<img src="${esc(assetUrl(tid))}" alt="">` : `<span class="ph">${kind.toUpperCase()}</span>`}<span class="preview-tag">${kind === 'PDF' ? `PDF · ${plural(c.pages || 1, 'página', 'páginas')}` : kind} · Ver</span></button>`;
+  const msgs = [];
+  const aiLink = edit && c.ai !== 'pending' && ai.hasKey() ? ` <button type="button" class="link" data-act="cond-ai" data-id="${esc(c.id)}">${c.ai === 'done' ? 'Leer otra vez' : 'Leer automáticamente'}</button>` : '';
+  if (c.ai === 'pending') msgs.push(`<div class="msg ok">${ICON.spark}<span>Leyendo el conduce… Los datos aparecen aquí en unos segundos.</span></div>`);
+  else if (c.ai === 'done') msgs.push(`<div class="msg ok">${ICON.spark}<span>Datos leídos automáticamente. Revisa que estén bien.${aiLink}</span></div>`);
+  else if (c.ai === 'failed') msgs.push(`<div class="msg warn">${ICON.alert}<span>No se pudo leer automáticamente. Llena los datos o intenta otra vez.${aiLink}</span></div>`);
+  else if (aiLink) msgs.push(`<div class="msg">${ICON.spark}<span>¿Quieres que la app lea los datos de este conduce?${aiLink}</span></div>`);
+  if (c.dup) msgs.push(`<div class="msg warn">${ICON.alert}<span>Hay otro conduce de este proveedor con el mismo número. Si es la misma foto dos veces, elimina uno para que no se pague doble.</span></div>`);
+  if (inv && c.auto) msgs.push(`<div class="msg hint"><span>Se adjuntó solo a esta factura: ${esc(AUTO_WHY[c.autoWhy] || 'es del mismo proveedor')}. Si no es, elige otra en «Factura».</span></div>`);
+  if (c.projectHint && !c.project) msgs.push(`<div class="msg hint"><span>El conduce dice que es del proyecto <b>${esc(c.projectHint)}</b>, que no está en tu lista.</span></div>`);
+  const where = inv
+    ? `<span class="pill cond">Conduce</span><span>De la factura <button type="button" class="link" data-act="open-inv" data-id="${esc(inv.id)}">${esc([inv.supplier || 'Factura', inv.number ? RD.normNcf(inv.number) : '', money(inv.amount, inv.currency)].filter(Boolean).join(' · '))}</button></span>`
+    : '<span class="pill warn">Sin factura</span><span>Esperando su factura.</span>';
+  const same = (i) => (condSameSup(c, i, D) ? 1 : 0);
+  const invList = D.invoices.slice().sort((a, b) => (b.id === c.invoiceId) - (a.id === c.invoiceId) || (b.status !== 'pagada') - (a.status !== 'pagada') || same(b) - same(a) || String(b.date || b.createdAt || '').localeCompare(String(a.date || a.createdAt || ''))).slice(0, 300);
+  const invOpts = invList.map((i) => `<option value="${esc(i.id)}"${i.id === c.invoiceId ? ' selected' : ''}>${esc([i.supplier || 'Factura sin datos', i.number ? RD.normNcf(i.number) : fmtDate(i.date), money(i.amount, i.currency), i.status === 'pagada' ? 'pagada' : ''].filter(Boolean).join(' · '))}</option>`).join('');
+  const opts = D.projects.map((p) => `<option value="${esc(p.id)}"${p.id === c.projectId ? ' selected' : ''}>${esc(p.name)}</option>`).join('');
+  const cur = normCur(c.currency);
+  const html = `<form id="cond-form" data-id="${esc(c.id)}" autocomplete="off">${sheetHead(esc(condTitle(c)))}
+    <div class="sheet-b">
+      ${preview}
+      <div class="status-line">${where}</div>
+      ${msgs.join('')}
+      <div class="fields">
+        <div class="field full"><label for="c-inv">Factura</label><select id="c-inv" ${dis}><option value="">Sin factura (esperando)</option>${invOpts}</select></div>
+        <div class="field"><label for="c-num">No. de conduce</label><input id="c-num" class="mono" maxlength="30" value="${esc(c.number || '')}" ${dis}></div>
+        <div class="field"><label for="c-date">Fecha</label><input id="c-date" type="date" value="${esc(c.date || '')}" ${dis}></div>
+        <div class="field full"><label for="c-sup">Proveedor</label><input id="c-sup" maxlength="120" list="dl-csups" value="${esc(c.supplier || '')}" ${dis}></div>
+        <div class="field full"><label for="c-proj">Proyecto</label><select id="c-proj" ${dis}><option value="">Sin proyecto</option>${opts}</select></div>
+        <div class="field"><label for="c-mat">Material</label><input id="c-mat" maxlength="60" placeholder="Ej. Grava" value="${esc(c.material || '')}" ${dis}></div>
+        <div class="field"><label for="c-qty">Cantidad</label><input id="c-qty" maxlength="30" placeholder="Ej. 5 m³" value="${esc(c.qty || '')}" ${dis}></div>
+        <div class="field"><label for="c-trips">Viajes</label><input id="c-trips" class="mono" inputmode="numeric" maxlength="4" value="${esc(isNum(c.trips) ? String(c.trips) : '')}" ${dis}></div>
+        <div class="field"><label for="c-total">Total (${esc(CUR_PREFIX[cur] || cur)})</label><input id="c-total" class="mono" inputmode="decimal" maxlength="20" placeholder="0.00" value="${esc(amountInput(c.total))}" ${dis}></div>
+      </div>
+      ${edit ? `<div><button type="button" class="btn danger sm" data-act="cond-del">${ICON.trash} Eliminar conduce</button></div><div id="cond-del-box" hidden><div class="confirm"><p>¿Eliminar este conduce? También se borra su foto o PDF.</p><div class="actions"><button type="button" class="btn danger solid" data-act="cond-del-yes" data-id="${esc(c.id)}">Eliminar conduce</button><button type="button" class="btn" data-act="cond-del-no">Cancelar</button></div></div></div>` : ''}
+    </div>
+    ${edit ? '<div class="sheet-f"><button type="submit" class="btn primary block" id="cond-save">Guardar</button></div>' : ''}
+  </form><datalist id="dl-csups">${uniqList([...S.conduces.map((x) => x.supplier), ...S.invoices.map((x) => x.supplier)]).slice(0, 300).map((v) => `<option value="${esc(v)}"></option>`).join('')}</datalist>`;
+  const prevScroll = keepScroll && $('.sheet-b') ? $('.sheet-b').scrollTop : 0;
+  openSheet(html, { type: 'cond', id: c.id, dirty: false, sig: condSig(c) });
+  if (keepScroll && $('.sheet-b')) $('.sheet-b').scrollTop = prevScroll;
+}
+const condListSig = (D) => D.conduces.filter((c) => !c.invoiceId).map(condSig).join('|');
+function openCondList(keepScroll) {
+  const D = derive();
+  const list = D.conduces.filter((c) => !c.invoiceId).sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+  const html = `${sheetHead('Conduces sin factura')}<div class="sheet-b">
+    <p class="hint">Estos conduces todavía no tienen su factura. Cuando llegue, se adjuntan solos si la factura menciona el número del conduce, si el monto coincide o si los agregas juntos. Si no, abre el conduce y elige su factura.</p>
+    ${list.length ? `<div class="cond-list">${list.map((c) => condRowHTML(c, true)).join('')}</div>` : '<div class="empty"><p>No hay conduces esperando factura.</p></div>'}
+    ${canUpload() ? `<div><button type="button" class="btn sm" data-act="cond-add">${ICON.plus} Agregar un conduce sin factura</button></div>` : ''}
+  </div>`;
+  const prevScroll = keepScroll && $('.sheet-b') ? $('.sheet-b').scrollTop : 0;
+  openSheet(html, { type: 'conds', id: 'conds', sig: condListSig(D) });
+  if (keepScroll && $('.sheet-b')) $('.sheet-b').scrollTop = prevScroll;
+}
+function refreshCondSheet(D) {
+  const sh = S.sheet;
+  if (!sh) return;
+  if (sh.type === 'conds') { if (condListSig(D) !== sh.sig) openCondList(true); return; }
+  if (sh.type !== 'cond' || sh.dirty) return;
+  const c = D.conduces.find((x) => x.id === sh.id);
+  if (!c) { if (S.got.conduces) closeSheet(); return; }
+  if (condSig(c) !== sh.sig) openConduce(c.id, true);
 }
 
 function openPicker(mode, preselect) {
@@ -832,13 +1029,14 @@ function openProject(id) {
   const p = D.projById.get(id);
   if (!p) return;
   const invs = D.invoices.filter((i) => i.projectId === id);
+  const ords = D.orders.filter((o) => o.projectId === id);
   const by = (k) => invs.filter((i) => GROUP_OF[i.status] === k);
   openSheet(`<form id="proj-form" data-id="${esc(id)}" autocomplete="off">${sheetHead(esc(p.name))}
     <div class="sheet-b">
       <div class="field"><label for="pe-name">Nombre del proyecto</label><input id="pe-name" maxlength="80" value="${esc(p.name)}" required></div>
       <div class="stats card"><div><span>Pendientes (${by('pendientes').length})</span><b>${esc(totalStr(by('pendientes')))}</b></div><div><span>En trámite (${by('tramite').length})</span><b>${esc(totalStr(by('tramite')))}</b></div><div><span>Pagadas (${by('pagadas').length})</span><b>${esc(totalStr(by('pagadas')))}</b></div></div>
       <button type="button" class="btn block" data-act="proj-view" data-id="${esc(id)}">Ver las facturas de este proyecto ${ICON.right}</button>
-      <div id="proj-del-box" hidden>${invs.length ? `<div class="confirm"><p>Este proyecto tiene ${plural(invs.length, 'factura', 'facturas')}. Para eliminarlo, primero cámbialas a otro proyecto o bórralas.</p><div class="actions"><button type="button" class="btn" data-act="proj-del-no">Entendido</button></div></div>` : `<div class="confirm"><p>¿Eliminar el proyecto “${esc(p.name)}”?</p><div class="actions"><button type="button" class="btn danger solid" data-act="proj-del-yes" data-id="${esc(id)}">Eliminar proyecto</button><button type="button" class="btn" data-act="proj-del-no">Cancelar</button></div></div>`}</div>
+      <div id="proj-del-box" hidden>${invs.length || ords.length ? `<div class="confirm"><p>Este proyecto tiene ${[invs.length ? plural(invs.length, 'factura', 'facturas') : '', ords.length ? plural(ords.length, 'orden de compra', 'órdenes de compra') : ''].filter(Boolean).join(' y ')}. Para eliminarlo, primero cámbialas a otro proyecto o bórralas.</p><div class="actions"><button type="button" class="btn" data-act="proj-del-no">Entendido</button></div></div>` : `<div class="confirm"><p>¿Eliminar el proyecto “${esc(p.name)}”?</p><div class="actions"><button type="button" class="btn danger solid" data-act="proj-del-yes" data-id="${esc(id)}">Eliminar proyecto</button><button type="button" class="btn" data-act="proj-del-no">Cancelar</button></div></div>`}</div>
     </div>
     <div class="sheet-f"><button type="submit" class="btn primary">Guardar nombre</button><button type="button" class="btn danger" data-act="proj-del">${ICON.trash} Eliminar</button></div>
   </form>`, { type: 'proj', id });
@@ -1063,11 +1261,12 @@ function setQ(item, state, msg) { item.state = state; if (msg !== undefined) ite
 function finishQ(item, state, msg) {
   item.done = true;
   setQ(item, state, msg || '');
-  const okStates = ['lista', 'qr', 'xml', 'orden'];
+  const okStates = ['lista', 'qr', 'xml', 'orden', 'conduce'];
   if (S.queue.every((x) => x.done) && S.queue.every((x) => okStates.includes(x.state))) {
     setTimeout(() => { if (S.queue.every((x) => x.done)) { S.queue = S.queue.filter((x) => !okStates.includes(x.state)); renderQueue(); } }, 5000);
   }
   scheduleRender();
+  scheduleLink();
 }
 async function pump() {
   if (pumping) return;
@@ -1154,7 +1353,10 @@ async function addOne(item) {
     item.file = null;
     if (willRead) {
       setQ(item, 'leyendo');
-      enqueueAI({ invId: ref.id, input: { image: aiImage, text } }).then((r) => finishQ(item, r === 'done' ? (qr ? 'qr' : 'lista') : qr ? 'qr' : 'manual'));
+      enqueueAI({ invId: ref.id, input: { image: aiImage, text } }).then((r) => {
+        if (r === 'conduce') { item.condId = convertedTo.get(ref.id) || null; finishQ(item, 'conduce', 'esperando su factura'); return; }
+        finishQ(item, r === 'done' ? (qr ? 'qr' : 'lista') : qr ? 'qr' : 'manual');
+      });
     } else finishQ(item, qr ? 'qr' : 'manual');
   } catch (e) {
     if (e instanceof UserError) console.warn(e.message); else console.error(e);
@@ -1203,22 +1405,29 @@ async function addXml(item, f) {
 }
 
 const aiJobs = [];
+const aiActive = new Set();
 let aiRunning = 0;
+const jobKey = (j) => (j.condId ? 'c:' + j.condId : j.invId);
+const aiBusy = (key) => aiActive.has(key) || aiJobs.some((j) => jobKey(j) === key);
 function enqueueAI(job) { return new Promise((res) => { aiJobs.push({ ...job, res }); runAI(); }); }
 function runAI() {
   while (aiRunning < 2 && aiJobs.length) {
     const job = aiJobs.shift();
+    const key = jobKey(job);
     aiRunning++;
-    readWithAI(job.invId, job.input).catch((e) => { console.error(e); return 'failed'; }).then((r) => { aiRunning--; job.res(r); runAI(); });
+    aiActive.add(key);
+    (job.condId ? readConduceWithAI(job.condId, job.input) : readWithAI(job.invId, job.input)).catch((e) => { console.error(e); return 'failed'; }).then((r) => { aiRunning--; aiActive.delete(key); job.res(r); runAI(); });
   }
 }
-const AI_FIELDS = ['es_factura', 'proveedor', 'rnc_proveedor', 'ncf', 'ncf_vence', 'fecha', 'itbis', 'total', 'moneda', 'concepto', 'proyecto', 'rnc_cliente', 'referencia'];
+const AI_FIELDS = ['es_factura', 'tipo_documento', 'proveedor', 'rnc_proveedor', 'ncf', 'ncf_vence', 'fecha', 'itbis', 'total', 'moneda', 'concepto', 'proyecto', 'rnc_cliente', 'referencia', 'conduces', 'conduce_numero', 'material', 'cantidad', 'viajes'];
 const AI_SCHEMA = {
   type: 'object',
   properties: {
     es_factura: { type: 'boolean' }, proveedor: { type: 'string' }, rnc_proveedor: { type: 'string' }, ncf: { type: 'string' }, ncf_vence: { type: 'string' },
     fecha: { type: 'string' }, itbis: { type: 'string' }, total: { type: 'string' }, moneda: { type: 'string', enum: ['DOP', 'USD', 'EUR', ''] },
     concepto: { type: 'string' }, proyecto: { type: 'string' }, rnc_cliente: { type: 'string' }, referencia: { type: 'string' },
+    tipo_documento: { type: 'string', enum: ['factura', 'conduce', 'otro'] }, conduces: { type: 'string' }, conduce_numero: { type: 'string' },
+    material: { type: 'string' }, cantidad: { type: 'string' }, viajes: { type: 'string' },
   },
   required: AI_FIELDS,
   additionalProperties: false,
@@ -1230,6 +1439,7 @@ function buildPrompt(text, withImage) {
   return [
     'Lee esta factura de República Dominicana y saca sus datos para registrarla en una relación de pagos de una constructora.',
     withImage ? 'La imagen adjunta es una foto o captura de la factura (o nota/recibo) que mandó el proveedor.' : `Este es el texto de la factura en PDF:\n<<<\n${t.slice(0, 9000)}\n>>>`,
+    'A veces el archivo no es la factura sino el conduce (la nota de entrega del material) que viene con ella.',
     withImage && t ? `Texto que se pudo sacar del mismo archivo (puede estar incompleto):\n<<<\n${t.slice(0, 4000)}\n>>>` : '',
     'Proyectos u obras que ya existen: ' + (names.length ? JSON.stringify(names.slice(0, 200)) : '(todavía ninguno)'),
     companyRnc ? `RNC de la empresa que recibe y paga la factura: ${companyRnc}.` : '',
@@ -1247,6 +1457,9 @@ function buildPrompt(text, withImage) {
     '- rnc_cliente: RNC del cliente o comprador al que va dirigida la factura, solo números.',
     '- referencia: número de orden de compra (OC), contrato o cubicación, si aparece, con su etiqueta (ej. "OC-0012" o "Cubicación 4").',
     '- es_factura: false solo si el archivo claramente no es una factura, nota ni recibo.',
+    '- tipo_documento: "conduce" si es un conduce (nota de entrega o despacho de material: suele decir CONDUCE, viajes, chofer, placa, despachado por y recibido por) y no una factura; "factura" si es una factura, nota o recibo; "otro" si no es ninguno.',
+    '- conduce_numero, material, cantidad y viajes: solo si es un conduce: su número (ej. 39807), el material (ej. Grava), la cantidad con su unidad (ej. "5 m³") y la cantidad de viajes (solo el número). En un conduce, total es el total en dinero del conduce.',
+    '- conduces: si es una factura y menciona números de conduce, escríbelos separados por coma (ej. "39807, 39811").',
   ].filter(Boolean).join('\n');
 }
 function matchProject(name) {
@@ -1288,6 +1501,8 @@ function parseAI(out, inv) {
   const ordRef = refx && !(inv && inv.orderId && !inv.orderAuto) ? matchOrderRef(refx, pid) : null;
   if (ordRef) { upd.orderId = ordRef.id; upd.orderAuto = false; if (!pid && ordRef.projectId) { upd.projectId = ordRef.projectId; upd.projectHint = ''; } if (!upd.supplier && !(inv && inv.supplier) && ordRef.supplier) upd.supplier = ordRef.supplier; }
   else if (refx && !(inv && inv.ref)) upd.ref = refx;
+  const crefs = (s(o.conduces, 300).match(/\d{3,12}/g) || []).slice(0, 40);
+  if (crefs.length) upd.conduceRefs = crefs;
   return upd;
 }
 async function readWithAI(invId, input) {
@@ -1306,6 +1521,9 @@ async function readWithAI(invId, input) {
   if (S.aiState !== 'ok') { S.aiState = 'ok'; scheduleRender(); }
   const cur = S.invoices.find((x) => x.id === invId);
   if (!cur) return 'failed';
+  if (out && out.tipo_documento === 'conduce' && canBeConduce(cur, out)) {
+    try { await convertToConduce(cur, out); return 'conduce'; } catch (e) { console.error(e); }
+  }
   const upd = parseAI(out, cur);
   upd.aiErr = '';
   if (!upd.orderId && !(cur.orderId && !cur.orderAuto)) {
@@ -1314,6 +1532,7 @@ async function readWithAI(invId, input) {
     if (so) { fillFromOrder(upd, merged, so); upd.orderAuto = true; }
   }
   await dbw(() => ref.update(upd)).catch((e) => console.error(e));
+  scheduleLink();
   return 'done';
 }
 async function aiInputFor(i) {
@@ -1341,14 +1560,19 @@ async function readMany(list, quiet) {
       } catch (e) { console.warn('lectura en lote', e); }
     }
     const res = await Promise.all(jobs);
-    const ok = res.filter((r) => r === 'done').length;
-    if (jobs.length) toast(ok === jobs.length ? `Listo: ${plural(ok, 'factura leída', 'facturas leídas')}` : `Se leyeron ${ok} de ${jobs.length}. Las demás puedes intentarlas otra vez.`);
+    const ok = res.filter((r) => r === 'done' || r === 'conduce').length;
+    const conv = res.filter((r) => r === 'conduce').length;
+    const note = conv ? (conv === 1 ? ' Una era un conduce y quedó guardada como conduce.' : ` ${conv} eran conduces y quedaron guardados como conduces.`) : '';
+    if (jobs.length) toast((ok === jobs.length ? `Listo: ${plural(ok, 'factura leída', 'facturas leídas')}.` : `Se leyeron ${ok} de ${jobs.length}. Las demás puedes intentarlas otra vez.`) + note);
   } finally { readingMany = false; }
 }
 // Las que no se pudieron leer por falta de internet se leen solas cuando vuelve la conexión.
 function retryOffline() {
   if (!ai.hasKey() || !navigator.onLine || S.dbState !== 'ready') return;
   const list = S.invoices.filter((i) => i.ai === 'failed' && i.aiErr === 'offline');
+  for (const c of S.conduces.filter((x) => x.ai === 'failed' && x.aiErr === 'offline')) {
+    aiInputFor(c).then((input) => (input ? db.doc('conduces/' + c.id).update({ ai: 'pending', aiErr: '' }).then(() => enqueueAI({ condId: c.id, input })) : null)).catch((e) => console.warn(e));
+  }
   if (!list.length) return;
   toast(`Volvió el internet: leyendo ${plural(list.length, 'factura pendiente', 'facturas pendientes')}…`);
   readMany(list, true);
@@ -1365,7 +1589,7 @@ async function rereadInvoice(id, btn) {
     await db.doc('invoices/' + id).update({ ai: 'pending' });
     if (S.sheet && S.sheet.type === 'inv' && S.sheet.id === id) S.sheet.dirty = false;
     const r = await enqueueAI({ invId: id, input });
-    toast(r === 'done' ? 'Listo: datos leídos otra vez' : 'No se pudo leer esta factura');
+    toast(r === 'done' ? 'Listo: datos leídos otra vez' : r === 'conduce' ? 'Era un conduce, no una factura: quedó guardado como conduce.' : 'No se pudo leer esta factura');
   } catch (e) {
     console.error(e);
     toast('No se pudo leer esta factura');
@@ -1422,6 +1646,7 @@ async function saveInvoice(form) {
     await dbw(() => db.doc('invoices/' + id).update(upd));
     closeSheet();
     toast('Factura guardada');
+    scheduleLink();
   } catch (e) {
     console.error(e);
     toast(dbErr(e));
@@ -1434,12 +1659,248 @@ async function deleteInvoice(id) {
   if (i.status === 'pagada') { toast('Esta factura ya está pagada; no se puede eliminar.'); return; }
   const ok = await write(async () => {
     if (i.pay) await db.doc('payments/' + i.pay.id).update({ invoiceIds: (i.pay.invoiceIds || []).filter((x) => x !== id) });
+    for (const c of S.conduces.filter((x) => x.invoiceId === id)) await db.doc('conduces/' + c.id).update({ invoiceId: null, auto: false });
     await db.doc('invoices/' + id).delete();
   }, 'Factura eliminada');
   if (!ok) return;
   closeSheet();
   for (const a of new Set([i.fileId, i.thumbId, i.xmlId])) if (a) { try { await assets.delete(a); } catch (e) { console.warn(e); } }
 }
+/* ---------- conduces: guardar, leer y enlazar ---------- */
+let condTarget = null;
+const convertedTo = new Map();
+// Foto o PDF listos para guardar (lo mismo que se hace con las facturas).
+async function prepFile(f) {
+  const name = String(f.name || ''), type = String(f.type || '').toLowerCase();
+  const isPdf = type === 'application/pdf' || /\.pdf$/i.test(name);
+  const isImg = !isPdf && (type.startsWith('image/') || /\.(jpe?g|png|webp|gif|heic|heif|bmp)$/i.test(name));
+  if (!isPdf && !isImg) throw new UserError('Solo se pueden agregar fotos o PDF');
+  if (isPdf) {
+    if (f.size > 25 * 1048576) throw new UserError('El PDF pesa más de 25 MB');
+    const bytes = await f.arrayBuffer();
+    let r = null;
+    try { r = await inspectPdf(bytes); } catch (e) { console.warn('PDF', e); }
+    if (r && r.creator === PDF_CREATOR) throw new UserError('Este PDF lo hizo esta app; no es un conduce');
+    return { blob: new Blob([bytes], { type: 'application/pdf' }), ftype: 'application/pdf', thumb: r ? r.thumb : null, pages: r ? r.pages : 1, text: r ? r.text : '', aiImage: r && r.thumb && !hasText(r.text) ? r.thumb : null };
+  }
+  const r = await prepImage(f);
+  return { blob: r.blob, ftype: 'image/jpeg', thumb: null, pages: 1, text: '', aiImage: r.blob };
+}
+async function addConduceFiles(files, invId) {
+  if (!canUpload()) { toast('Espera a que carguen tus datos.'); return; }
+  const inv = invId ? S.invoices.find((x) => x.id === invId) : null;
+  const list = [...files].filter((f) => f && f.size > 0);
+  if (!list.length) return;
+  toast(list.length === 1 ? 'Guardando el conduce…' : `Guardando ${list.length} conduces…`);
+  let n = 0;
+  for (const f of list) {
+    try {
+      const p = await prepFile(f);
+      const up = await assets.upload(p.blob, { type: p.ftype });
+      let thumbId = null;
+      if (p.thumb) { try { thumbId = (await assets.upload(p.thumb, { type: 'image/jpeg' })).id; } catch (e) { console.warn('miniatura', e); } }
+      const willRead = ai.hasKey() && (!!p.aiImage || hasText(p.text));
+      const pf = S.projectFilter !== 'all' && S.projectFilter !== 'none' ? S.projectFilter : null;
+      const doc = {
+        invoiceId: inv ? inv.id : null, projectId: (inv && inv.projectId) || pf, projectHint: '', supplier: (inv && inv.supplier) || '', rnc: (inv && RD.normRnc(inv.rnc)) || '',
+        number: '', date: '', total: null, currency: inv ? normCur(inv.currency) : 'DOP', material: '', qty: '', trips: null,
+        fileId: up.id, fileType: p.ftype, thumbId, pages: p.pages, fileName: String(f.name || '').slice(0, 120), createdAt: new Date().toISOString(), ai: willRead ? 'pending' : 'off', aiErr: '', auto: false,
+      };
+      const ref = db.collection('conduces').doc();
+      await dbw(() => ref.set(doc));
+      n++;
+      if (willRead) enqueueAI({ condId: ref.id, input: { image: p.aiImage, text: p.text } });
+    } catch (e) {
+      if (e instanceof UserError) console.warn(e.message); else console.error(e);
+      toast(list.length > 1 ? `${f.name || 'Un archivo'}: ${upErr(e)}` : upErr(e));
+    }
+  }
+  if (!n) return;
+  toast(inv ? (n === 1 ? 'Conduce agregado a la factura' : `${n} conduces agregados a la factura`) : (n === 1 ? 'Conduce guardado; espera su factura' : `${n} conduces guardados; esperan su factura`));
+  if (inv) refreshInvCondBox(inv.id); else scheduleLink();
+}
+const COND_FIELDS = ['numero', 'fecha', 'proveedor', 'rnc_proveedor', 'proyecto', 'material', 'cantidad', 'viajes', 'total', 'moneda'];
+const COND_SCHEMA = {
+  type: 'object',
+  properties: {
+    numero: { type: 'string' }, fecha: { type: 'string' }, proveedor: { type: 'string' }, rnc_proveedor: { type: 'string' }, proyecto: { type: 'string' },
+    material: { type: 'string' }, cantidad: { type: 'string' }, viajes: { type: 'string' }, total: { type: 'string' }, moneda: { type: 'string', enum: ['DOP', 'USD', 'EUR', ''] },
+  },
+  required: COND_FIELDS,
+  additionalProperties: false,
+};
+function buildCondPrompt(text, withImage) {
+  const names = S.projects.map((p) => p.name).filter(Boolean);
+  const t = String(text || '').trim();
+  return [
+    'Lee este conduce de República Dominicana (la nota de entrega o despacho de material que acompaña una factura) y saca sus datos.',
+    withImage ? 'La imagen adjunta es una foto del conduce; puede estar llenado a mano.' : `Este es el texto del conduce en PDF:\n<<<\n${t.slice(0, 9000)}\n>>>`,
+    withImage && t ? `Texto que se pudo sacar del mismo archivo (puede estar incompleto):\n<<<\n${t.slice(0, 4000)}\n>>>` : '',
+    'Proyectos u obras que ya existen: ' + (names.length ? JSON.stringify(names.slice(0, 200)) : '(todavía ninguno)'),
+    'Llena cada campo así (usa "" si el dato no aparece):',
+    '- numero: el número del conduce (ej. 39807), solo el número.',
+    '- fecha: la fecha del conduce en formato AAAA-MM-DD (en el conduce suele estar como DD-MM-AAAA).',
+    '- proveedor: el nombre de la empresa que despacha (la del membrete), no el del cliente.',
+    '- rnc_proveedor: el RNC de esa empresa si aparece, solo números.',
+    '- proyecto: el proyecto u obra; si coincide con uno de la lista (aunque esté escrito distinto), escríbelo exactamente como en la lista.',
+    '- material: el material o servicio (ej. Grava, Arena lavada, Relleno).',
+    '- cantidad: la cantidad con su unidad, como está escrita (ej. "5 m³").',
+    '- viajes: la cantidad de viajes, solo el número.',
+    '- total: el total en dinero del conduce, solo el número con punto decimal (ej. 8000.00).',
+    '- moneda: "DOP" si está en pesos (RD$), "USD" si está en dólares.',
+  ].filter(Boolean).join('\n');
+}
+function parseCondAI(out, c, force) {
+  const o = out && typeof out === 'object' && !Array.isArray(out) ? out : {};
+  const s = (v, n) => (typeof v === 'string' ? v.trim().slice(0, n) : typeof v === 'number' ? String(v) : '');
+  const upd = { ai: 'done', aiErr: '' };
+  const num = s(o.numero, 30).replace(/^(no\.?|n[º°o]\.?|#)\s*/i, ''); if (num && (force || !c.number)) upd.number = num;
+  let f = s(o.fecha, 10); if (!ymd(f)) f = RD.dmyToIso(f); if (ymd(f) && (force || !c.date)) upd.date = f;
+  const sup = s(o.proveedor, 120); if (sup && (force || !c.supplier)) upd.supplier = sup;
+  const rnc = RD.normRnc(o.rnc_proveedor); if ((rnc.length === 9 || rnc.length === 11) && (force || !c.rnc)) upd.rnc = rnc;
+  const mat = s(o.material, 60); if (mat) upd.material = mat;
+  const qty = s(o.cantidad, 30); if (qty) upd.qty = qty;
+  const tr = parseAmount(s(o.viajes, 10)); if (isNum(tr) && tr > 0 && tr < 1000) upd.trips = tr;
+  const tot = parseAmount(s(o.total, 40)); if (isNum(tot) && tot >= 0 && tot < 1e12) upd.total = round2(tot);
+  if (o.moneda) upd.currency = normCur(o.moneda);
+  const pname = s(o.proyecto, 80);
+  if (pname && !(c.projectId && S.projects.some((p) => p.id === c.projectId))) { const m = matchProject(pname); if (m) { upd.projectId = m.id; upd.projectHint = ''; } else upd.projectHint = pname; }
+  return upd;
+}
+async function readConduceWithAI(condId, input) {
+  const ref = db.doc('conduces/' + condId);
+  const useImg = !!input.image;
+  if (!ai.hasKey() || (!useImg && !hasText(input.text))) { await ref.update({ ai: 'off' }).catch(() => {}); return 'off'; }
+  let out;
+  try {
+    out = await ai.json(buildCondPrompt(input.text, useImg), { images: useImg ? [input.image] : [], schema: COND_SCHEMA });
+  } catch (e) {
+    console.warn('lectura del conduce', e);
+    if (e && AI_STOP.has(e.code)) { S.aiState = e.code === 'bad_key' ? 'badkey' : e.code; scheduleRender(); }
+    await ref.update({ ai: e && e.code === 'no_key' ? 'off' : 'failed', aiErr: String((e && e.code) || '') }).catch(() => {});
+    return 'failed';
+  }
+  if (S.aiState !== 'ok') { S.aiState = 'ok'; scheduleRender(); }
+  const cur = S.conduces.find((x) => x.id === condId);
+  if (!cur) return 'failed';
+  await dbw(() => ref.update(parseCondAI(out, cur, !!input.force))).catch((e) => console.error(e));
+  scheduleLink();
+  return 'done';
+}
+async function rereadConduce(id, btn) {
+  const c = S.conduces.find((x) => x.id === id);
+  if (!c) return;
+  if (!ai.hasKey()) { openSettings(); return; }
+  btn.disabled = true;
+  btn.textContent = 'Leyendo…';
+  try {
+    const input = await aiInputFor(c);
+    if (!input) return;
+    await db.doc('conduces/' + id).update({ ai: 'pending', aiErr: '' });
+    if (S.sheet && S.sheet.type === 'cond' && S.sheet.id === id) S.sheet.dirty = false;
+    const r = await enqueueAI({ condId: id, input: { ...input, force: true } });
+    toast(r === 'done' ? 'Listo: datos leídos otra vez' : 'No se pudo leer este conduce');
+  } catch (e) {
+    console.error(e);
+    toast('No se pudo leer este conduce');
+    await db.doc('conduces/' + id).update({ ai: 'failed' }).catch(() => {});
+  }
+}
+// Una "factura" que en realidad es un conduce: se guarda como conduce con el mismo archivo.
+const canBeConduce = (inv, out) => !inv.fiscal && !RD.normNcf(out && out.ncf) && !S.payments.some((p) => (p.invoiceIds || []).includes(inv.id));
+async function convertToConduce(inv, out) {
+  const c = {
+    invoiceId: null, projectId: inv.projectId || null, projectHint: inv.projectHint || '', supplier: inv.supplier || '', rnc: RD.normRnc(inv.rnc) || '',
+    number: '', date: inv.date || '', total: isNum(inv.amount) ? inv.amount : null, currency: normCur(inv.currency), material: '', qty: '', trips: null,
+    fileId: inv.fileId, fileType: inv.fileType, thumbId: inv.thumbId || null, pages: inv.pages || 1, fileName: inv.fileName || '',
+    createdAt: inv.createdAt || new Date().toISOString(), ai: 'off', aiErr: '', auto: false, fromInvoice: true,
+  };
+  if (out) Object.assign(c, parseCondAI({ numero: out.conduce_numero, fecha: out.fecha, proveedor: out.proveedor, rnc_proveedor: out.rnc_proveedor, proyecto: out.proyecto, material: out.material, cantidad: out.cantidad, viajes: out.viajes, total: out.total, moneda: out.moneda }, c, true));
+  const ref = db.collection('conduces').doc();
+  await dbw(async () => { await ref.set(c); await db.doc('invoices/' + inv.id).delete(); });
+  convertedTo.set(inv.id, ref.id);
+  scheduleLink();
+  return ref.id;
+}
+async function invoiceToConduce(id) {
+  const i = S.invoices.find((x) => x.id === id);
+  if (!i) return;
+  if (S.payments.some((p) => (p.invoiceIds || []).includes(id))) { toast('Está en un pago; quítala del pago primero.'); return; }
+  try {
+    const cid = await convertToConduce(i, null);
+    closeSheet();
+    toast('Listo: quedó guardado como conduce');
+    if (ai.hasKey()) {
+      const input = await aiInputFor(i).catch(() => null);
+      if (input) { await db.doc('conduces/' + cid).update({ ai: 'pending' }); enqueueAI({ condId: cid, input: { ...input, force: true } }); }
+    }
+    setTimeout(() => openConduce(cid), 450);
+  } catch (e) {
+    console.error(e);
+    toast(dbErr(e));
+  }
+}
+async function linkConduce(condId, invId) {
+  const c = S.conduces.find((x) => x.id === condId), inv = S.invoices.find((x) => x.id === invId);
+  if (!c || !inv) return;
+  const ok = await write(async () => {
+    await db.doc('conduces/' + condId).update({ invoiceId: invId, auto: false, noAuto: false, projectId: c.projectId || inv.projectId || null });
+    if (!inv.projectId && c.projectId) await db.doc('invoices/' + invId).update({ projectId: c.projectId, projectHint: '' });
+  }, 'Conduce adjuntado a la factura');
+  if (ok) refreshInvCondBox(invId);
+}
+async function saveConduce(form) {
+  const id = form.dataset.id;
+  const c = S.conduces.find((x) => x.id === id);
+  if (!c) return;
+  const btn = $('#cond-save');
+  btn.disabled = true;
+  const totRaw = $('#c-total').value.trim(), trRaw = $('#c-trips').value.trim();
+  const tot = parseAmount(totRaw), tr = parseAmount(trRaw);
+  if ((totRaw && tot == null) || (trRaw && tr == null)) { toast('Revisa el total y los viajes: escribe solo números.'); btn.disabled = false; return; }
+  const date = $('#c-date').value;
+  const invoiceId = $('#c-inv').value || null;
+  const upd = {
+    invoiceId, number: $('#c-num').value.trim().slice(0, 30), date: ymd(date) ? date : '', supplier: $('#c-sup').value.trim().slice(0, 120), projectId: $('#c-proj').value || null,
+    material: $('#c-mat').value.trim().slice(0, 60), qty: $('#c-qty').value.trim().slice(0, 30), trips: tr == null ? null : tr, total: tot == null ? null : round2(tot),
+  };
+  if (upd.projectId) upd.projectHint = '';
+  // Si se cambió (o se quitó) la factura a mano, la app no lo vuelve a enlazar sola.
+  if (invoiceId !== (c.invoiceId || null)) { upd.auto = false; upd.noAuto = !invoiceId; }
+  if (c.ai === 'pending' || c.ai === 'failed') upd.ai = 'off';
+  const inv = invoiceId ? S.invoices.find((x) => x.id === invoiceId) : null;
+  const ok = await write(async () => {
+    await db.doc('conduces/' + id).update(upd);
+    if (inv && !inv.projectId && upd.projectId) await db.doc('invoices/' + inv.id).update({ projectId: upd.projectId, projectHint: '' });
+  }, 'Conduce guardado');
+  if (ok) { closeSheet(); scheduleLink(); } else btn.disabled = false;
+}
+async function deleteConduce(id) {
+  const c = S.conduces.find((x) => x.id === id);
+  if (!c) return;
+  if (!(await write(() => db.doc('conduces/' + id).delete(), 'Conduce eliminado'))) return;
+  closeSheet();
+  for (const a of new Set([c.fileId, c.thumbId])) if (a) { try { await assets.delete(a); } catch (e) { console.warn(e); } }
+}
+// Después de leer o guardar algo: los conduces que esperan factura se enlazan solos si la encuentran.
+let linkT = 0;
+function scheduleLink() { clearTimeout(linkT); linkT = setTimeout(() => { linkPendingConduces().catch((e) => console.warn('conduces', e)); }, 400); }
+async function linkPendingConduces() {
+  if (!db || !S.got.conduces || !S.got.invoices || !canEdit()) return;
+  const D = derive();
+  for (const c of D.conduces) {
+    if (c.invoiceId || c.noAuto || c.ai === 'pending') continue;
+    const m = conduceMatch(c, D);
+    if (!m) continue;
+    const upd = { invoiceId: m.inv.id, auto: true, autoWhy: m.why };
+    if (!c.projectId && m.inv.projectId) upd.projectId = m.inv.projectId;
+    await dbw(() => db.doc('conduces/' + c.id).update(upd));
+    if (!m.inv.projectId && c.projectId) await dbw(() => db.doc('invoices/' + m.inv.id).update({ projectId: c.projectId, projectHint: '' }));
+    const q = S.queue.find((x) => x.condId === c.id);
+    if (q) { q.msg = `adjuntado a la factura de ${m.inv.supplier || 'su proveedor'}`; renderQueue(); }
+  }
+}
+
 async function createPayment(name, date, ids) {
   const ref = db.collection('payments').doc();
   const ok = await write(() => ref.set({ name: String(name || '').trim().slice(0, 80) || 'Pago ' + fmtDate(todayISO()), date: ymd(date) ? date : todayISO(), status: 'armando', invoiceIds: ids, createdAt: new Date().toISOString() }), 'Pago creado');
@@ -1489,7 +1950,8 @@ function openOrder(id, keepScroll, copyFrom) {
   const src = !o && copyFrom ? D.orderById.get(copyFrom) : null;
   const edit = canEdit() && (!o || o.status !== 'anulada');
   const dis = edit ? '' : 'disabled';
-  const projId = o ? o.projectId : src ? src.projectId : S.projectFilter !== 'all' && S.projectFilter !== 'none' ? S.projectFilter : '';
+  const pf = S.tab === 'ordenes' ? S.orderProject : S.projectFilter;
+  const projId = o ? o.projectId : src ? src.projectId : pf !== 'all' && pf !== 'none' ? pf : '';
   // Lo que se repite de la última orden de la misma obra: lugar de entrega, quién pide y departamento.
   const lastOf = (pid, f) => { const p = D.orders.find((x) => x.projectId === pid && x[f]); return p ? p[f] : ''; };
   const data = o || (src
@@ -1963,6 +2425,22 @@ async function buildPackage(pay, D, onProgress) {
   const foot = () => page.drawText(pdfSafe(`${st.company ? st.company + ' · ' : ''}${pay.name || 'Pago'} · Relación de facturas`), { x: M, y: M - 20, size: 8, font, color: C.grey });
   const newPage = () => { page = out.addPage([W, H]); y = H - M; };
   const ensure = (need, again) => { if (y - need < M + 14) { foot(); newPage(); if (again) again(); } };
+  // Un archivo guardado (foto o PDF) en páginas nuevas; la foto lleva arriba qué es.
+  const addFile = async (fileId, type, label) => {
+    const b = await (await getBlob(fileId)).arrayBuffer();
+    if (type === 'application/pdf') {
+      const src = await PDFDocument.load(b, { ignoreEncryption: true });
+      (await out.copyPages(src, src.getPageIndices())).forEach((p) => out.addPage(p));
+      return;
+    }
+    const img = isPng(b) ? await out.embedPng(b) : await out.embedJpg(b);
+    newPage();
+    T(fit(label, font, 8.5, W - 2 * M), M, H - M + 12, 8.5, font, C.grey);
+    const bw = W - 2 * M, bh = H - 2 * M - 8;
+    const s = Math.min(bw / img.width, bh / img.height);
+    page.drawImage(img, { x: M + (bw - img.width * s) / 2, y: M + (bh - img.height * s), width: img.width * s, height: img.height * s });
+  };
+  const condN = invs.reduce((t, i) => t + (i.conduces || []).length, 0);
 
   newPage();
   if (st.company) {
@@ -1975,7 +2453,7 @@ async function buildPackage(pay, D, onProgress) {
   } else { T('RELACIÓN DE FACTURAS PARA PAGO', M, y - 8, 9, bold, C.accent); y -= 36; }
   T(fit(pay.name || 'Pago', bold, 22, W - 2 * M), M, y, 22, bold); y -= 20;
   T([pay.date ? 'Fecha del pago: ' + fmtDate(pay.date) : '', 'Estado: ' + (PAY_LABEL[pay.status] || 'Por presentar'), 'Generado el ' + fmtDate(todayISO()), st.preparedBy ? 'Elaboró: ' + st.preparedBy : ''].filter(Boolean).join('   ·   '), M, y, 9, font, C.grey); y -= 34;
-  T('Total a pagar', M, y, 10, font, C.grey); R(plural(invs.length, 'factura', 'facturas') + ' · ' + plural(groups.length, 'proyecto', 'proyectos'), W - M, y, 10, font, C.grey); y -= 28;
+  T('Total a pagar', M, y, 10, font, C.grey); R(plural(invs.length, 'factura', 'facturas') + ' · ' + plural(groups.length, 'proyecto', 'proyectos') + (condN ? ' · ' + plural(condN, 'conduce', 'conduces') : ''), W - M, y, 10, font, C.grey); y -= 28;
   T(fit(totalStr(invs), bold, 26, W - 2 * M), M, y, 26, bold); y -= 16;
   T('ITBIS incluido: ' + totalStr(invs, 'itbis'), M, y - 2, 9.5, font, C.grey); y -= 12; hr(y, C.ink, 1.2); y -= 28;
 
@@ -2054,6 +2532,11 @@ async function buildPackage(pay, D, onProgress) {
       newPage();
       T('No se pudo incluir el archivo de esta factura:', M, y - 20, 12, bold);
       T(fit(label, font, 10, W - 2 * M), M, y - 40, 10);
+    }
+    // Los conduces de la factura van detrás de ella.
+    for (const c of i.conduces || []) {
+      try { await addFile(c.fileId, c.fileType, `${condTitle(c)} · ${c.supplier || i.supplier || ''} · de la factura${i.number ? ' NCF ' + RD.normNcf(i.number) : ''} (${k} de ${invs.length})`); }
+      catch (e) { console.warn('PDF conduce', e); }
     }
     // La orden de compra va justo después de su (primera) factura.
     if (i.order && !doneOrders.has(i.order.id)) {
@@ -2231,6 +2714,7 @@ function invoicesWorkbook({ heading, scope, invs, D, isPayment }) {
     { k: 'Estado de la orden', w: 16, v: (i) => (i.order ? { v: ORDER_LABEL[i.order.status] || '', s: i.order.status === 'autorizada' ? undefined : XS.warn } : !D.orders.length ? { v: '' } : i.noOrder ? { v: 'No lleva' } : { v: 'Sin orden', s: needsOrder(i, D) ? XS.warn : undefined }) },
     { k: 'Solicitado por', w: 20, v: (i) => ({ v: (i.order && i.order.requestedBy) || '' }) },
     { k: 'Referencia', w: 14, v: (i) => ({ v: i.ref || '' }) },
+    { k: 'Conduces', w: 16, v: (i) => ({ v: (i.conduces || []).map((c) => c.number || 's/n').join(', ') }) },
     { k: 'Subtotal', w: 15, money: true, raw: subOf, v: (i) => M(subOf(i), i.currency) },
     { k: 'ITBIS', w: 14, money: true, raw: (i) => i.itbis, v: (i) => M(i.itbis, i.currency) },
     { k: 'Total', w: 15, money: true, raw: (i) => i.amount, v: (i) => M(i.amount, i.currency) },
@@ -2290,6 +2774,21 @@ function invoicesWorkbook({ heading, scope, invs, D, isPayment }) {
       { k: 'Unidad', w: 12, v: (x) => ({ v: x.it.unit || '' }) },
       { k: 'Descripción', w: 60, v: (x) => ({ v: x.it.desc || '' }) },
     ], items, { title: 'Artículos de las órdenes' });
+  }
+  // Conduces de estas facturas.
+  const conds = list.flatMap((i) => (i.conduces || []).map((c) => ({ c, i })));
+  if (conds.length) {
+    addSheet('Conduces', [
+      { k: 'Conduce', w: 12, v: (x) => ({ v: x.c.number || '' }) },
+      { k: 'Fecha', w: 11, v: (x) => Dt(x.c.date) },
+      { k: 'Proveedor', w: 30, v: (x) => ({ v: x.c.supplier || x.i.supplier || '' }) },
+      { k: 'Proyecto', w: 22, v: (x) => ({ v: x.i.project ? x.i.project.name : x.c.project ? x.c.project.name : '' }) },
+      { k: 'Material', w: 22, v: (x) => ({ v: x.c.material || '' }) },
+      { k: 'Cantidad', w: 12, v: (x) => ({ v: x.c.qty || '' }) },
+      { k: 'Viajes', w: 8, num: true, v: (x) => (isNum(x.c.trips) ? { v: x.c.trips, s: XS.int } : { v: '' }) },
+      { k: 'Factura (NCF)', w: 16, v: (x) => ({ v: RD.normNcf(x.i.number) }) },
+      { k: 'Total del conduce', w: 16, money: true, raw: (x) => x.c.total, v: (x) => M(x.c.total, x.c.currency) },
+    ], conds, { title: 'Conduces' });
   }
   return buildXlsx(sheets, {
     title: heading + ' - ' + scope, creator: st.preparedBy || 'Facturas de Proyectos',
@@ -2395,6 +2894,16 @@ function onClick(e) {
     case 'pay-del-yes': deletePayment(S.paymentId); break;
     case 'sheet-close': closeSheet(); break;
     case 'inv-view': openViewer(id); break;
+    case 'open-cond': openConduce(id); break;
+    case 'cond-list': openCondList(); break;
+    case 'cond-add': condTarget = t.dataset.inv || null; $('#cond-input').click(); break;
+    case 'cond-view': { const c = S.conduces.find((x) => x.id === id); if (c) showFile({ title: condTitle(c), fileId: c.fileId, fileType: c.fileType }); break; }
+    case 'cond-ai': rereadConduce(id, t); break;
+    case 'cond-del': $('#cond-del-box').hidden = false; $('#cond-del-box').scrollIntoView({ block: 'nearest', behavior: 'smooth' }); break;
+    case 'cond-del-no': $('#cond-del-box').hidden = true; break;
+    case 'cond-del-yes': deleteConduce(id); break;
+    case 'cond-link': linkConduce(id, t.dataset.inv); break;
+    case 'inv-to-cond': invoiceToConduce(id); break;
     case 'xml-view': openViewer(id, true); break;
     case 'inv-ai': rereadInvoice(id, t); break;
     case 'inv-del': $('#inv-del-box').hidden = false; $('#inv-del-box').scrollIntoView({ block: 'nearest', behavior: 'smooth' }); break;
@@ -2409,6 +2918,7 @@ function onClick(e) {
     case 'queue-clear': S.queue = S.queue.filter((x) => !x.done); renderQueue(); break;
     case 'viewer-close': closeViewer(); break;
     case 'ofilter': S.orderFilter = t.dataset.f; renderAll(); break;
+    case 'oprojf': S.orderProject = t.dataset.p; renderAll(); break;
     case 'new-order': openOrder(null); break;
     case 'open-order': openOrder(id); break;
     case 'order-add-item': { addItemRow(); const rows = $$('#o-items [data-row]'); const last = rows[rows.length - 1]; if (last) last.querySelector('[data-f="qty"]').focus(); if (S.sheet) S.sheet.dirty = true; break; }
@@ -2443,7 +2953,7 @@ function onClick(e) {
     case 'read-all': { const D = derive(); readMany(D.invoices.filter((i) => needsReading(i) && i.ai !== 'pending')); break; }
     case 'focus': S.focus = t.dataset.f; S.projectFilter = 'all'; S.search = ''; if ($('#f-search')) $('#f-search').value = ''; renderAll(); { const l = $('#f-sum'); if (l) l.scrollIntoView({ block: 'start', behavior: 'smooth' }); } break;
     case 'focus-off': S.focus = null; renderAll(); break;
-    case 'go-orders': S.tab = 'ordenes'; S.orderFilter = t.dataset.f; S.paymentId = null; renderAll(); window.scrollTo(0, 0); break;
+    case 'go-orders': S.tab = 'ordenes'; S.orderFilter = t.dataset.f; S.orderProject = 'all'; S.paymentId = null; renderAll(); window.scrollTo(0, 0); break;
     case 'pay-ready': { const D = derive(); openPicker('new', D.invoices.filter((i) => readyToPay(i, D)).map((i) => i.id)); break; }
     case 'order-repeat': openOrder(null, false, id); break;
     case 'order-paste': pasteOrderMessage(t); break;
@@ -2532,11 +3042,13 @@ function onInput(e) {
   if (S.sheet && S.sheet.type === 'order' && t.closest && t.closest('#order-form') && t.id !== 'o-msg') S.sheet.dirty = true;
   if (t.id === 'f-rnc' || t.id === 'f-num') liveHelp(t);
   if (S.sheet && S.sheet.type === 'inv' && t.closest && t.closest('#inv-form')) S.sheet.dirty = true;
+  if (S.sheet && S.sheet.type === 'cond' && t.closest && t.closest('#cond-form')) S.sheet.dirty = true;
 }
 function onSubmit(e) {
   const f = e.target;
   e.preventDefault();
   if (f.id === 'inv-form') saveInvoice(f);
+  else if (f.id === 'cond-form') saveConduce(f);
   else if (f.id === 'order-form') saveOrder(false);
   else if (f.id === 'pick-form') {
     const ids = $$('#sheet-root input[data-pick="inv"]').filter((b) => b.checked).map((b) => b.value);
@@ -2575,6 +3087,7 @@ function bind() {
   $('#file-input').addEventListener('change', (e) => { const files = [...e.target.files]; e.target.value = ''; if (files.length) addFiles(files); });
   $('#restore-input').addEventListener('change', (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) restoreBackup(f); });
   $('#signed-input').addEventListener('change', (e) => { const f = e.target.files[0]; e.target.value = ''; if (f && S.sheet && S.sheet.type === 'order' && S.sheet.id) attachSigned(S.sheet.id, f); });
+  $('#cond-input').addEventListener('change', (e) => { const files = [...e.target.files]; e.target.value = ''; const inv = condTarget; condTarget = null; if (files.length) addConduceFiles(files, inv); });
   $('#fill-photo-input').addEventListener('change', (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) fillOrderFromMessage(null, f); });
   document.addEventListener('dragover', (e) => { if (canUpload() && e.dataTransfer && [...e.dataTransfer.types].includes('Files')) e.preventDefault(); });
   document.addEventListener('drop', (e) => { if (!e.dataTransfer || !e.dataTransfer.files.length) return; e.preventDefault(); addFiles(e.dataTransfer.files); });
@@ -2628,8 +3141,8 @@ function registerSW() {
 /* ---------- arranque ---------- */
 function subscribe() {
   db.doc('settings/general').onSnapshot((snap) => { S.settings = (snap.exists && snap.data()) || {}; scheduleRender(); }, (err) => console.warn(err));
-  const done = () => { if (S.got.projects && S.got.invoices && S.got.payments && S.got.orders && S.dbState === 'loading') { S.dbState = 'ready'; setTimeout(retryOffline, 1500); } };
-  for (const name of ['projects', 'invoices', 'payments', 'orders']) {
+  const done = () => { if (S.got.projects && S.got.invoices && S.got.payments && S.got.orders && S.got.conduces && S.dbState === 'loading') { S.dbState = 'ready'; setTimeout(retryOffline, 1500); } };
+  for (const name of ['projects', 'invoices', 'payments', 'orders', 'conduces']) {
     db.collection(name).onSnapshot((snap) => {
       S[name] = snap.docs.map((d) => ({ ...d.data(), id: d.id }));
       S.got[name] = true;
