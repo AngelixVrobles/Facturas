@@ -98,10 +98,18 @@
     for (const l of listeners) if ((l.kind === 'coll' && l.path === coll) || (l.kind === 'doc' && l.path === path)) deliver(l);
   }
   function notifyAll() { for (const l of listeners) deliver(l); }
+  // El cambio entra a la memoria al instante, para que otro cambio al mismo documento que llegue enseguida lo
+  // tome en cuenta (si no, el segundo pisaba al primero). Si no se puede guardar, se deshace.
   async function putDoc(path, data) {
-    const value = clone(data);
-    await run('docs', 'readwrite', (s) => s.put(value, path));
-    cache.set(path, freeze(value));
+    const value = freeze(clone(data));
+    const prev = cache.get(path);
+    cache.set(path, value);
+    try {
+      await run('docs', 'readwrite', (s) => s.put(value, path));
+    } catch (e) {
+      if (cache.get(path) === value) { if (prev === undefined) cache.delete(path); else cache.set(path, prev); }
+      throw e;
+    }
     notify(path);
     markDirty(path);
   }

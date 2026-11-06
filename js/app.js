@@ -10,7 +10,7 @@ const LIB = {
   qrgen: 'js/qr.js',
 };
 const PDF_CREATOR = 'Facturas de Proyectos';
-const APP_VERSION = '1.5.0';
+const APP_VERSION = '1.6.0';
 const SVG = (d) => `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ICON = {
   plus: SVG('<path d="M12 5v14M5 12h14"/>'),
@@ -73,7 +73,8 @@ const DEFAULT_ORDER_NOTE = 'Toda factura recibida por compras deberá estar acom
 
 const S = {
   tab: 'facturas', filter: 'pendientes', projectFilter: 'all', search: '', paymentId: null,
-  projects: [], invoices: [], payments: [], orders: [], conduces: [], settings: {}, got: { projects: false, invoices: false, payments: false, orders: false, conduces: false }, orderFilter: 'todas', orderSearch: '', orderProject: 'all', focus: null, invOrder: 'all', dateFilter: '', dateFrom: '', dateTo: '', showAll: new Set(),
+  projects: [], invoices: [], payments: [], orders: [], conduces: [], workers: [], asistencia: [], settings: {}, attRules: {}, got: { projects: false, invoices: false, payments: false, orders: false, conduces: false, workers: false, asistencia: false },
+  attProject: '', attSheet: '', attDay: 0, orderFilter: 'todas', orderSearch: '', orderProject: 'all', focus: null, invOrder: 'all', dateFilter: '', dateFrom: '', dateTo: '', showAll: new Set(),
   dbState: 'loading', aiState: 'ok', queue: [], sheet: null, payDel: false, busyPdf: false, pdfMsg: '',
   updateReg: null, updating: false, ready: null, restoreFile: null,
 };
@@ -602,14 +603,15 @@ const isIOS = () => /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.
 function renderAll() {
   const D = derive();
   $$('.tabs [data-tab]').forEach((b) => { if (b.dataset.tab === S.tab) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current'); });
-  for (const t of ['facturas', 'ordenes', 'pagos', 'proyectos']) $('#v-' + t).hidden = S.tab !== t;
+  for (const t of ['facturas', 'ordenes', 'pagos', 'asistencia', 'proyectos']) $('#v-' + t).hidden = S.tab !== t;
   const pay = S.tab === 'pagos' && S.paymentId ? S.payments.find((p) => p.id === S.paymentId) : null;
   $('#back').hidden = !pay;
-  $('#title').textContent = pay ? (pay.name || 'Pago') : { facturas: 'Facturas', ordenes: 'Órdenes', pagos: 'Pagos', proyectos: 'Proyectos' }[S.tab];
+  $('#title').textContent = pay ? (pay.name || 'Pago') : { facturas: 'Facturas', ordenes: 'Órdenes', pagos: 'Pagos', asistencia: 'Pase de lista', proyectos: 'Proyectos' }[S.tab];
   renderBanner(D);
   if (S.tab === 'facturas') renderFacturas(D);
   else if (S.tab === 'ordenes') renderOrdenes(D);
   else if (S.tab === 'pagos') renderPagos(D, pay);
+  else if (S.tab === 'asistencia') renderAsistencia(D);
   else renderProyectos(D);
   $('#fab').hidden = !(S.tab === 'facturas' && canUpload());
   $('#settings-btn').hidden = S.dbState === 'absent';
@@ -2035,6 +2037,447 @@ async function linkPendingConduces() {
   }
 }
 
+/* ---------- pase de lista (asistencia) ---------- */
+// Cada obra tiene sus obreros y una planilla por quincena: entrada (✓ a tiempo, T tarde, x no vino), pase sorpresa
+// (✓ estaba, x no estaba) y salida (✓ estaba, C corrido y se fue antes, 1½ corrido hasta la salida, x se fue antes).
+const ATT_DAYS = 14;
+const DOW = ['D', 'L', 'M', 'M', 'J', 'V', 'S'];
+const DOW_LONG = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+const ATT_E = [['ok', '✓'], ['t', 'T'], ['x', 'x']];
+const ATT_P = [['ok', '✓'], ['x', 'x']];
+const ATT_S = [['ok', '✓'], ['c', 'C'], ['cc', '1½'], ['x', 'x']];
+const ATT_SHOW = { ok: '✓', t: 'T', x: 'x', c: 'C', cc: '1½' };
+const ATT_RULES = { late: 0, surpriseMiss: 0, leftEarly: 0.5, corrido: 1, corridoFull: 1.5, saturday: 1, sunday: 1 };
+const ROLES = ['Ayudante', 'Terminador', 'Albañil', 'Maestro', 'Carpintero', 'Varillero', 'Plomero', 'Electricista', 'Pintor', 'Ceramista', 'Soldador', 'Operador', 'Chofer', 'Sereno'];
+const attRules = () => ({ ...ATT_RULES, ...(S.attRules || {}) });
+function addDays(iso, n) { const d = ymd(iso); if (!d) return iso; d.setDate(d.getDate() + n); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
+const weekStart = (iso) => { const d = ymd(iso); return d ? addDays(iso, -d.getDay()) : iso; };
+const attLen = (sh) => Number(sh.days) || ATT_DAYS;
+const attDate = (sh, k) => addDays(sh.start, k);
+const attDow = (sh, k) => { const d = ymd(attDate(sh, k)); return d ? d.getDay() : k % 7; };
+const attEnd = (sh) => attDate(sh, attLen(sh) - 1);
+const fmtDays = (n) => (isNum(n) ? new Intl.NumberFormat('es-DO', { maximumFractionDigits: 2 }).format(n) : '—');
+function attPeriodLabel(sh) {
+  const a = ymd(sh.start), b = ymd(attEnd(sh));
+  if (!a || !b) return '';
+  const mon = (d) => d.toLocaleDateString('es-DO', { month: 'short' }).replace('.', '');
+  return a.getMonth() === b.getMonth() ? `Del ${a.getDate()} al ${b.getDate()} de ${mon(b)} de ${b.getFullYear()}` : `Del ${a.getDate()} de ${mon(a)} al ${b.getDate()} de ${mon(b)} de ${b.getFullYear()}`;
+}
+// Lo que cuenta un día según las marcas y las reglas.
+function attDayValue(m, R, dow) {
+  if (!m || !m.e) return null;
+  if (m.e === 'x') return 0;
+  let v = m.s === 'c' ? R.corrido : m.s === 'cc' ? R.corridoFull : m.s === 'x' ? R.leftEarly : 1;
+  if (m.e === 't') v -= R.late;
+  if (m.p === 'x') v -= R.surpriseMiss;
+  if (dow === 6) v *= R.saturday;
+  if (dow === 0) v *= R.sunday;
+  return Math.max(0, round2(v));
+}
+// Cambios que se están guardando (se ven al instante, se guardan un momento después).
+let attPend = null, attTimer = 0, attJustMade = '';
+const attMarks = (sh) => (attPend && attPend.id === sh.id ? attPend.marks : sh.marks || {});
+const attSurprise = (sh) => (attPend && attPend.id === sh.id ? attPend.surprise : sh.surprise || {});
+function attTotals(sh, wid, R) {
+  const t = { days: 0, worked: 0, late: 0, absent: 0, surpriseMiss: 0, corrido: 0, corridoFull: 0, leftEarly: 0, noExit: 0 };
+  const ms = attMarks(sh)[wid] || {};
+  const today = todayISO();
+  for (let k = 0; k < attLen(sh); k++) {
+    const m = ms[k];
+    if (!m || !m.e) continue;
+    t.days = round2(t.days + attDayValue(m, R, attDow(sh, k)));
+    if (m.e !== 'x') t.worked++;
+    if (m.e === 't') t.late++;
+    if (m.e === 'x') t.absent++;
+    if (m.p === 'x') t.surpriseMiss++;
+    if (m.s === 'c') t.corrido++;
+    if (m.s === 'cc') t.corridoFull++;
+    if (m.s === 'x') t.leftEarly++;
+    if (m.e !== 'x' && !m.s && attDate(sh, k) < today) t.noExit++;
+  }
+  return t;
+}
+const attSheetsOf = (pid) => S.asistencia.filter((a) => a.projectId === pid && ymd(a.start)).sort((a, b) => String(b.start).localeCompare(String(a.start)));
+const attWorkersOf = (pid, all) => S.workers.filter((w) => w.projectId === pid && (all || w.active !== false)).sort((a, b) => (a.seq || 0) - (b.seq || 0) || String(a.name || '').localeCompare(String(b.name || '')));
+function attSheetWorkers(sh) {
+  const byId = new Map(S.workers.map((w) => [w.id, w]));
+  const ids = Array.isArray(sh.workers) ? sh.workers : [];
+  return ids.map((id) => byId.get(id)).filter(Boolean);
+}
+function attTodayIdx(sh) { const k = Math.round((ymd(todayISO()) - ymd(sh.start)) / 864e5); return k >= 0 && k < attLen(sh) ? k : 0; }
+function attEdit(sh, fn) {
+  if (!attPend || attPend.id !== sh.id) { flushAtt(); attPend = { id: sh.id, v: 0, marks: JSON.parse(JSON.stringify(sh.marks || {})), surprise: { ...(sh.surprise || {}) } }; }
+  fn(attPend.marks, attPend.surprise);
+  attPend.v++;
+  clearTimeout(attTimer);
+  attTimer = setTimeout(flushAtt, 350);
+  renderAll();
+}
+function flushAtt() {
+  clearTimeout(attTimer);
+  const p = attPend;
+  if (!p || !db) return Promise.resolve();
+  const v = p.v;
+  return dbw(() => db.doc('asistencia/' + p.id).update({ marks: p.marks, surprise: p.surprise, updatedAt: new Date().toISOString() }))
+    .then(() => { if (attPend === p && p.v === v) attPend = null; })
+    .catch((e) => { console.error(e); toast(dbErr(e)); });
+}
+function attCurrent(D) {
+  const pid = S.attProject;
+  const sheets = attSheetsOf(pid);
+  let sh = sheets.find((x) => x.id === S.attSheet);
+  // La quincena que se acaba de crear todavía no llega a la lista: se sigue esperando por ella.
+  if (!sh && S.attSheet && S.attSheet === attJustMade) return { pid, sheets, sh: sheets[0] || null };
+  if (!sh) {
+    const today = todayISO();
+    sh = sheets.find((x) => x.start <= today && today <= attEnd(x)) || sheets[0] || null;
+    S.attSheet = sh ? sh.id : '';
+    if (sh) S.attDay = attTodayIdx(sh);
+  }
+  if (sh && (S.attDay < 0 || S.attDay >= attLen(sh))) S.attDay = 0;
+  return { pid, sheets, sh };
+}
+const markBtns = (wid, f, opts, cur, dis) => opts.map(([v, l]) => `<button type="button" class="am am-${v}" data-act="att-mark" data-w="${esc(wid)}" data-f="${f}" data-v="${v}" aria-pressed="${cur === v}"${dis}>${l}</button>`).join('');
+function renderAsistencia(D) {
+  const el = $('#v-asistencia');
+  if (!S.got.workers || !S.got.asistencia || !S.got.projects) { el.innerHTML = S.dbState === 'absent' ? '' : '<p class="loading">Cargando…</p>'; return; }
+  if (!D.projects.length) { el.innerHTML = '<div class="empty"><h2>Pase de lista</h2><p>Primero agrega la obra en <b>Proyectos</b>. Después anotas sus obreros y pasas la lista cada día.</p><button type="button" class="btn" data-act="tab" data-tab="proyectos">Ir a Proyectos</button></div>'; return; }
+  if (!D.projById.has(S.attProject)) { const withW = D.projects.find((p) => S.workers.some((w) => w.projectId === p.id && w.active !== false)); S.attProject = (withW || D.projects[0]).id; S.attSheet = ''; }
+  const { pid, sheets, sh } = attCurrent(D);
+  const edit = canEdit();
+  const dis = edit ? '' : ' disabled';
+  const workers = attWorkersOf(pid);
+  const chips = `<div class="chips" role="group" aria-label="Obra">${D.projects.map((p) => `<button type="button" class="chip" data-act="att-proj" data-p="${esc(p.id)}" aria-pressed="${p.id === pid}"><i class="dot" style="--c:${p.color}"></i><span>${esc(p.name)}</span></button>`).join('')}</div>`;
+  const bar = `<div class="att-bar"><button type="button" class="btn sm" data-act="att-workers">Obreros (${workers.length})</button><button type="button" class="btn sm ghost" data-act="att-rules">Reglas</button></div>`;
+  if (!workers.length && !sh) { el.innerHTML = chips + bar + `<div class="empty"><h2>Anota los obreros de esta obra</h2><p>Nombre, función (ayudante, terminador…) y pago por día. Se anotan una sola vez; después cada día solo marcas la entrada, el pase sorpresa y la salida.</p>${edit ? '<button type="button" class="btn primary" data-act="att-workers">Agregar obreros</button>' : ''}</div>`; return; }
+  if (!sh) { el.innerHTML = chips + bar + `<div class="empty"><h2>Empieza la quincena</h2><p>La planilla dura 14 días, de domingo a sábado dos veces, igual que la de papel.</p>${edit ? '<button type="button" class="btn primary" data-act="att-new">Empezar quincena</button>' : ''}</div>`; return; }
+  const R = attRules();
+  const k = S.attDay;
+  const marks = attMarks(sh), surprise = attSurprise(sh);
+  const rows = attSheetWorkers(sh);
+  const idx = sheets.findIndex((x) => x.id === sh.id);
+  const dayBtns = Array.from({ length: attLen(sh) }, (_, j) => {
+    const d = ymd(attDate(sh, j));
+    const done = rows.length && rows.every((w) => marks[w.id] && marks[w.id][j] && marks[w.id][j].e);
+    return `<button type="button" class="att-day${attDate(sh, j) === todayISO() ? ' today' : ''}${done ? ' done' : ''}" data-act="att-day" data-k="${j}" aria-pressed="${j === k}"><span>${DOW[d.getDay()]}</span><b>${d.getDate()}</b></button>`;
+  }).join('');
+  const dayDate = ymd(attDate(sh, k));
+  const ptime = surprise[k] || '';
+  const list = rows.map((w) => {
+    const m = (marks[w.id] || {})[k] || {};
+    const v = attDayValue(m, R, attDow(sh, k));
+    return `<div class="att-row"><div class="att-who"><b>${esc(w.name)}</b><small>${esc(w.role || '')}${w.active === false ? ' · ya no trabaja aquí' : ''}</small><span class="att-val${v === null ? ' empty' : ''}">${v === null ? '—' : fmtDays(v)}</span></div>
+      <div class="att-marks"><div class="att-g" role="group" aria-label="Entrada"><span>E</span>${markBtns(w.id, 'e', ATT_E, m.e, dis)}</div><div class="att-g" role="group" aria-label="Pase sorpresa"><span>P</span>${markBtns(w.id, 'p', ATT_P, m.p, dis)}</div><div class="att-g" role="group" aria-label="Salida"><span>S</span>${markBtns(w.id, 's', ATT_S, m.s, dis)}</div></div></div>`;
+  }).join('');
+  const tots = rows.map((w) => ({ w, t: attTotals(sh, w.id, R) }));
+  const payOf = (x) => (isNum(x.w.pay) ? round2(x.t.days * x.w.pay) : null);
+  const totalPay = round2(tots.reduce((s, x) => s + (payOf(x) || 0), 0));
+  const totalDays = round2(tots.reduce((s, x) => s + x.t.days, 0));
+  const noExit = tots.reduce((s, x) => s + x.t.noExit, 0);
+  const sumRows = tots.map((x) => `<tr><td><span class="pname">${esc(x.w.name)}</span><small class="att-sub">${esc([x.t.late ? plural(x.t.late, 'tarde', 'tardes') : '', x.t.absent ? plural(x.t.absent, 'falta', 'faltas') : '', x.t.surpriseMiss ? `${x.t.surpriseMiss} sin estar en el pase` : '', x.t.corrido ? `${x.t.corrido} C` : '', x.t.corridoFull ? `${x.t.corridoFull} de 1½` : '', x.t.leftEarly ? `${x.t.leftEarly} se fue antes` : ''].filter(Boolean).join(' · '))}</small></td><td class="num">${fmtDays(x.t.days)}</td><td class="num">${payOf(x) === null ? '—' : esc(money(payOf(x)))}</td></tr>`).join('');
+  const ruleTxt = [R.late ? `T descuenta ${fmtDays(R.late)} día` : 'T no descuenta', R.surpriseMiss ? `x en el pase descuenta ${fmtDays(R.surpriseMiss)} día` : 'x en el pase no descuenta', `x en la salida cuenta ${fmtDays(R.leftEarly)}`, `C cuenta ${fmtDays(R.corrido)}`, `1½ cuenta ${fmtDays(R.corridoFull)}`, R.saturday !== 1 ? `el sábado vale ${fmtDays(R.saturday)}` : '', R.sunday !== 1 ? `el domingo vale ${fmtDays(R.sunday)}` : ''].filter(Boolean).join(' · ');
+  el.innerHTML = chips + bar + `
+    <div class="card att-head">
+      <div class="att-period"><button type="button" class="icon-btn" data-act="att-prev" aria-label="Quincena anterior"${idx < sheets.length - 1 ? '' : ' disabled'}>‹</button><b>${esc(attPeriodLabel(sh))}</b><button type="button" class="icon-btn" data-act="att-next" aria-label="Quincena siguiente"${idx > 0 ? '' : ' disabled'}>›</button></div>
+      <div class="fields"><div class="field"><label for="att-in">Entrada hasta las</label><input id="att-in" maxlength="8" placeholder="7:30" value="${esc(sh.entryLimit || '')}"${dis}></div><div class="field"><label for="att-out">Salida desde las</label><input id="att-out" maxlength="8" placeholder="5:00" value="${esc(sh.exitFrom || '')}"${dis}></div></div>
+      ${edit && idx === 0 ? '<button type="button" class="btn sm" data-act="att-new">Empezar la quincena siguiente</button>' : ''}
+    </div>
+    <div class="att-days" role="group" aria-label="Día">${dayBtns}</div>
+    <div class="att-quick"><b>${esc(DOW_LONG[dayDate.getDay()].replace(/^./, (c) => c.toUpperCase()) + ' ' + fmtDate(attDate(sh, k)))}</b>
+      ${edit && rows.length ? `<div class="actions"><button type="button" class="btn sm" data-act="att-all" data-f="e">Entrada: todos ✓</button><button type="button" class="btn sm" data-act="att-surprise">${ptime ? 'Pase sorpresa: ' + esc(ptime) : 'Pase sorpresa ahora'}</button><button type="button" class="btn sm" data-act="att-all" data-f="s">Salida: todos ✓</button></div>` : ''}
+      ${ptime && edit ? `<label class="att-ptime">Hora del pase sorpresa <input type="time" id="att-ptime" value="${esc(/^\d{1,2}:\d{2}$/.test(ptime) ? ptime.padStart(5, '0') : '')}"></label>` : ''}
+    </div>
+    ${rows.length ? `<div class="att-list">${list}</div>` : '<div class="empty"><p>Esta planilla no tiene obreros. Agrégalos en <b>Obreros</b>.</p></div>'}
+    ${rows.length ? `<div class="card"><h2>Resumen de la quincena</h2>${noExit ? `<div class="msg warn">${ICON.alert}<span>${plural(noExit, 'día tiene', 'días tienen')} la entrada marcada pero no la salida; cuentan como día completo hasta que la marques.</span></div>` : ''}<div class="table-wrap"><table class="sum"><thead><tr><th>Obrero</th><th class="num">Días</th><th class="num">Pago</th></tr></thead><tbody>${sumRows}</tbody><tfoot><tr><td>Total</td><td class="num">${fmtDays(totalDays)}</td><td class="num">${esc(money(totalPay))}</td></tr></tfoot></table></div>
+      <div class="actions"><button type="button" class="btn" data-act="att-xlsx">${ICON.sheet} Excel</button><button type="button" class="btn" data-act="att-pdf">${ICON.down} PDF de la planilla</button><button type="button" class="btn ghost" data-act="att-blank">Planilla en blanco para imprimir</button></div>
+      <p class="usage">${esc(ruleTxt)}. Se cambian en <b>Reglas</b>.</p></div>` : ''}`;
+}
+// Obreros de la obra: se anotan una vez; los que se van quedan en las planillas viejas.
+function openWorkers() {
+  const D = derive();
+  const p = D.projById.get(S.attProject);
+  if (!p) return;
+  const all = attWorkersOf(p.id, true);
+  const edit = canEdit();
+  const row = (w) => `<div class="w-row" data-w="${esc(w.id)}"><input data-wf="name" maxlength="60" value="${esc(w.name || '')}" aria-label="Nombre"${edit ? '' : ' disabled'}><input data-wf="role" list="dl-roles" maxlength="40" value="${esc(w.role || '')}" placeholder="Función" aria-label="Función"${edit ? '' : ' disabled'}><input data-wf="pay" class="mono" inputmode="decimal" maxlength="10" value="${esc(amountInput(w.pay))}" placeholder="Pago/día" aria-label="Pago por día"${edit ? '' : ' disabled'}>${edit ? `<button type="button" class="btn ghost sm" data-act="att-w-toggle" data-id="${esc(w.id)}">${w.active === false ? 'Volver' : 'Ya no está'}</button>` : ''}</div>`;
+  const act = all.filter((w) => w.active !== false), gone = all.filter((w) => w.active === false);
+  openSheet(`${sheetHead('Obreros de ' + esc(p.name))}<div class="sheet-b">
+    <p class="hint">Escribe y pasa a otra casilla: se guarda solo. El pago por día es para el resumen de la quincena (RD$).</p>
+    <div class="w-list">${act.map(row).join('') || '<p class="hint">Todavía no hay obreros.</p>'}</div>
+    ${edit ? `<form id="w-add" class="w-row add" autocomplete="off"><input id="w-name" maxlength="60" placeholder="Nombre" required><input id="w-role" list="dl-roles" maxlength="40" placeholder="Función"><input id="w-pay" class="mono" inputmode="decimal" maxlength="10" placeholder="Pago/día"><button type="submit" class="btn primary sm">Agregar</button></form>` : ''}
+    ${gone.length ? `<details class="edit"><summary>Ya no trabajan aquí (${gone.length})</summary><div class="w-list">${gone.map(row).join('')}</div></details>` : ''}
+  </div><datalist id="dl-roles">${uniqList([...ROLES, ...S.workers.map((w) => w.role)]).map((v) => `<option value="${esc(v)}"></option>`).join('')}</datalist>`, { type: 'workers', id: p.id });
+}
+async function addWorker() {
+  const name = $('#w-name').value.trim();
+  if (!name) return;
+  const payRaw = $('#w-pay').value.trim();
+  const pay = payRaw ? parseAmount(payRaw) : null;
+  if (payRaw && pay == null) { toast('Escribe el pago por día solo con números.'); return; }
+  const pid = S.attProject;
+  const seq = S.workers.reduce((m, w) => Math.max(m, Number(w.seq) || 0), 0) + 1;
+  const ref = db.collection('workers').doc();
+  const ok = await write(async () => {
+    await ref.set({ projectId: pid, name: name.slice(0, 60), role: $('#w-role').value.trim().slice(0, 40), pay: pay == null ? null : round2(pay), active: true, seq, createdAt: new Date().toISOString() });
+    // Entra también en la quincena de ahora (y en las que vengan).
+    const sh = attSheetsOf(pid)[0];
+    if (sh && sh.start <= todayISO() && !(sh.workers || []).includes(ref.id)) await db.doc('asistencia/' + sh.id).update({ workers: [...(sh.workers || []), ref.id] });
+    else if (sh && sh.start > todayISO() && !(sh.workers || []).includes(ref.id)) await db.doc('asistencia/' + sh.id).update({ workers: [...(sh.workers || []), ref.id] });
+  }, 'Obrero agregado');
+  if (!ok) return;
+  setTimeout(() => { if (S.sheet && S.sheet.type === 'workers') { openWorkers(); const n = $('#w-name'); if (n) n.focus(); } }, 150);
+}
+async function saveWorkerField(input) {
+  const row = input.closest('[data-w]');
+  if (!row) return;
+  const id = row.dataset.w, f = input.dataset.wf;
+  let v = input.value.trim();
+  if (f === 'name' && !v) { toast('El nombre no puede quedar vacío.'); return; }
+  if (f === 'pay') { const n = v ? parseAmount(v) : null; if (v && n == null) { toast('Escribe el pago por día solo con números.'); return; } v = n == null ? null : round2(n); }
+  await write(() => db.doc('workers/' + id).update({ [f]: f === 'name' ? v.slice(0, 60) : f === 'role' ? v.slice(0, 40) : v }), 'Guardado');
+}
+async function toggleWorker(id) {
+  const w = S.workers.find((x) => x.id === id);
+  if (!w) return;
+  const back = w.active === false;
+  const ok = await write(async () => {
+    await db.doc('workers/' + id).update({ active: back });
+    const sh = attSheetsOf(w.projectId)[0];
+    if (!sh) return;
+    const ids = sh.workers || [];
+    const marked = Object.values(attMarks(sh)[id] || {}).some((m) => m && (m.e || m.p || m.s));
+    if (back && !ids.includes(id)) await db.doc('asistencia/' + sh.id).update({ workers: [...ids, id] });
+    if (!back && ids.includes(id) && !marked) await db.doc('asistencia/' + sh.id).update({ workers: ids.filter((x) => x !== id) });
+  }, back ? 'Volvió a la lista' : 'Ya no sale en las planillas nuevas');
+  if (ok) setTimeout(() => { if (S.sheet && S.sheet.type === 'workers') openWorkers(); }, 150);
+}
+async function newAttSheet() {
+  const pid = S.attProject;
+  const last = attSheetsOf(pid)[0];
+  const start = last ? addDays(attEnd(last), 1) : weekStart(todayISO());
+  const ref = db.collection('asistencia').doc();
+  const ok = await write(() => ref.set({ projectId: pid, start, days: ATT_DAYS, entryLimit: last ? last.entryLimit || '' : '', exitFrom: last ? last.exitFrom || '' : '', workers: attWorkersOf(pid).map((w) => w.id), marks: {}, surprise: {}, createdAt: new Date().toISOString() }), 'Quincena lista');
+  if (ok) { attJustMade = ref.id; S.attSheet = ref.id; S.attDay = attTodayIdx({ start, days: ATT_DAYS }); renderAll(); }
+}
+function attMark(wid, f, v) {
+  const { sh } = attCurrent(derive());
+  if (!sh || !canEdit()) return;
+  const k = S.attDay;
+  attEdit(sh, (marks) => {
+    const day = ((marks[wid] = marks[wid] || {})[k] = { ...(marks[wid][k] || {}) });
+    day[f] = day[f] === v ? '' : v;
+    // Si no vino, no hay pase ni salida.
+    if (f === 'e' && day.e === 'x') { day.p = ''; day.s = ''; }
+    if ((f === 'p' || f === 's') && day[f] && !day.e) day.e = 'ok';
+  });
+}
+function attAll(f) {
+  const { sh } = attCurrent(derive());
+  if (!sh || !canEdit()) return;
+  const k = S.attDay;
+  attEdit(sh, (marks) => {
+    for (const w of attSheetWorkers(sh)) {
+      const day = ((marks[w.id] = marks[w.id] || {})[k] = { ...(marks[w.id][k] || {}) });
+      if (f === 'e' && !day.e) day.e = 'ok';
+      if (f !== 'e' && day.e !== 'x' && !day[f]) { day[f] = 'ok'; if (!day.e) day.e = 'ok'; }
+    }
+  });
+}
+function attSurpriseNow() {
+  const { sh } = attCurrent(derive());
+  if (!sh || !canEdit()) return;
+  const k = S.attDay;
+  const now = new Date();
+  attEdit(sh, (marks, surprise) => {
+    if (!surprise[k]) surprise[k] = `${now.getHours()}:${String(now.getMinutes()).padStart(2, '0')}`;
+    for (const w of attSheetWorkers(sh)) {
+      const day = ((marks[w.id] = marks[w.id] || {})[k] = { ...(marks[w.id][k] || {}) });
+      if (day.e && day.e !== 'x' && !day.p) day.p = 'ok';
+    }
+  });
+  toast('Pase sorpresa: los que llegaron quedan con ✓. Marca con x a los que no estaban.');
+}
+function openAttRules() {
+  const R = attRules();
+  const sel = (id, label, opts, v) => `<div class="field full"><label for="${id}">${label}</label><select id="${id}">${opts.map(([val, l]) => `<option value="${val}"${Number(val) === Number(v) ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select></div>`;
+  const ded = [['0', 'No se descuenta'], ['0.25', 'Se descuenta ¼ de día'], ['0.5', 'Se descuenta ½ día'], ['1', 'No se paga el día']];
+  openSheet(`<form id="att-rules-form" autocomplete="off">${sheetHead('Reglas del pase de lista')}<div class="sheet-b">
+    <p class="hint">Así cuenta la app los días a pagar de cada obrero. Valen para todas las obras.</p>
+    <div class="fields">
+      ${sel('ar-late', 'Llegó después de la hora límite (T)', ded, R.late)}
+      ${sel('ar-sm', 'No estaba en el pase sorpresa (x)', ded, R.surpriseMiss)}
+      ${sel('ar-le', 'Se fue antes (x en la salida)', [['0.5', 'Cuenta ½ día'], ['0', 'No se paga el día'], ['1', 'Cuenta el día completo']], R.leftEarly)}
+      ${sel('ar-c', 'Siguió corrido y se fue antes (C)', [['1', 'Cuenta 1 día'], ['0.5', 'Cuenta ½ día']], R.corrido)}
+      ${sel('ar-cc', 'Siguió corrido hasta la salida (1½)', [['1.5', 'Cuenta día y medio'], ['1', 'Cuenta 1 día']], R.corridoFull)}
+      ${sel('ar-sat', 'Sábado', [['1', 'Como cualquier día'], ['0.5', 'Vale medio día']], R.saturday)}
+      ${sel('ar-sun', 'Domingo', [['1', 'Como cualquier día'], ['1.5', 'Vale día y medio'], ['2', 'Vale doble']], R.sunday)}
+    </div></div><div class="sheet-f"><button type="submit" class="btn primary block">Guardar</button></div></form>`, { type: 'att-rules' });
+}
+async function saveAttRules() {
+  const g = (id) => Number($(id).value);
+  const data = { late: g('#ar-late'), surpriseMiss: g('#ar-sm'), leftEarly: g('#ar-le'), corrido: g('#ar-c'), corridoFull: g('#ar-cc'), saturday: g('#ar-sat'), sunday: g('#ar-sun'), updatedAt: new Date().toISOString() };
+  if (await write(() => db.doc('settings/asistencia').set(data), 'Reglas guardadas')) { S.attRules = data; closeSheet(); renderAll(); }
+}
+// Excel de la quincena: la planilla con las marcas y el resumen para pagar.
+function attWorkbook(sh, proj) {
+  const { XS, sheetXml, buildXlsx } = FILES;
+  const R = attRules();
+  const st = S.settings || {};
+  const rows = attSheetWorkers(sh);
+  const marks = attMarks(sh), surprise = attSurprise(sh);
+  const n = attLen(sh);
+  const top = [[{ v: st.company || 'Pase de lista', s: XS.title }], [{ v: `Pase de lista · ${proj.name} · ${attPeriodLabel(sh)}`, s: XS.bold }], [{ v: [`Entrada hasta las ${sh.entryLimit || '—'}`, `Salida desde las ${sh.exitFrom || '—'}`, 'Generado el ' + fmtDate(todayISO())].join(' · '), s: XS.muted }]];
+  const g = [...top];
+  const h1 = [{ v: '', s: XS.head }, { v: '', s: XS.head }, { v: '', s: XS.head }], h2 = [{ v: 'No.', s: XS.head }, { v: 'Obrero', s: XS.head }, { v: 'Función', s: XS.head }];
+  for (let k = 0; k < n; k++) { const d = ymd(attDate(sh, k)); h1.push({ v: `${DOW[d.getDay()]} ${d.getDate()}/${d.getMonth() + 1}`, s: XS.head }, { v: '', s: XS.head }, { v: '', s: XS.head }); h2.push({ v: 'E', s: XS.head }, { v: 'P', s: XS.head }, { v: 'S', s: XS.head }); }
+  for (const x of ['Días a pagar', 'Pago por día', 'Total']) { h1.push({ v: '', s: XS.head }); h2.push({ v: x, s: XS.headR }); }
+  g[3] = h1; g[4] = h2;
+  let total = 0;
+  rows.forEach((w, j) => {
+    const t = attTotals(sh, w.id, R);
+    const pay = isNum(w.pay) ? round2(t.days * w.pay) : null;
+    if (pay) total = round2(total + pay);
+    const r = [{ v: j + 1, s: XS.int }, { v: w.name || '' }, { v: w.role || '' }];
+    for (let k = 0; k < n; k++) { const m = (marks[w.id] || {})[k] || {}; r.push({ v: ATT_SHOW[m.e] || '' }, { v: ATT_SHOW[m.p] || '' }, { v: ATT_SHOW[m.s] || '' }); }
+    r.push({ v: t.days }, isNum(w.pay) ? { v: w.pay, s: XS.money } : { v: '' }, pay == null ? { v: '' } : { v: pay, s: XS.money });
+    g.push(r);
+  });
+  const pr = [{ v: '' }, { v: 'Hora del pase sorpresa', s: XS.bold }, { v: '' }];
+  for (let k = 0; k < n; k++) pr.push({ v: surprise[k] || '' }, { v: '' }, { v: '' });
+  g.push(pr);
+  const tr = [{ v: '' }, { v: 'Total', s: XS.totLabel }, { v: '' }];
+  for (let k = 0; k < n * 3 + 2; k++) tr.push({ v: '', s: XS.totBlank });
+  tr.push({ v: total, s: XS.totMoney });
+  g.push(tr);
+  g.push([]);
+  g.push([{ v: 'E: ✓ llegó a tiempo · T llegó después de la hora límite · x no vino.   P: ✓ estaba · x no estaba.   S: ✓ estaba a la salida · C siguió corrido sin almorzar y se fue antes · 1½ siguió corrido hasta la salida · x se fue antes.', s: XS.muted }]);
+  const widths = [5, 24, 14, ...Array(n * 3).fill(3.6), 12, 13, 14];
+  // Resumen para pagar.
+  const rs = [...top];
+  rs[4] = ['Obrero', 'Función', 'Días a pagar', 'Tardanzas', 'Faltas', 'No estaba en el pase', 'Se fue antes', 'C', '1½', 'Pago por día', 'Total'].map((v, j) => ({ v, s: j < 2 ? XS.head : XS.headR }));
+  rows.forEach((w) => {
+    const t = attTotals(sh, w.id, R);
+    rs.push([{ v: w.name || '' }, { v: w.role || '' }, { v: t.days }, { v: t.late, s: XS.int }, { v: t.absent, s: XS.int }, { v: t.surpriseMiss, s: XS.int }, { v: t.leftEarly, s: XS.int }, { v: t.corrido, s: XS.int }, { v: t.corridoFull, s: XS.int }, isNum(w.pay) ? { v: w.pay, s: XS.money } : { v: '' }, isNum(w.pay) ? { v: round2(t.days * w.pay), s: XS.money } : { v: '' }]);
+  });
+  rs.push([{ v: 'Total', s: XS.totLabel }, { v: '', s: XS.totBlank }, { v: round2(rows.reduce((s, w) => s + attTotals(sh, w.id, R).days, 0)), s: XS.totBlank }, ...Array(7).fill(0).map(() => ({ v: '', s: XS.totBlank })), { v: total, s: XS.totMoney }]);
+  const footer = `&L${(st.company || 'Pase de lista').replace(/&/g, '&&')}&C${('Pase de lista ' + proj.name).replace(/&/g, '&&')}&RPágina &P de &N`;
+  return buildXlsx([
+    { name: 'Resumen', xml: sheetXml(rs, { widths: [26, 14, 12, 11, 9, 13, 12, 6, 6, 13, 15], selected: true, landscape: true, footer }) },
+    { name: 'Planilla', xml: sheetXml(g, { widths, freeze: 5, landscape: true, fitWidth: 1, footer }) },
+  ], { title: 'Pase de lista - ' + proj.name, creator: st.preparedBy || 'Facturas de Proyectos', names: [] });
+}
+// PDF como la planilla de papel (carta acostada). En blanco: con los nombres y sin marcas, para imprimir.
+async function attPdf(sh, proj, blank) {
+  const { PDFDocument, StandardFonts, rgb } = await pdflib();
+  const out = await PDFDocument.create();
+  const font = await out.embedFont(StandardFonts.Helvetica);
+  const bold = await out.embedFont(StandardFonts.HelveticaBold);
+  out.setTitle(pdfSafe('Pase de lista - ' + proj.name));
+  out.setCreator(PDF_CREATOR);
+  const R = attRules();
+  const W = 792, H = 612, M = 24;
+  const ink = rgb(0.08, 0.11, 0.16), grey = rgb(0.38, 0.42, 0.48), line = rgb(0.55, 0.58, 0.63), band = rgb(0.92, 0.93, 0.95);
+  const n = attLen(sh);
+  const people = attSheetWorkers(sh);
+  const rows = blank ? [...people, ...Array(Math.max(0, 17 - people.length)).fill(null)] : people;
+  const marks = blank ? {} : attMarks(sh), surprise = blank ? {} : attSurprise(sh);
+  const cNo = 16, cName = 96, cRole = 56, cTot = blank ? 0 : 82;
+  const dayW = (W - 2 * M - cNo - cName - cRole - cTot) / n, cw = dayW / 3;
+  const rowH = 15, headH = 28;
+  const T = (pg, s, x, y, size, f = font, color = ink) => pg.drawText(pdfSafe(s), { x, y, size, font: f, color });
+  const C = (pg, s, cx, y, size, f = font, color = ink) => { const t = pdfSafe(s); pg.drawText(t, { x: cx - f.widthOfTextAtSize(t, size) / 2, y, size, font: f, color }); };
+  const fit = (s, f, size, w) => { let t = pdfSafe(s); while (t.length > 1 && f.widthOfTextAtSize(t, size) > w) t = t.slice(0, -1); return t; };
+  const check = (pg, cx, cy) => { pg.drawLine({ start: { x: cx - 2.6, y: cy }, end: { x: cx - 0.6, y: cy - 2.2 }, thickness: 1.1, color: ink }); pg.drawLine({ start: { x: cx - 0.6, y: cy - 2.2 }, end: { x: cx + 3, y: cy + 2.8 }, thickness: 1.1, color: ink }); };
+  const perPage = Math.max(1, Math.floor((H - 2 * M - 70 - headH - 2 * rowH - 50) / rowH));
+  const x0 = M, xDays = M + cNo + cName + cRole, xTot = xDays + n * dayW;
+  for (let start = 0; start < Math.max(rows.length, 1); start += perPage) {
+    const pg = out.addPage([W, H]);
+    let y = H - M;
+    T(pg, 'PASE DE LISTA — ' + proj.name, M, y - 12, 14, bold);
+    T(pg, S.settings.company || '', W - M - font.widthOfTextAtSize(pdfSafe(S.settings.company || ''), 8), y - 10, 8, font, grey);
+    y -= 28;
+    T(pg, `Obreros por la casa   ·   Entrada hasta las: ${sh.entryLimit || '______'}   ·   Salida desde las: ${sh.exitFrom || '______'}   ·   ${attPeriodLabel(sh)}`, M, y, 9, font, ink);
+    y -= 14;
+    T(pg, 'E = entrada · P = pase sorpresa · S = salida', M, y, 8, font, grey);
+    y -= 12;
+    const top = y;
+    pg.drawRectangle({ x: x0, y: top - headH, width: W - 2 * M, height: headH, color: band });
+    T(pg, 'No.', x0 + 2, top - 18, 7.5, bold);
+    T(pg, 'Obreros', x0 + cNo + 3, top - 18, 7.5, bold);
+    T(pg, 'Función', x0 + cNo + cName + 3, top - 18, 7.5, bold);
+    for (let k = 0; k < n; k++) {
+      const d = ymd(attDate(sh, k));
+      const cx = xDays + k * dayW + dayW / 2;
+      C(pg, `${DOW[d.getDay()]} ${d.getDate()}`, cx, top - 11, 7.5, bold);
+      ['E', 'P', 'S'].forEach((l, j) => C(pg, l, xDays + k * dayW + cw * j + cw / 2, top - 23, 6, font, grey));
+    }
+    if (!blank) { C(pg, 'Días', xTot + 15, top - 18, 7.5, bold); C(pg, 'Pago', xTot + 15 + 41, top - 18, 7.5, bold); }
+    const slice = rows.slice(start, start + perPage);
+    let yy = top - headH;
+    slice.forEach((w, j) => {
+      const y1 = yy - rowH;
+      T(pg, String(start + j + 1), x0 + 3, y1 + 4.5, 7.5);
+      if (w) { T(pg, fit(w.name || '', bold, 7.5, cName - 5), x0 + cNo + 3, y1 + 4.5, 7.5, bold); T(pg, fit(w.role || '', font, 7, cRole - 5), x0 + cNo + cName + 3, y1 + 4.5, 7); }
+      if (w && !blank) {
+        const ms = marks[w.id] || {};
+        for (let k = 0; k < n; k++) {
+          const m = ms[k] || {};
+          ['e', 'p', 's'].forEach((f, q) => {
+            const v = m[f];
+            if (!v) return;
+            const cx = xDays + k * dayW + cw * q + cw / 2;
+            if (v === 'ok') check(pg, cx, y1 + 7.2); else C(pg, ATT_SHOW[v], cx, y1 + 4.5, v === 'cc' ? 5.6 : 7, bold);
+          });
+        }
+        const t = attTotals(sh, w.id, R);
+        C(pg, fmtDays(t.days), xTot + 15, y1 + 4.5, 7.5, bold);
+        if (isNum(w.pay)) { const s = money(round2(t.days * w.pay)); T(pg, fit(s, font, 7, 50), W - M - 3 - font.widthOfTextAtSize(fit(s, font, 7, 50), 7), y1 + 4.5, 7); }
+      }
+      pg.drawLine({ start: { x: x0, y: y1 }, end: { x: W - M, y: y1 }, thickness: 0.4, color: line });
+      yy = y1;
+    });
+    // Hora del pase sorpresa.
+    const ys = yy - rowH;
+    T(pg, 'Hora del pase sorpresa', x0 + cNo + 3, ys + 4.5, 7.5, bold);
+    for (let k = 0; k < n; k++) if (surprise[k]) C(pg, surprise[k], xDays + k * dayW + dayW / 2, ys + 4.5, 7.5, bold);
+    pg.drawLine({ start: { x: x0, y: ys }, end: { x: W - M, y: ys }, thickness: 0.4, color: line });
+    // Rejilla.
+    const yb = ys;
+    for (const x of [x0, x0 + cNo, x0 + cNo + cName, xDays, ...Array.from({ length: n }, (_, k) => xDays + (k + 1) * dayW), W - M]) pg.drawLine({ start: { x, y: top }, end: { x, y: yb }, thickness: 0.7, color: line });
+    for (let k = 0; k < n; k++) for (let q = 1; q < 3; q++) { const x = xDays + k * dayW + cw * q; pg.drawLine({ start: { x, y: top - headH + 9 }, end: { x, y: yb + rowH }, thickness: 0.25, color: line, dashArray: [1, 1.5] }); }
+    if (!blank) pg.drawLine({ start: { x: xTot + 30, y: top }, end: { x: xTot + 30, y: yb }, thickness: 0.5, color: line });
+    pg.drawLine({ start: { x: x0, y: top }, end: { x: W - M, y: top }, thickness: 0.7, color: line });
+    pg.drawLine({ start: { x: x0, y: top - headH }, end: { x: W - M, y: top - headH }, thickness: 0.7, color: line });
+    let yl = yb - 14;
+    T(pg, 'E: marca = llegó a tiempo · T = llegó después de la hora límite · x = no vino.     P: marca = estaba · x = no estaba.', M, yl, 7.5, font, grey);
+    yl -= 10;
+    T(pg, 'S: marca = estaba a la salida · C = siguió corrido sin almorzar y se fue antes (día completo) · 1½ = siguió corrido hasta la salida (día y medio) · x = se fue antes.', M, yl, 7.5, font, grey);
+    if (start + perPage >= rows.length) {
+      if (!blank) {
+        const tot = round2(people.reduce((s, w) => s + (isNum(w.pay) ? round2(attTotals(sh, w.id, R).days * w.pay) : 0), 0));
+        const s = 'Total a pagar: ' + money(tot);
+        T(pg, s, W - M - bold.widthOfTextAtSize(pdfSafe(s), 9.5), yl - 14, 9.5, bold);
+      }
+      const ySig = M + 8, sw = 170;
+      ['Encargado', 'Revisó', 'Autorizó'].forEach((l, j) => { const x = M + j * (sw + 60); pg.drawLine({ start: { x, y: ySig + 10 }, end: { x: x + sw, y: ySig + 10 }, thickness: 0.7, color: ink }); T(pg, l, x, ySig, 7.5, bold, grey); });
+    }
+  }
+  return out.save();
+}
+async function attExport(kind) {
+  await flushAtt();
+  const D = derive();
+  const { sh } = attCurrent(D);
+  const proj = D.projById.get(S.attProject);
+  if (!sh || !proj) return;
+  const name = fileSafe(`Pase de lista ${proj.name} ${sh.start} al ${attEnd(sh)}`);
+  try {
+    if (kind === 'xlsx') { deliverFile(attWorkbook(sh, proj), name + '.xlsx'); return; }
+    const bytes = await attPdf(sh, proj, kind === 'blank');
+    deliverFile(new Blob([bytes], { type: 'application/pdf' }), (kind === 'blank' ? 'Planilla en blanco ' : '') + name + '.pdf');
+  } catch (e) { console.error(e); toast('No se pudo preparar el archivo.'); }
+}
+
 async function createPayment(name, date, ids) {
   const ref = db.collection('payments').doc();
   const ok = await write(() => ref.set({ name: String(name || '').trim().slice(0, 80) || 'Pago ' + fmtDate(todayISO()), date: ymd(date) ? date : todayISO(), status: 'armando', invoiceIds: ids, createdAt: new Date().toISOString() }), 'Pago creado');
@@ -3010,7 +3453,7 @@ function onClick(e) {
   if (!t) return;
   const a = t.dataset.act, id = t.dataset.id;
   switch (a) {
-    case 'tab': S.tab = t.dataset.tab; if (S.tab !== 'pagos') S.paymentId = null; S.payDel = false; renderAll(); window.scrollTo(0, 0); break;
+    case 'tab': if (S.tab === 'asistencia') flushAtt(); S.tab = t.dataset.tab; if (S.tab !== 'pagos') S.paymentId = null; S.payDel = false; renderAll(); window.scrollTo(0, 0); break;
     case 'filter': S.filter = t.dataset.f; S.focus = null; renderAll(); break;
     case 'invorder': S.invOrder = t.dataset.o; renderAll(); break;
     case 'projf': S.projectFilter = t.dataset.p; renderAll(); break;
@@ -3034,6 +3477,19 @@ function onClick(e) {
     case 'sheet-close': closeSheet(); break;
     case 'inv-view': openViewer(id); break;
     case 'open-cond': openConduce(id); break;
+    case 'att-proj': flushAtt(); S.attProject = t.dataset.p; S.attSheet = ''; renderAll(); break;
+    case 'att-day': S.attDay = Number(t.dataset.k) || 0; renderAll(); break;
+    case 'att-mark': attMark(t.dataset.w, t.dataset.f, t.dataset.v); break;
+    case 'att-all': attAll(t.dataset.f); break;
+    case 'att-surprise': attSurpriseNow(); break;
+    case 'att-new': newAttSheet(); break;
+    case 'att-prev': case 'att-next': { flushAtt(); const sheets = attSheetsOf(S.attProject); const k = sheets.findIndex((x) => x.id === S.attSheet) + (a === 'att-prev' ? 1 : -1); if (sheets[k]) { S.attSheet = sheets[k].id; S.attDay = attTodayIdx(sheets[k]); renderAll(); } break; }
+    case 'att-workers': openWorkers(); break;
+    case 'att-w-toggle': toggleWorker(id); break;
+    case 'att-rules': openAttRules(); break;
+    case 'att-xlsx': attExport('xlsx'); break;
+    case 'att-pdf': attExport('pdf'); break;
+    case 'att-blank': attExport('blank'); break;
     case 'cond-list': openCondList(); break;
     case 'cond-add': condTarget = t.dataset.inv || null; $('#cond-input').click(); break;
     case 'cond-view': { const c = S.conduces.find((x) => x.id === id); if (c) showFile({ title: condTitle(c), fileId: c.fileId, fileType: c.fileType }); break; }
@@ -3151,6 +3607,9 @@ async function hintCreate(id, btn) {
 function onChange(e) {
   const t = e.target;
   if (t.id === 'f-proj') { $('#f-newproj-wrap').hidden = t.value !== '__new'; if (t.value === '__new') $('#f-newproj').focus(); }
+  if (t.dataset && t.dataset.wf) saveWorkerField(t);
+  if ((t.id === 'att-in' || t.id === 'att-out') && S.attSheet) write(() => db.doc('asistencia/' + S.attSheet).update({ [t.id === 'att-in' ? 'entryLimit' : 'exitFrom']: t.value.trim().slice(0, 8) }), 'Guardado');
+  if (t.id === 'att-ptime' && S.attSheet) { const sh = S.asistencia.find((x) => x.id === S.attSheet); const v = t.value.replace(/^0(\d)/, '$1'); if (sh) attEdit(sh, (m, sp) => { if (v) sp[S.attDay] = v; else delete sp[S.attDay]; }); }
   if (t.id === 'f-month') {
     S.dateFilter = t.value;
     if (t.value === 'range' && !S.dateFrom && !S.dateTo) { S.dateFrom = todayISO().slice(0, 8) + '01'; S.dateTo = todayISO(); }
@@ -3193,6 +3652,8 @@ function onSubmit(e) {
   const f = e.target;
   e.preventDefault();
   if (f.id === 'inv-form') saveInvoice(f);
+  else if (f.id === 'w-add') addWorker();
+  else if (f.id === 'att-rules-form') saveAttRules();
   else if (f.id === 'cond-form') saveConduce(f);
   else if (f.id === 'order-form') saveOrder(false);
   else if (f.id === 'pick-form') {
@@ -3247,6 +3708,8 @@ function bind() {
     RT.assets.objectUrl(decodeURIComponent(m[1])).then((u) => { if (u) img.src = u; });
   }, true);
   window.addEventListener('online', () => { if (S.aiState !== 'ok') scheduleRender(); retryOffline(); });
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushAtt(); });
+  window.addEventListener('pagehide', () => { flushAtt(); });
 }
 
 /* ---------- service worker (funciona sin internet y se actualiza sola) ---------- */
@@ -3254,7 +3717,7 @@ function bind() {
 // llenando nada (ninguna hoja abierta, sin archivos en proceso, sin lecturas ni PDF en curso).
 let lastShown = Date.now();
 function busyNow() {
-  return !!(S.sheet || !$('#viewer').hidden || S.busyPdf || S.queue.some((x) => !x.done) || aiRunning || aiJobs.length || readingMany);
+  return !!(S.sheet || !$('#viewer').hidden || S.busyPdf || S.queue.some((x) => !x.done) || aiRunning || aiJobs.length || readingMany || attPend);
 }
 function tryAutoUpdate() {
   const reg = S.updateReg;
@@ -3286,8 +3749,9 @@ function registerSW() {
 /* ---------- arranque ---------- */
 function subscribe() {
   db.doc('settings/general').onSnapshot((snap) => { S.settings = (snap.exists && snap.data()) || {}; scheduleRender(); }, (err) => console.warn(err));
-  const done = () => { if (S.got.projects && S.got.invoices && S.got.payments && S.got.orders && S.got.conduces && S.dbState === 'loading') { S.dbState = 'ready'; setTimeout(retryOffline, 1500); setTimeout(() => { fixCreditSigns().catch((e) => console.warn(e)); }, 2500); } };
-  for (const name of ['projects', 'invoices', 'payments', 'orders', 'conduces']) {
+  db.doc('settings/asistencia').onSnapshot((snap) => { S.attRules = (snap.exists && snap.data()) || {}; scheduleRender(); }, (err) => console.warn(err));
+  const done = () => { if (S.got.projects && S.got.invoices && S.got.payments && S.got.orders && S.got.conduces && S.got.workers && S.got.asistencia && S.dbState === 'loading') { S.dbState = 'ready'; setTimeout(retryOffline, 1500); setTimeout(() => { fixCreditSigns().catch((e) => console.warn(e)); }, 2500); } };
+  for (const name of ['projects', 'invoices', 'payments', 'orders', 'conduces', 'workers', 'asistencia']) {
     db.collection(name).onSnapshot((snap) => {
       S[name] = snap.docs.map((d) => ({ ...d.data(), id: d.id }));
       S.got[name] = true;
