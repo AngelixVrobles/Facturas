@@ -369,6 +369,11 @@ details.edit .fields { padding: 12px 14px 14px; }
 .pill.nooc { color: var(--muted); background: var(--surface-2); }
 .chip .n { font: 600 12.5px var(--font-data); opacity: .75; }
 .pill.cond { color: var(--accent); background: var(--accent-soft); }
+.pill.nc { color: var(--paid); background: var(--paid-bg); }
+.date-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; }
+.date-row select, .date-row input { border: 1px solid var(--line); background: var(--surface); color: var(--ink); border-radius: 10px; padding: 8px 10px; font: 550 14px/1.2 var(--font-body); min-height: 38px; }
+.date-in { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
+.list .more { align-self: center; margin-top: 2px; }
 .status-line .link { text-align: left; }
 .pill.cond b { font-family: var(--font-data); font-weight: 600; }
 .cond-list { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
@@ -434,6 +439,7 @@ input[type="date"]::-webkit-calendar-picker-indicator { margin: 0 0 0 4px; paddi
     <div class="seg" id="f-seg" role="group" aria-label="Estado de las facturas"></div>
     <div class="chips" id="f-chips" role="group" aria-label="Proyecto"></div>
     <div class="chips" id="f-ochips" role="group" aria-label="Orden de compra" hidden></div>
+    <div class="date-row" id="f-dates" hidden></div>
     <label class="search-box">
       <span class="sr">Buscar facturas</span>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>

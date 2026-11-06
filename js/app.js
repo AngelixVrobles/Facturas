@@ -10,7 +10,7 @@ const LIB = {
   qrgen: 'js/qr.js',
 };
 const PDF_CREATOR = 'Facturas de Proyectos';
-const APP_VERSION = '1.4.0';
+const APP_VERSION = '1.5.0';
 const SVG = (d) => `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ICON = {
   plus: SVG('<path d="M12 5v14M5 12h14"/>'),
@@ -73,7 +73,7 @@ const DEFAULT_ORDER_NOTE = 'Toda factura recibida por compras deberá estar acom
 
 const S = {
   tab: 'facturas', filter: 'pendientes', projectFilter: 'all', search: '', paymentId: null,
-  projects: [], invoices: [], payments: [], orders: [], conduces: [], settings: {}, got: { projects: false, invoices: false, payments: false, orders: false, conduces: false }, orderFilter: 'todas', orderSearch: '', orderProject: 'all', focus: null, invOrder: 'all',
+  projects: [], invoices: [], payments: [], orders: [], conduces: [], settings: {}, got: { projects: false, invoices: false, payments: false, orders: false, conduces: false }, orderFilter: 'todas', orderSearch: '', orderProject: 'all', focus: null, invOrder: 'all', dateFilter: '', dateFrom: '', dateTo: '', showAll: new Set(),
   dbState: 'loading', aiState: 'ok', queue: [], sheet: null, payDel: false, busyPdf: false, pdfMsg: '',
   updateReg: null, updating: false, ready: null, restoreFile: null,
 };
@@ -96,7 +96,7 @@ function normCur(c) {
   if (s === 'EUR' || s === '€') return 'EUR';
   return s.slice(0, 3);
 }
-function money(n, cur) { if (!isNum(n)) return '—'; const c = normCur(cur); return (CUR_PREFIX[c] || c + ' ') + nf.format(n); }
+function money(n, cur) { if (!isNum(n)) return '—'; const c = normCur(cur); return (n < 0 ? '-' : '') + (CUR_PREFIX[c] || c + ' ') + nf.format(Math.abs(n)); }
 function sumBy(list, field) {
   const g = new Map();
   for (const i of list) if (isNum(i[field])) { const c = normCur(i.currency); g.set(c, (g.get(c) || 0) + i[field]); }
@@ -189,6 +189,10 @@ function reviewFlags(i, D) {
   if (i.ai === 'failed') r.push('Sin leer');
   if (i.dup) r.push('¿Repetida?');
   if ((i.conduces || []).some((c) => c.dup)) r.push('¿Conduce repetido?');
+  const x = invCross(i, D);
+  if (x.over) r.push('Cobra más que sus conduces');
+  if (x.missing.length) r.push('Falta conduce');
+  if (x.qty.length) r.push('Más que la orden');
   if (needsOrder(i, D)) r.push('Sin orden');
   if (i.buyerRnc && D.companyRnc && RD.normRnc(i.buyerRnc) !== D.companyRnc) r.push('Otro cliente');
   return r;
@@ -212,7 +216,7 @@ function orderCandidates(i, D) {
   return D.orders.filter((o) => o.status !== 'anulada' && (!i.projectId || o.projectId === i.projectId) && names.some((n) => sameName(o.supplier, n)))
     .sort((a, b) => used(a) - used(b) || (Number(b.number) || 0) - (Number(a.number) || 0));
 }
-function needsOrder(i, D) { return !!(D.firstOrderAt && !i.order && !i.noOrder && String(i.createdAt || '') >= D.firstOrderAt); }
+function needsOrder(i, D) { return !!(D.firstOrderAt && !i.order && !i.noOrder && !isCreditNcf(i.number) && String(i.createdAt || '') >= D.firstOrderAt); }
 function fmtQty(q) { if (typeof q === 'number') return new Intl.NumberFormat('es-DO', { maximumFractionDigits: 3 }).format(q); return String(q == null ? '' : q); }
 // Número de orden escrito por el proveedor ("OC-0012", "0012"), por ejemplo en <NumeroOrdenCompra> del XML.
 function orderByNumberText(text, projectId) {
@@ -338,6 +342,104 @@ function condSuggestions(i, D) {
     return { c, s };
   }).filter((x) => x.s >= 2).sort((a, b) => b.s - a.s || String(b.c.createdAt || '').localeCompare(String(a.c.createdAt || ''))).map((x) => x.c);
 }
+// Nota de crédito (B04 o E34): resta. Su monto y su ITBIS se guardan en negativo; los de las demás, en positivo.
+const isCreditNcf = (n) => { const p = RD.parseNcf(n); return p.ok && (p.code === '04' || p.code === '34'); };
+function signAmounts(doc, base) {
+  const changesNumber = doc.number !== undefined;
+  const credit = isCreditNcf(changesNumber ? doc.number : base && base.number);
+  for (const f of ['amount', 'itbis']) {
+    const v = doc[f] !== undefined ? doc[f] : changesNumber && base ? base[f] : undefined;
+    if (isNum(v) && v !== 0 && (credit ? v > 0 : v < 0)) doc[f] = -v;
+  }
+  return doc;
+}
+// Las notas de crédito que se guardaron antes de esto (con el monto en positivo) se arreglan una vez.
+async function fixCreditSigns() {
+  if (!canEdit()) return;
+  for (const i of S.invoices) {
+    const fixed = signAmounts({ number: i.number, amount: i.amount, itbis: i.itbis });
+    if (fixed.amount !== i.amount || fixed.itbis !== i.itbis) await db.doc('invoices/' + i.id).update({ amount: fixed.amount, itbis: fixed.itbis }).catch((e) => console.warn(e));
+  }
+}
+/* ---------- cruce orden, conduce y factura ---------- */
+// Cantidad escrita ("5 mts", "400 uds", "2.5") en número y unidad comparables.
+function unitKey(u) {
+  const s = norm(String(u || '').replace(/³/g, '3').replace(/²/g, '2'));
+  if (!s) return '';
+  if (/^(m3|m 3|mt3|mts3|mts|mt|mc|metros?( cubicos?)?)$/.test(s)) return 'm3';
+  if (/^viajes?$/.test(s)) return 'viaje';
+  if (/^(uds?|unds?|und|u|unidad(es)?|pzas?|piezas?)$/.test(s)) return 'ud';
+  return s.replace(/(es|s)$/, '');
+}
+function qtyOf(v, unit) {
+  const s = String(v ?? '').replace(',', '.');
+  const m = /(\d+(?:\.\d+)?)/.exec(s);
+  if (!m) return null;
+  return { n: Number(m[1]), u: unitKey(unit != null ? unit : s.slice(m.index + m[0].length)) };
+}
+const MAT_STOP = new Set(['para', 'con', 'sin', 'tipo', 'color', 'pulgadas', 'pulgada', 'metros', 'metro', 'lavada', 'lavado']);
+const matWords = (t) => norm(t).split(' ').map((w) => w.replace(/(es|s)$/, '')).filter((w) => w.length >= 4 && !MAT_STOP.has(w) && !/^\d/.test(w));
+// Lo que traen los conduces de las facturas de una orden, contra lo que pidió la orden (mismo material y unidad).
+function orderQtyIssues(o, D) {
+  const conds = (D.invByOrder.get(o.id) || []).flatMap((i) => i.conduces || []);
+  if (!conds.length) return [];
+  const out = [];
+  for (const it of o.items || []) {
+    const oq = qtyOf(it.qty, it.unit);
+    const words = matWords(it.desc);
+    if (!oq || !oq.n || !words.length) continue;
+    let sum = 0, any = false;
+    for (const c of conds) {
+      if (!matWords(c.material).some((w) => words.includes(w))) continue;
+      if (oq.u === 'viaje') { if (isNum(c.trips)) { sum += c.trips; any = true; } continue; }
+      const cq = qtyOf(c.qty);
+      if (!cq || (cq.u && oq.u && cq.u !== oq.u)) continue;
+      sum += cq.n; any = true;
+    }
+    if (any && sum > oq.n + 1e-6) out.push({ desc: it.desc, ordered: oq.n, delivered: round2(sum), unit: it.unit || '' });
+  }
+  return out;
+}
+// Lo que no cuadra en una factura: cobra más que sus conduces, menciona un conduce que no está, o la orden se pasó.
+function invCross(i, D) {
+  const r = { over: null, missing: [], qty: [] };
+  const list = i.conduces || [];
+  if (!i.condOverOk && list.length && list.every((c) => isNum(c.total)) && isNum(i.amount) && i.amount > 0) {
+    const sum = round2(list.reduce((t, c) => t + c.total, 0));
+    const charged = isNum(i.itbis) ? round2(i.amount - i.itbis) : i.amount;
+    if (charged - sum > 1) r.over = { sum, charged, diff: round2(charged - sum), sinItbis: isNum(i.itbis) && i.itbis > 0 };
+  }
+  if (!i.condRefsOk) {
+    const have = new Set(list.map((c) => condNum(c.number)).filter(Boolean));
+    r.missing = uniqList((i.conduceRefs || []).map(condNum).filter((n) => n && !have.has(n)));
+  }
+  if (i.order && !i.qtyOk) r.qty = orderQtyIssues(i.order, D);
+  return r;
+}
+function crossMsgsHTML(i, D, edit) {
+  const x = invCross(i, D);
+  const ok = (f, label = 'Está bien') => (edit ? ` <button type="button" class="link" data-act="ack" data-f="${f}" data-id="${esc(i.id)}">${label}</button>` : '');
+  const out = [];
+  if (x.over) out.push(`<div class="msg warn">${ICON.alert}<span>La factura cobra <b>${esc(money(x.over.charged, i.currency))}</b>${x.over.sinItbis ? ' sin ITBIS' : ''} y sus conduces suman <b>${esc(money(x.over.sum, i.currency))}</b>: ${esc(money(x.over.diff, i.currency))} más.${ok('condOverOk')}</span></div>`);
+  if (x.missing.length) out.push(`<div class="msg warn">${ICON.alert}<span>La factura menciona ${x.missing.length === 1 ? 'el conduce' : 'los conduces'} <b>${esc(x.missing.join(', '))}</b>, que no ${x.missing.length === 1 ? 'está adjunto' : 'están adjuntos'}.${edit ? ` <button type="button" class="link" data-act="cond-add" data-inv="${esc(i.id)}">Agregar conduce</button>` : ''}${ok('condRefsOk', 'No hace falta')}</span></div>`);
+  if (x.qty.length) out.push(`<div class="msg warn">${ICON.alert}<span>${x.qty.map((q) => `Los conduces de la orden ${esc(orderNo(i.order))} traen <b>${esc(fmtQty(q.delivered))}${q.unit ? ' ' + esc(q.unit) : ''}</b> de ${esc(q.desc)} y la orden pidió ${esc(fmtQty(q.ordered))}.`).join(' ')}${ok('qtyOk')}</span></div>`);
+  return out.join('');
+}
+/* ---------- fechas ---------- */
+const invDay = (i) => (ymd(i.date) ? i.date : String(i.createdAt || '').slice(0, 10));
+const monthFmt = new Intl.DateTimeFormat('es-DO', { month: 'long', year: 'numeric' });
+function monthName(ym) { const [y, m] = String(ym).split('-').map(Number); const t = monthFmt.format(new Date(y, m - 1, 1)); return t.charAt(0).toUpperCase() + t.slice(1); }
+function inDates(i) {
+  if (!S.dateFilter) return true;
+  const d = invDay(i);
+  if (S.dateFilter === 'range') return (!S.dateFrom || d >= S.dateFrom) && (!S.dateTo || d <= S.dateTo);
+  return d.slice(0, 7) === S.dateFilter;
+}
+function dateLabel() {
+  if (!S.dateFilter) return '';
+  if (S.dateFilter !== 'range') return monthName(S.dateFilter);
+  return [S.dateFrom ? 'Del ' + fmtDate(S.dateFrom) : '', S.dateTo ? (S.dateFrom ? 'al ' : 'Hasta el ') + fmtDate(S.dateTo) : ''].filter(Boolean).join(' ');
+}
 function ncfExpired(i) { return !!(i.ncfExpiry && ymd(i.ncfExpiry) && i.date && ymd(i.date) && i.date > i.ncfExpiry); }
 const sortByDateDesc = (a, b) => String(b.date || '').localeCompare(String(a.date || '')) || String(b.createdAt || '').localeCompare(String(a.createdAt || ''));
 function groupByProject(list, D) {
@@ -353,7 +455,7 @@ function payInvoices(pay, D) { const ids = new Set(Array.isArray(pay.invoiceIds)
 function inProject(i) { return S.projectFilter === 'all' || (S.projectFilter === 'none' ? !i.project : i.projectId === S.projectFilter); }
 function visibleList(D) {
   const q = norm(S.search);
-  let list = D.invoices.filter(inProject);
+  let list = D.invoices.filter((i) => inProject(i) && (!!S.focus || inDates(i)));
   if (S.focus) list = list.filter((i) => i.status !== 'pagada' && (S.focus === 'revisar' ? reviewFlags(i, D).some((f) => f !== 'Sin orden') : needsOrder(i, D)));
   else list = list.filter((i) => S.filter === 'todas' || GROUP_OF[i.status] === S.filter);
   if (!S.focus && D.orders.length && S.invOrder !== 'all') list = list.filter((i) => (S.invOrder === 'con' ? !!i.order : !i.order));
@@ -549,8 +651,9 @@ function cardHTML(i, D, opts = {}) {
   if (!opts.hideProject && i.project) tags.push(`<span class="proj"><i class="dot" style="--c:${i.project.color}"></i><span>${esc(i.project.name)}</span></span>`);
   if (!opts.hideStatus) tags.push(`<span class="pill ${i.status}">${INV_LABEL[i.status]}</span>`);
   if (i.fiscal === 'qr' || i.fiscal === 'xml') tags.push(`<span class="pill official">${i.fiscal === 'xml' ? 'XML' : 'QR'} DGII</span>`);
+  if (isCreditNcf(i.number)) tags.push('<span class="pill nc">Nota de crédito</span>');
   if (reading) tags.push('<span class="pill reading">Leyendo…</span>');
-  if (D.orders.length) {
+  if (D.orders.length && (i.order || !isCreditNcf(i.number))) {
     if (i.order) {
       const st = i.order.status;
       const cls = st === 'autorizada' ? 'ok' : st === 'anulada' ? 'bad' : 'pend';
@@ -568,7 +671,7 @@ function cardHTML(i, D, opts = {}) {
 function renderFacturas(D) {
   renderTodo(D);
   if (S.projectFilter !== 'all' && S.projectFilter !== 'none' && !D.projById.has(S.projectFilter) && S.got.projects) S.projectFilter = 'all';
-  const base = D.invoices.filter(inProject);
+  const base = D.invoices.filter((i) => inProject(i) && inDates(i));
   const counts = { pendientes: 0, tramite: 0, pagadas: 0, todas: base.length };
   for (const i of base) counts[GROUP_OF[i.status]]++;
   $('#f-seg').innerHTML = SEGS.map(([k, label]) => `<button type="button" data-act="filter" data-f="${k}" aria-pressed="${S.filter === k}"><span>${label}</span><span class="n">${counts[k]}</span></button>`).join('');
@@ -585,6 +688,19 @@ function renderFacturas(D) {
     och.innerHTML = [['all', 'Todas', pool.length], ['con', 'Con orden', con], ['sin', 'Sin orden', pool.length - con]]
       .map(([k, label, n]) => `<button type="button" class="chip" data-act="invorder" data-o="${k}" aria-pressed="${S.invOrder === k}"><span>${label}</span><span class="n">${n}</span></button>`).join('');
   } else { och.hidden = true; och.innerHTML = ''; }
+  // Fechas: por mes (de la fecha de la factura) o de un día a otro.
+  const fd = $('#f-dates');
+  if (D.invoices.length && !S.focus) {
+    const months = [...new Set(D.invoices.map((i) => invDay(i).slice(0, 7)).filter((m) => /^\d{4}-\d{2}$/.test(m)))].sort().reverse();
+    if (S.dateFilter && S.dateFilter !== 'range' && !months.includes(S.dateFilter)) months.unshift(S.dateFilter);
+    const opts = [['', 'Todas las fechas'], ...months.map((m) => [m, monthName(m)]), ['range', 'Elegir fechas…']];
+    const sig = JSON.stringify([opts, S.dateFilter, S.dateFrom, S.dateTo]);
+    fd.hidden = false;
+    if (fd.dataset.sig !== sig) {
+      fd.dataset.sig = sig;
+      fd.innerHTML = `<label class="date-pick"><span class="sr">Fechas</span><select id="f-month">${opts.map(([v, l]) => `<option value="${esc(v)}"${v === S.dateFilter ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select></label>${S.dateFilter === 'range' ? `<label class="date-in"><span>Desde</span><input type="date" id="f-from" value="${esc(S.dateFrom)}"></label><label class="date-in"><span>Hasta</span><input type="date" id="f-to" value="${esc(S.dateTo)}"></label>` : ''}`;
+    }
+  } else { fd.hidden = true; fd.innerHTML = ''; fd.dataset.sig = ''; }
 
   const q = norm(S.search);
   const list = visibleList(D);
@@ -606,13 +722,17 @@ function renderFacturas(D) {
     const what = { pendientes: 'pendientes', tramite: 'en trámite', pagadas: 'pagadas', todas: '' }[S.filter];
     const oc = !S.focus && D.orders.length && S.invOrder !== 'all' ? (S.invOrder === 'con' ? 'con orden de compra' : 'sin orden de compra') : '';
     const proj = S.projectFilter !== 'all' ? 'en este proyecto' : '';
-    el.innerHTML = `<div class="empty"><p>${q ? 'Nada coincide con tu búsqueda.' : ['No hay facturas', what, oc, proj].filter(Boolean).join(' ') + '.'}</p></div>`;
+    const when = !S.focus && S.dateFilter ? (S.dateFilter === 'range' ? 'en esas fechas' : 'en ' + monthName(S.dateFilter).toLowerCase()) : '';
+    el.innerHTML = `<div class="empty"><p>${q ? 'Nada coincide con tu búsqueda.' : ['No hay facturas', what, oc, proj, when].filter(Boolean).join(' ') + '.'}</p></div>`;
     return;
   }
+  const LIM = 60;
+  const cards = (items, key) => (items.length <= LIM || S.showAll.has(key) ? items : items.slice(0, LIM)).map((i) => cardHTML(i, D, { hideProject: true })).join('')
+    + (items.length > LIM && !S.showAll.has(key) ? `<button type="button" class="btn sm more" data-act="more" data-k="${esc(key)}">Ver ${items.length - LIM} más</button>` : '');
   if (S.projectFilter === 'all') {
-    el.innerHTML = groupByProject(list, D).map((g) => `<section class="group"><h2 class="group-h">${g.color ? `<i class="dot" style="--c:${g.color}"></i>` : '<i class="dot ring"></i>'}<span class="gname">${esc(g.name)}</span><span class="gmeta">${g.items.length} · ${esc(totalStr(g.items))}</span></h2><div class="list">${g.items.map((i) => cardHTML(i, D, { hideProject: true })).join('')}</div></section>`).join('');
+    el.innerHTML = groupByProject(list, D).map((g) => `<section class="group"><h2 class="group-h">${g.color ? `<i class="dot" style="--c:${g.color}"></i>` : '<i class="dot ring"></i>'}<span class="gname">${esc(g.name)}</span><span class="gmeta">${g.items.length} · ${esc(totalStr(g.items))}</span></h2><div class="list">${cards(g.items, g.id)}</div></section>`).join('');
   } else {
-    el.innerHTML = `<div class="list">${list.map((i) => cardHTML(i, D, { hideProject: true })).join('')}</div>`;
+    el.innerHTML = `<div class="list">${cards(list, 'p:' + S.projectFilter)}</div>`;
   }
 }
 
@@ -797,7 +917,7 @@ function closeSheet() { const root = $('#sheet-root'); root.hidden = true; root.
 function lockBody() { document.body.classList.toggle('locked', !!S.sheet || !$('#viewer').hidden); }
 const sheetHead = (title) => `<div class="sheet-h"><h2>${title}</h2><button type="button" class="icon-btn plain" data-act="sheet-close" aria-label="Cerrar">${ICON.close}</button></div>`;
 
-function invSig(i, D) { return JSON.stringify([i.orderId, i.orderAuto, i.noOrder, i.order && i.order.status, i.ncfExpiry, i.supplier, i.number, i.rnc, i.date, i.amount, i.itbis, i.currency, i.concept, i.ref, i.projectId, i.projectHint, i.ai, i.notInvoice, i.pay && i.pay.id, i.pay && i.pay.status, i.dup, i.fiscal, i.xmlId, i.fileId, i.buyerRnc, (i.conduces || []).map((c) => [c.id, c.number, c.date, c.total, c.material, c.qty, c.ai, c.auto, c.dup]), D ? D.conduces.filter((c) => !c.invoiceId).map((c) => c.id + c.ai).join() : '']); }
+function invSig(i, D) { return JSON.stringify([i.orderId, i.orderAuto, i.noOrder, i.order && i.order.status, i.ncfExpiry, i.supplier, i.number, i.rnc, i.date, i.amount, i.itbis, i.currency, i.concept, i.ref, i.projectId, i.projectHint, i.ai, i.notInvoice, i.pay && i.pay.id, i.pay && i.pay.status, i.dup, i.fiscal, i.xmlId, i.fileId, i.buyerRnc, i.condOverOk, i.condRefsOk, i.qtyOk, (i.conduceRefs || []).join(), (i.order && i.order.items || []).length, (i.conduces || []).map((c) => [c.id, c.number, c.date, c.total, c.material, c.qty, c.ai, c.auto, c.dup]), D ? D.conduces.filter((c) => !c.invoiceId).map((c) => c.id + c.ai).join() : '']); }
 function openInvoice(id, keepScroll) {
   const D = derive();
   const i = D.invoices.find((x) => x.id === id);
@@ -820,6 +940,7 @@ function openInvoice(id, keepScroll) {
   else if (i.ai === 'failed') msgs.push(`<div class="msg warn">${ICON.alert}<span>No se pudo leer automáticamente. Llena los datos o intenta otra vez.${aiLink}</span></div>`);
   else if (i.fileType !== 'application/xml' && edit) msgs.push(`<div class="msg">${ICON.spark}<span>${ai.hasKey() ? '¿Quieres que la app lea los datos de esta factura?' : 'Para que la app llene los datos sola, agrega tu clave de API en Ajustes.'}${ai.hasKey() ? aiLink : ' <button type="button" class="link" data-act="settings">Abrir Ajustes</button>'}</span></div>`);
   if (ncf.ok && ncf.consumo) msgs.push(`<div class="msg warn">${ICON.alert}<span>Es una factura de <b>consumo</b> (${ncf.electronic ? 'E32' : 'B02'}): no sirve para crédito fiscal ni para sustentar costos. Pide al proveedor una de crédito fiscal.</span></div>`);
+  if (ncf.ok && (ncf.code === '04' || ncf.code === '34')) msgs.push(`<div class="msg ok">${ICON.check}<span>Es una <b>nota de crédito</b>: su monto resta del total del pago y de lo que se le paga al proveedor.</span></div>`);
   if (ncfExpired(i)) msgs.push(`<div class="msg warn">${ICON.alert}<span>El NCF venció el ${esc(fmtDate(i.ncfExpiry))} y la factura es del ${esc(fmtDate(i.date))}: no sirve para crédito fiscal. Pide al proveedor que la reemita.</span></div>`);
   if (i.number && !ncf.ok) msgs.push(`<div class="msg warn">${ICON.alert}<span>El NCF no tiene el formato correcto: debe ser B + 10 dígitos (ej. B0100004521) o, si es electrónica, E + 12 dígitos (ej. E310000000123).</span></div>`);
   if (rnc.kind === 'rnc' && rnc.checkOk === false) msgs.push(`<div class="msg warn">${ICON.alert}<span>El dígito verificador del RNC no cuadra. Revisa que esté bien escrito.</span></div>`);
@@ -842,6 +963,7 @@ function openInvoice(id, keepScroll) {
   if (i.order && i.orderAuto) msgs.push(`<div class="msg hint"><span>Se enlazó sola a la orden <b>${esc(orderNo(i.order))}</b>: es la única abierta de este proveedor. Si no es, cámbiala en «Orden de compra».</span></div>`);
   if (!i.order && i.noOrder) msgs.push(`<div class="msg"><span>Marcada como factura que no lleva orden de compra.${edit ? ` <button type="button" class="link" data-act="no-order-undo" data-id="${esc(i.id)}">Deshacer</button>` : ''}</span></div>`);
   if (i.order && i.order.status !== 'autorizada') msgs.push(`<div class="msg warn">${ICON.alert}<span>La orden ${esc(orderNo(i.order))} todavía no tiene la copia firmada y sellada.</span></div>`);
+  msgs.push(crossMsgsHTML(i, D, edit));
   const t18 = edit && isNum(i.amount) && i.amount > 0 && !isNum(i.itbis) && (!ncf.ok || ['01', '02', '31', '32'].includes(ncf.code)) ? round2((i.amount * 18) / 118) : null;
   if (t18) msgs.push(`<div class="msg hint"><span>Si todo lleva ITBIS de 18 %, el ITBIS de esta factura es <b>${esc(money(t18, i.currency))}</b>.</span><button type="button" class="link" data-act="itbis18" data-id="${esc(i.id)}" data-v="${t18}">Usar ese ITBIS</button></div>`);
   const cur = normCur(i.currency);
@@ -1345,6 +1467,7 @@ async function addOne(item) {
       createdAt: new Date().toISOString(), ai: willRead ? 'pending' : 'off',
     };
     if (qr) Object.assign(doc, qrFields(qr));
+    signAmounts(doc);
     if (doc.rnc && !doc.supplier) doc.supplier = knownSupplier(doc.rnc);
     if (!doc.projectId && text) { const pm = projectMentionIn(text); if (pm) doc.projectId = pm.id; }
     const om = text ? orderMentionIn(text, doc.projectId) : null;
@@ -1379,6 +1502,7 @@ async function addXml(item, f) {
   if (isNum(x.total)) fields.amount = round2(x.total);
   if (isNum(x.itbis)) fields.itbis = round2(x.itbis);
   if (x.rncComprador) fields.buyerRnc = x.rncComprador;
+  signAmounts(fields);
   const same = S.invoices.find((i) => RD.normNcf(i.number) === x.encf && (!i.rnc || RD.normRnc(i.rnc) === x.rncEmisor));
   const xo = x.ordenCompra ? orderByNumberText(x.ordenCompra, (same && same.projectId) || item.projectId) : null;
   if (same) {
@@ -1506,7 +1630,7 @@ function parseAI(out, inv) {
   else if (refx && !(inv && inv.ref)) upd.ref = refx;
   const crefs = (s(o.conduces, 300).match(/\d{3,12}/g) || []).slice(0, 40);
   if (crefs.length) upd.conduceRefs = crefs;
-  return upd;
+  return signAmounts(upd, inv);
 }
 async function readWithAI(invId, input) {
   const ref = db.doc('invoices/' + invId);
@@ -1647,6 +1771,7 @@ async function saveInvoice(form) {
       orderId: $('#f-order') ? $('#f-order').value || null : inv.orderId || null,
       notInvoice: false,
     };
+    signAmounts(upd);
     const ordSel = upd.orderId ? S.orders.find((x) => x.id === upd.orderId) : null;
     if (ordSel) { if (!upd.projectId && ordSel.projectId) upd.projectId = ordSel.projectId; if (!upd.supplier && ordSel.supplier) upd.supplier = ordSel.supplier; if (!upd.concept) upd.concept = itemsSummary(ordSel.items); }
     upd.orderAuto = false;
@@ -1944,7 +2069,7 @@ function itemRowHTML(it, n, dis) {
   return `<div class="o-row" data-row><span class="o-n mono">${n}</span><input data-f="qty" class="mono" inputmode="decimal" maxlength="12" placeholder="Cant." aria-label="Cantidad" value="${esc(it.qty != null ? String(it.qty) : '')}" ${dis}><input data-f="unit" list="dl-units" maxlength="20" placeholder="Unidad" aria-label="Unidad" value="${esc(it.unit || '')}" ${dis}><input data-f="desc" list="dl-items" maxlength="160" placeholder="Descripción y especificaciones" aria-label="Descripción" value="${esc(it.desc || '')}" ${dis}>${dis ? '' : `<button type="button" class="icon-btn plain" data-act="order-rm-item" aria-label="Quitar artículo">${ICON.close}</button>`}</div>`;
 }
 function uniqList(list) { const seen = new Set(); const out = []; for (const v of list) { const s = String(v || '').trim(); const k = norm(s); if (s && !seen.has(k)) { seen.add(k); out.push(s); } } return out; }
-function orderSig(o, D) { return JSON.stringify([o.status, o.signedFileId, o.signedAt, o.updatedAt, o.number, (D.invByOrder.get(o.id) || []).map((i) => [i.id, i.supplier, i.number, i.amount])]); }
+function orderSig(o, D) { return JSON.stringify([o.status, o.signedFileId, o.signedAt, o.updatedAt, o.number, (D.invByOrder.get(o.id) || []).map((i) => [i.id, i.supplier, i.number, i.amount, (i.conduces || []).map((c) => [c.id, c.material, c.qty, c.trips])])]); }
 function refreshOrderSheet(D) {
   const sh = S.sheet;
   if (!sh || sh.type !== 'order' || !sh.id || sh.dirty) return;
@@ -2015,7 +2140,9 @@ function orderInvBoxHTML(o, D, edit) {
   const rows = invs.map((i) => `<div class="o-inv"><button type="button" class="link" data-act="open-inv" data-id="${esc(i.id)}">${esc((i.supplier || 'Factura') + (i.number ? ' · ' + RD.normNcf(i.number) : '') + ' · ' + money(i.amount, i.currency))}</button>${edit ? `<button type="button" class="btn ghost sm" data-act="order-unlink-inv" data-id="${esc(i.id)}" data-order="${esc(o.id)}">Quitar</button>` : ''}</div>`).join('');
   const linkBtn = edit ? `<div><button type="button" class="btn sm" data-act="order-link-open" data-id="${esc(o.id)}">${ICON.plus} Enlazar una factura</button></div><div id="o-link-box" hidden></div>` : '';
   if (!invs.length && !linkBtn) return '';
-  return `<div class="card" id="o-invs"><h2>Facturas de esta orden</h2>${invs.length ? `<div class="list">${rows}</div>` : '<p class="hint">Todavía no tiene facturas. Si la factura llegó por separado, enlázala aquí.</p>'}${linkBtn}</div>`;
+  const qi = orderQtyIssues(o, D);
+  const qmsg = qi.length ? `<div class="msg warn">${ICON.alert}<span>${qi.map((x) => `Los conduces traen <b>${esc(fmtQty(x.delivered))}${x.unit ? ' ' + esc(x.unit) : ''}</b> de ${esc(x.desc)} y la orden pidió ${esc(fmtQty(x.ordered))}.`).join(' ')}</span></div>` : '';
+  return `<div class="card" id="o-invs"><h2>Facturas de esta orden</h2>${qmsg}${invs.length ? `<div class="list">${rows}</div>` : '<p class="hint">Todavía no tiene facturas. Si la factura llegó por separado, enlázala aquí.</p>'}${linkBtn}</div>`;
 }
 function orderLinkResultsHTML(orderId, q) {
   const D = derive();
@@ -2820,8 +2947,9 @@ function exportListExcel() {
   const heading = { pendientes: 'Facturas pendientes', tramite: 'Facturas en trámite', pagadas: 'Facturas pagadas', todas: 'Todas las facturas' }[S.filter] || 'Facturas';
   const proj = S.projectFilter === 'all' ? 'Todos los proyectos' : S.projectFilter === 'none' ? 'Sin proyecto' : (D.projById.get(S.projectFilter) || {}).name || 'Proyecto';
   const ocScope = D.orders.length && !S.focus && S.invOrder !== 'all' ? (S.invOrder === 'con' ? 'Con orden de compra' : 'Sin orden de compra') : '';
-  const scope = [proj, ocScope, S.search.trim() ? `Búsqueda: "${S.search.trim()}"` : ''].filter(Boolean).join(' · ');
-  deliverFile(invoicesWorkbook({ heading, scope, invs, D, isPayment: false }), fileSafe(`${heading} - ${proj} - ${todayISO()}`) + '.xlsx');
+  const when = dateLabel();
+  const scope = [proj, when, ocScope, S.search.trim() ? `Búsqueda: "${S.search.trim()}"` : ''].filter(Boolean).join(' · ');
+  deliverFile(invoicesWorkbook({ heading, scope, invs, D, isPayment: false }), fileSafe(`${heading} - ${proj}${when ? ' - ' + when : ''} - ${todayISO()}`) + '.xlsx');
 }
 
 /* ---------- respaldo ---------- */
@@ -2891,7 +3019,9 @@ function onClick(e) {
     case 'open-pay': closeSheet(); S.tab = 'pagos'; S.paymentId = id; S.payDel = false; renderAll(); window.scrollTo(0, 0); break;
     case 'back': S.paymentId = null; S.payDel = false; renderAll(); window.scrollTo(0, 0); break;
     case 'new-pay': openPicker('new'); break;
-    case 'new-pay-from': { const D = derive(); const ids = $$('#f-list [data-act="open-inv"]').map((b) => b.dataset.id).filter((x) => D.invoices.some((i) => i.id === x && i.status === 'pendiente')); openPicker('new', ids); break; }
+    case 'new-pay-from': { const D = derive(); openPicker('new', visibleList(D).filter((i) => i.status === 'pendiente').map((i) => i.id)); break; }
+    case 'more': S.showAll.add(t.dataset.k); renderAll(); break;
+    case 'ack': { const f = t.dataset.f; if (['condOverOk', 'condRefsOk', 'qtyOk'].includes(f)) write(() => db.doc('invoices/' + id).update({ [f]: true }), 'Listo'); break; }
     case 'pick-more': openPicker('add'); break;
     case 'pay-status': setPayStatus(S.paymentId, t.dataset.s); break;
     case 'pay-rm': removeFromPayment(S.paymentId, id); break;
@@ -3021,6 +3151,12 @@ async function hintCreate(id, btn) {
 function onChange(e) {
   const t = e.target;
   if (t.id === 'f-proj') { $('#f-newproj-wrap').hidden = t.value !== '__new'; if (t.value === '__new') $('#f-newproj').focus(); }
+  if (t.id === 'f-month') {
+    S.dateFilter = t.value;
+    if (t.value === 'range' && !S.dateFrom && !S.dateTo) { S.dateFrom = todayISO().slice(0, 8) + '01'; S.dateTo = todayISO(); }
+    renderAll();
+  }
+  if (t.id === 'f-from' || t.id === 'f-to') { S[t.id === 'f-from' ? 'dateFrom' : 'dateTo'] = ymd(t.value) ? t.value : ''; renderAll(); }
   if (t.id === 'o-proj' && t.value) {
     const prev = derive().orders.filter((x) => x.projectId === t.value);
     for (const [sel, f] of [['#o-place', 'place'], ['#o-by', 'requestedBy'], ['#o-dept', 'department']]) {
@@ -3150,7 +3286,7 @@ function registerSW() {
 /* ---------- arranque ---------- */
 function subscribe() {
   db.doc('settings/general').onSnapshot((snap) => { S.settings = (snap.exists && snap.data()) || {}; scheduleRender(); }, (err) => console.warn(err));
-  const done = () => { if (S.got.projects && S.got.invoices && S.got.payments && S.got.orders && S.got.conduces && S.dbState === 'loading') { S.dbState = 'ready'; setTimeout(retryOffline, 1500); } };
+  const done = () => { if (S.got.projects && S.got.invoices && S.got.payments && S.got.orders && S.got.conduces && S.dbState === 'loading') { S.dbState = 'ready'; setTimeout(retryOffline, 1500); setTimeout(() => { fixCreditSigns().catch((e) => console.warn(e)); }, 2500); } };
   for (const name of ['projects', 'invoices', 'payments', 'orders', 'conduces']) {
     db.collection(name).onSnapshot((snap) => {
       S[name] = snap.docs.map((d) => ({ ...d.data(), id: d.id }));
