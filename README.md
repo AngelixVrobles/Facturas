@@ -149,7 +149,7 @@ Cada versión que se sube les llega a todos los que usan la app a la vez: hay qu
 | Archivo | Qué contiene |
 |---|---|
 | `index.html` | Pantallas y estilos |
-| `js/app.js` | Lógica de la app: facturas, órdenes de compra, pagos, PDF, Excel y respaldos |
+| `js/app.js` | Lógica de la app: facturas, conduces, órdenes de compra, pagos, pase de lista, proveedores, PDF, Excel y respaldos |
 | `js/rd.js` | NCF y e-NCF, RNC, código QR y XML de la DGII |
 | `js/qr.js` | Código QR de cada orden de compra |
 | `js/runtime.js` | Almacenamiento en el teléfono, sincronización con la nube del equipo y lectura de facturas y pedidos por API |
@@ -158,6 +158,7 @@ Cada versión que se sube les llega a todos los que usan la app a la vez: hay qu
 | `sw.js` | Funcionamiento sin internet |
 | `manifest.webmanifest`, `icons/` | Instalación como app |
 | `vendor/`, `fonts/` | Librerías y fuentes de terceros |
+| `pruebas/` | Pruebas automáticas con datos inventados (cómo correrlas: `pruebas/README.md`) |
 
 ## Licencias de terceros
 
