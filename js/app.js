@@ -10,7 +10,7 @@ const LIB = {
   qrgen: 'js/qr.js',
 };
 const PDF_CREATOR = 'Facturas de Proyectos';
-const APP_VERSION = '1.7.0';
+const APP_VERSION = '1.8.0';
 const SVG = (d) => `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ICON = {
   plus: SVG('<path d="M12 5v14M5 12h14"/>'),
@@ -73,7 +73,7 @@ const DEFAULT_ORDER_NOTE = 'Toda factura recibida por compras deberá estar acom
 
 const S = {
   tab: 'facturas', filter: 'pendientes', projectFilter: 'all', search: '', paymentId: null,
-  projects: [], invoices: [], payments: [], orders: [], conduces: [], workers: [], asistencia: [], settings: {}, attRules: {}, got: { projects: false, invoices: false, payments: false, orders: false, conduces: false, workers: false, asistencia: false },
+  projects: [], invoices: [], payments: [], orders: [], conduces: [], workers: [], asistencia: [], suppliers: [], settings: {}, attRules: {}, got: { projects: false, invoices: false, payments: false, orders: false, conduces: false, workers: false, asistencia: false, suppliers: false },
   attProject: '', attSheet: '', attDay: 0, orderFilter: 'todas', orderSearch: '', orderProject: 'all', focus: null, invOrder: 'all', dateFilter: '', dateFrom: '', dateTo: '', showAll: new Set(),
   dbState: 'loading', aiState: 'ok', queue: [], sheet: null, payDel: false, busyPdf: false, pdfMsg: '',
   updateReg: null, updating: false, ready: null, restoreFile: null,
@@ -151,6 +151,9 @@ function derive() {
   const orderById = new Map(orders.map((o) => [o.id, o]));
   const firstOrderAt = S.orders.reduce((m, o) => (o.createdAt && (!m || o.createdAt < m) ? o.createdAt : m), '');
   const now = Date.now();
+  const suppliers = [...S.suppliers].sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')));
+  const supByRnc = new Map(suppliers.filter((s) => RD.normRnc(s.rnc)).map((s) => [RD.normRnc(s.rnc), s]));
+  const supFor = (i) => supByRnc.get(RD.normRnc(i.rnc)) || (i.supplier ? suppliers.find((s) => s.name && sameName(s.name, i.supplier)) : null) || null;
   const invIds = new Set(S.invoices.map((i) => i.id));
   const condKey = (c) => (condNum(c.number) ? (supKey(c.supplier) || '?') + '|' + condNum(c.number) : '');
   const cdups = new Map();
@@ -169,13 +172,13 @@ function derive() {
     let aiSt = i.ai || 'off';
     if (aiSt === 'pending' && !S.queue.some((q) => q.invId === i.id && !q.done) && !aiBusy(i.id) && now - (Date.parse(i.createdAt) || 0) > 120000) aiSt = 'failed';
     const k = dupKey(i);
-    return { ...i, ai: aiSt, pay, status, project: projById.get(i.projectId) || null, order: orderById.get(i.orderId) || null, dup: k ? dups.get(k) > 1 : false, conduces: condByInv.get(i.id) || [] };
+    return { ...i, ai: aiSt, pay, status, project: projById.get(i.projectId) || null, order: orderById.get(i.orderId) || null, dup: k ? dups.get(k) > 1 : false, conduces: condByInv.get(i.id) || [], ...(() => { const sp = supFor(i); return { sup: sp, due: sp && isNum(sp.creditDays) && sp.creditDays > 0 && ymd(i.date) ? addDays(i.date, sp.creditDays) : '' }; })() };
   });
   const invByOrder = new Map();
   const namesByRnc = new Map();
   for (const i of S.invoices) if (i.rnc && i.supplier) { const a = namesByRnc.get(i.rnc) || []; if (!a.includes(i.supplier)) a.push(i.supplier); namesByRnc.set(i.rnc, a); }
   for (const i of invoices) if (i.order) { const a = invByOrder.get(i.order.id) || []; a.push(i); invByOrder.set(i.order.id, a); }
-  return { projects: projects.map((p) => projById.get(p.id)), projById, invoices, orders, orderById, invByOrder, namesByRnc, firstOrderAt, conduces, condByInv, companyRnc: RD.normRnc(S.settings.companyRnc) };
+  return { projects: projects.map((p) => projById.get(p.id)), projById, invoices, orders, orderById, invByOrder, namesByRnc, firstOrderAt, conduces, condByInv, suppliers, supByRnc, supFor, companyRnc: RD.normRnc(S.settings.companyRnc) };
 }
 function reviewFlags(i, D) {
   const r = [];
@@ -194,6 +197,7 @@ function reviewFlags(i, D) {
   if (x.over) r.push('Cobra más que sus conduces');
   if (x.missing.length) r.push('Falta conduce');
   if (x.qty.length) r.push('Más que la orden');
+  if (x.est) r.push('Pasa lo estimado');
   if (needsOrder(i, D)) r.push('Sin orden');
   if (i.buyerRnc && D.companyRnc && RD.normRnc(i.buyerRnc) !== D.companyRnc) r.push('Otro cliente');
   return r;
@@ -415,6 +419,14 @@ function invCross(i, D) {
     r.missing = uniqList((i.conduceRefs || []).map(condNum).filter((n) => n && !have.has(n)));
   }
   if (i.order && !i.qtyOk) r.qty = orderQtyIssues(i.order, D);
+  if (i.order && !i.estOk) {
+    const est = orderEst(i.order);
+    if (est) {
+      const invs = D.invByOrder.get(i.order.id) || [i];
+      const sub = round2(invs.reduce((t, x) => t + (isNum(x.amount) ? x.amount - (isNum(x.itbis) ? x.itbis : 0) : 0), 0));
+      if (sub > est * 1.05 + 1) r.est = { est, sub, many: invs.length > 1 };
+    }
+  }
   return r;
 }
 function crossMsgsHTML(i, D, edit) {
@@ -424,6 +436,7 @@ function crossMsgsHTML(i, D, edit) {
   if (x.over) out.push(`<div class="msg warn">${ICON.alert}<span>La factura cobra <b>${esc(money(x.over.charged, i.currency))}</b>${x.over.sinItbis ? ' sin ITBIS' : ''} y sus conduces suman <b>${esc(money(x.over.sum, i.currency))}</b>: ${esc(money(x.over.diff, i.currency))} más.${ok('condOverOk')}</span></div>`);
   if (x.missing.length) out.push(`<div class="msg warn">${ICON.alert}<span>La factura menciona ${x.missing.length === 1 ? 'el conduce' : 'los conduces'} <b>${esc(x.missing.join(', '))}</b>, que no ${x.missing.length === 1 ? 'está adjunto' : 'están adjuntos'}.${edit ? ` <button type="button" class="link" data-act="cond-add" data-inv="${esc(i.id)}">Agregar conduce</button>` : ''}${ok('condRefsOk', 'No hace falta')}</span></div>`);
   if (x.qty.length) out.push(`<div class="msg warn">${ICON.alert}<span>${x.qty.map((q) => `Los conduces de la orden ${esc(orderNo(i.order))} traen <b>${esc(fmtQty(q.delivered))}${q.unit ? ' ' + esc(q.unit) : ''}</b> de ${esc(q.desc)} y la orden pidió ${esc(fmtQty(q.ordered))}.`).join(' ')}${ok('qtyOk')}</span></div>`);
+  if (x.est) out.push(`<div class="msg warn">${ICON.alert}<span>${x.est.many ? 'Las facturas de la orden' : 'La factura'} ${esc(orderNo(i.order))} ${x.est.many ? 'suman' : 'cobra'} <b>${esc(money(x.est.sub))}</b> sin ITBIS y la orden estimó <b>${esc(money(x.est.est))}</b>.${ok('estOk')}</span></div>`);
   return out.join('');
 }
 /* ---------- fechas ---------- */
@@ -441,6 +454,40 @@ function dateLabel() {
   if (S.dateFilter !== 'range') return monthName(S.dateFilter);
   return [S.dateFrom ? 'Del ' + fmtDate(S.dateFrom) : '', S.dateTo ? (S.dateFrom ? 'al ' : 'Hasta el ') + fmtDate(S.dateTo) : ''].filter(Boolean).join(' ');
 }
+/* ---------- vencimientos, estimado de la orden y presupuesto ---------- */
+function dueInfo(i) {
+  if (!i.due || i.status === 'pagada' || !ymd(i.due)) return null;
+  const days = Math.round((ymd(i.due) - ymd(todayISO())) / 864e5);
+  return { days, overdue: days < 0 };
+}
+const dueText = (d) => (d.overdue ? `Vencida hace ${plural(-d.days, 'día', 'días')}` : d.days === 0 ? 'Vence hoy' : `Vence en ${plural(d.days, 'día', 'días')}`);
+// Lo estimado de una orden: cantidad por precio de los artículos que tienen precio.
+function orderEst(o) {
+  let t = 0, any = false;
+  for (const it of (o && o.items) || []) if (isNum(it.qty) && isNum(it.price)) { t += it.qty * it.price; any = true; }
+  return any ? round2(t) : null;
+}
+const estText = (items) => { const e = orderEst({ items }); return e ? `Estimado: ${money(e)} (sin ITBIS, según los precios escritos; no sale en el PDF de la orden).` : 'El precio de cada artículo es opcional: sirve para comparar con la factura y no sale en el PDF de la orden.'; };
+function laborCost(pid) {
+  const R = attRules();
+  let t = 0;
+  for (const sh of attSheetsOf(pid)) for (const w of attSheetWorkers(sh)) if (isNum(w.pay)) t += attTotals(sh, w.id, R).days * w.pay;
+  return round2(t);
+}
+function projCosts(p, D) {
+  const invs = D.invoices.filter((i) => i.projectId === p.id);
+  const dop = round2(invs.filter((i) => normCur(i.currency) === 'DOP').reduce((t, i) => t + (isNum(i.amount) ? i.amount : 0), 0));
+  const other = invs.filter((i) => normCur(i.currency) !== 'DOP' && isNum(i.amount));
+  const labor = laborCost(p.id);
+  const pendingOrders = round2(D.orders.filter((o) => o.projectId === p.id && o.status !== 'anulada' && !(D.invByOrder.get(o.id) || []).length).reduce((t, o) => t + (orderEst(o) || 0), 0));
+  return { dop, other, labor, pendingOrders, total: round2(dop + labor) };
+}
+function budgetHTML(p, D) {
+  const c = projCosts(p, D);
+  const b = isNum(p.budget) && p.budget > 0 ? p.budget : null;
+  const pct = b ? Math.round((c.total / b) * 100) : null;
+  return `<div class="card budget"><div class="b-top"><span>Gastado${b ? ` · ${pct} %` : ''}</span><b>${esc(money(c.total))}</b></div>${b ? `<div class="b-bar"><i style="width:${Math.min(100, pct)}%" class="${pct > 100 ? 'over' : pct >= 85 ? 'near' : ''}"></i></div><small>de ${esc(money(b))} · ${c.total > b ? 'se pasó por ' + esc(money(round2(c.total - b))) : 'quedan ' + esc(money(round2(b - c.total)))}</small>` : ''}<small>Facturas ${esc(money(c.dop))}${c.labor ? ' · mano de obra ' + esc(money(c.labor)) : ''}${c.other.length ? ' · más ' + esc(totalStr(c.other)) : ''}${c.pendingOrders ? ' · órdenes por facturar ' + esc(money(c.pendingOrders)) : ''}</small></div>`;
+}
 function ncfExpired(i) { return !!(i.ncfExpiry && ymd(i.ncfExpiry) && i.date && ymd(i.date) && i.date > i.ncfExpiry); }
 const sortByDateDesc = (a, b) => String(b.date || '').localeCompare(String(a.date || '')) || String(b.createdAt || '').localeCompare(String(a.createdAt || ''));
 function groupByProject(list, D) {
@@ -454,10 +501,17 @@ function groupByProject(list, D) {
 }
 function payInvoices(pay, D) { const ids = new Set(Array.isArray(pay.invoiceIds) ? pay.invoiceIds : []); return D.invoices.filter((i) => ids.has(i.id)); }
 function inProject(i) { return S.projectFilter === 'all' || (S.projectFilter === 'none' ? !i.project : i.projectId === S.projectFilter); }
+const FOCUS = {
+  revisar: (i, D) => reviewFlags(i, D).some((f) => f !== 'Sin orden'),
+  sinorden: (i, D) => needsOrder(i, D),
+  vencidas: (i) => { const d = dueInfo(i); return !!d && d.overdue; },
+  porvencer: (i) => { const d = dueInfo(i); return !!d && !d.overdue && d.days <= 7; },
+};
+const FOCUS_LABEL = { revisar: 'facturas con algo que revisar', sinorden: 'facturas sin orden de compra', vencidas: 'facturas vencidas', porvencer: 'facturas que vencen esta semana' };
 function visibleList(D) {
   const q = norm(S.search);
   let list = D.invoices.filter((i) => inProject(i) && (!!S.focus || inDates(i)));
-  if (S.focus) list = list.filter((i) => i.status !== 'pagada' && (S.focus === 'revisar' ? reviewFlags(i, D).some((f) => f !== 'Sin orden') : needsOrder(i, D)));
+  if (S.focus) list = list.filter((i) => i.status !== 'pagada' && (FOCUS[S.focus] || FOCUS.sinorden)(i, D));
   else list = list.filter((i) => S.filter === 'todas' || GROUP_OF[i.status] === S.filter);
   if (!S.focus && D.orders.length && S.invOrder !== 'all') list = list.filter((i) => (S.invOrder === 'con' ? !!i.order : !i.order));
   if (q) list = list.filter((i) => norm([i.supplier, i.number, i.rnc, i.concept, i.ref, i.project && i.project.name, i.fileName, i.order ? orderNo(i.order) : '', (i.conduces || []).map((c) => c.number).join(' ')].join(' ')).includes(q));
@@ -672,6 +726,8 @@ function cardHTML(i, D, opts = {}) {
   }
   const nc = (i.conduces || []).length;
   if (nc) tags.push(`<span class="pill cond">${nc === 1 ? (i.conduces[0].number ? 'Conduce <b>' + esc(i.conduces[0].number) + '</b>' : 'Conduce') : nc + ' conduces'}</span>`);
+  const di = dueInfo(i);
+  if (di && (di.overdue || di.days <= 7)) tags.push(`<span class="pill ${di.overdue ? 'warn' : 'pendiente'}">${dueText(di)}</span>`);
   for (const r of reviewFlags(i, D)) tags.push(`<span class="pill warn">${esc(r)}</span>`);
   return `<button type="button" class="inv" data-act="open-inv" data-id="${esc(i.id)}">${thumbHTML(i)}<span class="inv-main"><span class="inv-top"><span class="supplier${i.supplier ? '' : ' muted'}">${esc(name)}</span><span class="amount">${esc(money(i.amount, i.currency))}</span></span><span class="inv-meta">${esc(meta)}</span><span class="tags">${tags.join('')}</span></span></button>`;
 }
@@ -716,7 +772,7 @@ function renderFacturas(D) {
   if (S.got.invoices && base.length) {
     const canMake = !S.focus && S.filter === 'pendientes' && list.length && canEdit();
     const acts = (list.length ? `<button type="button" class="btn sm" data-act="list-xlsx">${ICON.sheet} Excel</button>` : '') + (canMake ? `<button type="button" class="btn sm" data-act="new-pay-from">Armar pago con estas ${ICON.right}</button>` : '');
-    const focusLine = S.focus ? `<div class="focus-line"><span class="grow">Mostrando: <b>${S.focus === 'revisar' ? 'facturas con algo que revisar' : 'facturas sin orden de compra'}</b></span><button type="button" class="btn sm" data-act="focus-off">Ver todas</button></div>` : '';
+    const focusLine = S.focus ? `<div class="focus-line"><span class="grow">Mostrando: <b>${FOCUS_LABEL[S.focus] || FOCUS_LABEL.sinorden}</b></span><button type="button" class="btn sm" data-act="focus-off">Ver todas</button></div>` : '';
     sum.innerHTML = `${focusLine}<div class="sumline"><span>${plural(list.length, 'factura', 'facturas')} · <b class="mono">${esc(totalStr(list))}</b></span>${acts ? `<span class="acts">${acts}</span>` : ''}</div>`;
   } else sum.innerHTML = '';
 
@@ -768,6 +824,9 @@ function renderTodo(D) {
   if (noOrd.length) rows.push(row(noOrd.length, plural(noOrd.length, 'factura sin orden de compra', 'facturas sin orden de compra'), b('focus', 'Ver', ' data-f="sinorden"'), 'warn'));
   const condWait = D.conduces.filter((c) => !c.invoiceId && c.ai !== 'pending');
   if (condWait.length) rows.push(row(condWait.length, plural(condWait.length, 'conduce esperando su factura', 'conduces esperando su factura'), b('cond-list', 'Ver')));
+  const overdue = live.filter((i) => FOCUS.vencidas(i)), soon = live.filter((i) => FOCUS.porvencer(i));
+  if (overdue.length) rows.push(row(overdue.length, `${plural(overdue.length, 'factura vencida', 'facturas vencidas')} · <b class="mono">${esc(totalStr(overdue))}</b>`, b('focus', 'Ver', ' data-f="vencidas"'), 'warn'));
+  if (soon.length) rows.push(row(soon.length, `${plural(soon.length, 'factura vence', 'facturas vencen')} esta semana · <b class="mono">${esc(totalStr(soon))}</b>`, b('focus', 'Ver', ' data-f="porvencer"')));
   if (toSign.length) rows.push(row(toSign.length, plural(toSign.length, 'orden por firmar', 'órdenes por firmar'), b('go-orders', 'Ver', ' data-f="porfirmar"')));
   if (waiting.length) rows.push(row(waiting.length, plural(waiting.length, 'orden firmada esperando factura', 'órdenes firmadas esperando factura'), b('go-orders', 'Ver', ' data-f="sinfactura"')));
   if (ready.length) rows.push(row(ready.length, `${plural(ready.length, 'factura lista', 'facturas listas')} para pagar · <b class="mono">${esc(totalStr(ready))}</b>`, b('pay-ready', 'Armar pago', '', ' primary'), 'ok'));
@@ -852,7 +911,7 @@ function renderPayDetail(D, pay) {
 function orderCardHTML(o, D, opts = {}) {
   const invs = D.invByOrder.get(o.id) || [];
   const n = (o.items || []).length;
-  const meta = [opts.hideProject ? '' : o.project ? o.project.name : 'Sin proyecto', fmtDate(o.date), plural(n, 'artículo', 'artículos'), invs.length ? plural(invs.length, 'factura', 'facturas') : o.status === 'autorizada' ? 'esperando factura' : ''].filter(Boolean).join(' · ');
+  const meta = [opts.hideProject ? '' : o.project ? o.project.name : 'Sin proyecto', fmtDate(o.date), plural(n, 'artículo', 'artículos'), orderEst(o) ? 'estimado ' + money(orderEst(o)) : '', invs.length ? plural(invs.length, 'factura', 'facturas') : o.status === 'autorizada' ? 'esperando factura' : ''].filter(Boolean).join(' · ');
   return `<button type="button" class="ord" data-act="open-order" data-id="${esc(o.id)}"><span class="ord-top"><b class="mono">${esc(orderNo(o))}</b><span class="pill o-${o.status}">${ORDER_LABEL[o.status]}</span></span><span class="ord-sup">${esc(o.supplier || 'Sin proveedor')}</span><span class="ord-meta">${esc(meta)}</span></button>`;
 }
 function renderOrdenes(D) {
@@ -898,13 +957,15 @@ function renderOrdenes(D) {
 
 function renderProyectos(D) {
   $('#proj-add').hidden = !canEdit();
+  const sb = $('#sup-bar');
+  if (sb) sb.innerHTML = `<button type="button" class="btn sm" data-act="sups">Proveedores (${S.suppliers.length})</button>`;
   const el = $('#p-list');
   if (!S.got.projects) { el.innerHTML = S.dbState === 'absent' ? '' : '<p class="loading">Cargando proyectos…</p>'; return; }
   const rows = D.projects.map((p) => {
     const invs = D.invoices.filter((i) => i.projectId === p.id);
     const pend = invs.filter((i) => i.status === 'pendiente'), tram = invs.filter((i) => GROUP_OF[i.status] === 'tramite'), paid = invs.filter((i) => i.status === 'pagada');
     const sub = [pend.length ? plural(pend.length, 'pendiente', 'pendientes') : '', tram.length ? `${tram.length} en trámite` : '', paid.length ? plural(paid.length, 'pagada', 'pagadas') : ''].filter(Boolean).join(' · ') || 'Sin facturas todavía';
-    return `<button type="button" class="prow" data-act="open-proj" data-id="${esc(p.id)}"><i class="dot" style="--c:${p.color}"></i><span class="pr-mid"><b>${esc(p.name)}</b><small>${esc(sub)}</small></span><span class="pr-total">${pend.length ? `${esc(totalStr(pend))}<small>por pagar</small>` : ''}</span></button>`;
+    return `<button type="button" class="prow" data-act="open-proj" data-id="${esc(p.id)}"><i class="dot" style="--c:${p.color}"></i><span class="pr-mid"><b>${esc(p.name)}</b><small>${esc(sub)}</small>${isNum(p.budget) && p.budget > 0 ? (() => { const c = projCosts(p, D); const pct = Math.round((c.total / p.budget) * 100); return `<span class="b-bar sm"><i style="width:${Math.min(100, pct)}%" class="${pct > 100 ? 'over' : pct >= 85 ? 'near' : ''}"></i></span><small>${pct} % del presupuesto (${esc(money(c.total))} de ${esc(money(p.budget))})</small>`; })() : ''}</span><span class="pr-total">${pend.length ? `${esc(totalStr(pend))}<small>por pagar</small>` : ''}</span></button>`;
   });
   const none = D.invoices.filter((i) => !i.project);
   if (none.length) rows.unshift(`<button type="button" class="prow" data-act="proj-view" data-id="none"><i class="dot ring"></i><span class="pr-mid"><b>Sin proyecto</b><small>${plural(none.length, 'factura necesita', 'facturas necesitan')} que le asignes proyecto</small></span><span class="pr-total">${ICON.right}</span></button>`);
@@ -925,7 +986,7 @@ function closeSheet() { const root = $('#sheet-root'); root.hidden = true; root.
 function lockBody() { document.body.classList.toggle('locked', !!S.sheet || !$('#viewer').hidden); }
 const sheetHead = (title) => `<div class="sheet-h"><h2>${title}</h2><button type="button" class="icon-btn plain" data-act="sheet-close" aria-label="Cerrar">${ICON.close}</button></div>`;
 
-function invSig(i, D) { return JSON.stringify([i.orderId, i.orderAuto, i.noOrder, i.order && i.order.status, i.ncfExpiry, i.supplier, i.number, i.rnc, i.date, i.amount, i.itbis, i.currency, i.concept, i.ref, i.projectId, i.projectHint, i.ai, i.notInvoice, i.pay && i.pay.id, i.pay && i.pay.status, i.dup, i.fiscal, i.xmlId, i.fileId, i.pages, (i.extraPages || []).length, i.buyerRnc, i.condOverOk, i.condRefsOk, i.qtyOk, (i.conduceRefs || []).join(), (i.order && i.order.items || []).length, (i.conduces || []).map((c) => [c.id, c.number, c.date, c.total, c.material, c.qty, c.ai, c.auto, c.dup]), D ? D.conduces.filter((c) => !c.invoiceId).map((c) => c.id + c.ai).join() : '']); }
+function invSig(i, D) { return JSON.stringify([i.orderId, i.orderAuto, i.noOrder, i.order && i.order.status, i.ncfExpiry, i.supplier, i.number, i.rnc, i.date, i.amount, i.itbis, i.currency, i.concept, i.ref, i.projectId, i.projectHint, i.ai, i.notInvoice, i.pay && i.pay.id, i.pay && i.pay.status, i.dup, i.fiscal, i.xmlId, i.fileId, i.pages, (i.extraPages || []).length, i.buyerRnc, i.condOverOk, i.condRefsOk, i.qtyOk, i.estOk, i.due, i.sup && [i.sup.id, i.sup.name, i.sup.creditDays, i.sup.bank, i.sup.account], orderEst(i.order), (i.conduceRefs || []).join(), (i.order && i.order.items || []).length, (i.conduces || []).map((c) => [c.id, c.number, c.date, c.total, c.material, c.qty, c.ai, c.auto, c.dup]), D ? D.conduces.filter((c) => !c.invoiceId).map((c) => c.id + c.ai).join() : '']); }
 function openInvoice(id, keepScroll) {
   const D = derive();
   const i = D.invoices.find((x) => x.id === id);
@@ -972,6 +1033,13 @@ function openInvoice(id, keepScroll) {
   if (!i.order && i.noOrder) msgs.push(`<div class="msg"><span>Marcada como factura que no lleva orden de compra.${edit ? ` <button type="button" class="link" data-act="no-order-undo" data-id="${esc(i.id)}">Deshacer</button>` : ''}</span></div>`);
   if (i.order && i.order.status !== 'autorizada') msgs.push(`<div class="msg warn">${ICON.alert}<span>La orden ${esc(orderNo(i.order))} todavía no tiene la copia firmada y sellada.</span></div>`);
   msgs.push(crossMsgsHTML(i, D, edit));
+  if (i.sup) {
+    const di = dueInfo(i);
+    const cred = isNum(i.sup.creditDays) && i.sup.creditDays > 0 ? `crédito de ${i.sup.creditDays} días${i.due ? ', vence el ' + esc(fmtDate(i.due)) : ''}` : 'de contado';
+    msgs.push(`<div class="msg${di && di.overdue ? ' warn' : ''}"><span><b>${esc(i.sup.name)}</b>: ${cred}${di && di.overdue ? ` (${esc(dueText(di).toLowerCase())})` : ''}${i.sup.bank || i.sup.account ? ' · ' + esc([i.sup.bank, i.sup.account].filter(Boolean).join(' ')) : ''}. <button type="button" class="link" data-act="sup-open" data-id="${esc(i.sup.id)}">Ver ficha</button></span></div>`);
+  } else if (edit && i.supplier && D.invoices.filter((x) => x.id !== i.id && sameName(x.supplier, i.supplier)).length) {
+    msgs.push(`<div class="msg"><span>¿Este proveedor te da crédito o le pagas por transferencia? <button type="button" class="link" data-act="sup-new" data-name="${esc(i.supplier)}" data-rnc="${esc(RD.normRnc(i.rnc))}">Crear su ficha</button></span></div>`);
+  }
   const t18 = edit && isNum(i.amount) && i.amount > 0 && !isNum(i.itbis) && (!ncf.ok || ['01', '02', '31', '32'].includes(ncf.code)) ? round2((i.amount * 18) / 118) : null;
   if (t18) msgs.push(`<div class="msg hint"><span>Si todo lleva ITBIS de 18 %, el ITBIS de esta factura es <b>${esc(money(t18, i.currency))}</b>.</span><button type="button" class="link" data-act="itbis18" data-id="${esc(i.id)}" data-v="${t18}">Usar ese ITBIS</button></div>`);
   const cur = normCur(i.currency);
@@ -1168,11 +1236,13 @@ function openProject(id) {
   openSheet(`<form id="proj-form" data-id="${esc(id)}" autocomplete="off">${sheetHead(esc(p.name))}
     <div class="sheet-b">
       <div class="field"><label for="pe-name">Nombre del proyecto</label><input id="pe-name" maxlength="80" value="${esc(p.name)}" required></div>
+      <div class="field"><label for="pe-budget">Presupuesto (RD$)</label><input id="pe-budget" class="mono" inputmode="decimal" maxlength="18" placeholder="Opcional" value="${esc(amountInput(p.budget))}"></div>
+      ${budgetHTML(p, D)}
       <div class="stats card"><div><span>Pendientes (${by('pendientes').length})</span><b>${esc(totalStr(by('pendientes')))}</b></div><div><span>En trámite (${by('tramite').length})</span><b>${esc(totalStr(by('tramite')))}</b></div><div><span>Pagadas (${by('pagadas').length})</span><b>${esc(totalStr(by('pagadas')))}</b></div></div>
       <button type="button" class="btn block" data-act="proj-view" data-id="${esc(id)}">Ver las facturas de este proyecto ${ICON.right}</button>
       <div id="proj-del-box" hidden>${invs.length || ords.length ? `<div class="confirm"><p>Este proyecto tiene ${[invs.length ? plural(invs.length, 'factura', 'facturas') : '', ords.length ? plural(ords.length, 'orden de compra', 'órdenes de compra') : ''].filter(Boolean).join(' y ')}. Para eliminarlo, primero cámbialas a otro proyecto o bórralas.</p><div class="actions"><button type="button" class="btn" data-act="proj-del-no">Entendido</button></div></div>` : `<div class="confirm"><p>¿Eliminar el proyecto “${esc(p.name)}”?</p><div class="actions"><button type="button" class="btn danger solid" data-act="proj-del-yes" data-id="${esc(id)}">Eliminar proyecto</button><button type="button" class="btn" data-act="proj-del-no">Cancelar</button></div></div>`}</div>
     </div>
-    <div class="sheet-f"><button type="submit" class="btn primary">Guardar nombre</button><button type="button" class="btn danger" data-act="proj-del">${ICON.trash} Eliminar</button></div>
+    <div class="sheet-f"><button type="submit" class="btn primary">Guardar</button><button type="button" class="btn danger" data-act="proj-del">${ICON.trash} Eliminar</button></div>
   </form>`, { type: 'proj', id });
 }
 
@@ -2716,6 +2786,70 @@ async function applySplit(btn) {
   }
 }
 
+/* ---------- proveedores ---------- */
+function openSuppliers() {
+  const D = derive();
+  const edit = canEdit();
+  // De las facturas: proveedores que todavía no tienen ficha, primero los que más facturas tienen.
+  const g = new Map();
+  for (const i of D.invoices) {
+    if (!i.supplier || i.sup) continue;
+    const k = RD.normRnc(i.rnc) || supKey(i.supplier);
+    if (!k) continue;
+    const x = g.get(k) || { name: i.supplier, rnc: RD.normRnc(i.rnc), n: 0 };
+    x.n++;
+    g.set(k, x);
+  }
+  const sugg = [...g.values()].sort((a, b) => b.n - a.n).slice(0, 12);
+  const rows = D.suppliers.map((s) => `<button type="button" class="o-pick" data-act="sup-open" data-id="${esc(s.id)}"><span><b>${esc(s.name || 'Sin nombre')}</b><small>${esc([s.rnc ? 'RNC ' + RD.fmtRnc(s.rnc) : '', isNum(s.creditDays) && s.creditDays > 0 ? `crédito ${s.creditDays} días` : 'de contado', s.bank || ''].filter(Boolean).join(' · '))}</small></span>${ICON.right}</button>`).join('');
+  openSheet(`${sheetHead('Proveedores')}<div class="sheet-b">
+    <p class="hint">La ficha guarda el RNC, el teléfono, la cuenta de banco (sale en el pago, para la transferencia) y los días de crédito (la app avisa las facturas por vencer y las vencidas).</p>
+    ${rows ? `<div class="o-picks">${rows}</div>` : '<p class="hint">Todavía no hay fichas.</p>'}
+    ${edit ? `<div><button type="button" class="btn sm" data-act="sup-new">${ICON.plus} Nuevo proveedor</button></div>` : ''}
+    ${edit && sugg.length ? `<h3 class="h2">De tus facturas</h3><div class="o-picks">${sugg.map((x) => `<button type="button" class="o-pick" data-act="sup-new" data-name="${esc(x.name)}" data-rnc="${esc(x.rnc)}"><span><b>${esc(x.name)}</b><small>${esc([x.rnc ? 'RNC ' + RD.fmtRnc(x.rnc) : '', plural(x.n, 'factura', 'facturas')].filter(Boolean).join(' · '))}</small></span><span class="num">${ICON.plus}</span></button>`).join('')}</div>` : ''}
+  </div>`, { type: 'sups', id: 'sups' });
+}
+function openSupplier(id, preset = {}) {
+  const s = id ? S.suppliers.find((x) => x.id === id) : null;
+  if (id && !s) return;
+  const d = s || { name: preset.name || '', rnc: preset.rnc || '', phone: '', bank: '', accountType: '', account: '', personaFisica: false, creditDays: null, notes: '' };
+  const edit = canEdit();
+  const dis = edit ? '' : ' disabled';
+  const D = derive();
+  const invs = s ? D.invoices.filter((i) => i.sup && i.sup.id === s.id) : [];
+  const pend = invs.filter((i) => i.status !== 'pagada');
+  const banks = ['Banco Popular', 'Banreservas', 'BHD', 'Scotiabank', 'Banco Santa Cruz', 'Banesco', 'Banco Promerica', 'Banco BDI', 'Banco Caribe', 'Banco Vimenca', 'Asociación Popular', 'Asociación Cibao', 'Asociación La Nacional'];
+  openSheet(`<form id="sup-form" data-id="${esc(s ? s.id : '')}" autocomplete="off">${sheetHead(s ? esc(s.name || 'Proveedor') : 'Nuevo proveedor')}<div class="sheet-b">
+    ${s ? `<p class="hint">${plural(invs.length, 'factura', 'facturas')}${pend.length ? ` · por pagar ${esc(totalStr(pend))}` : ''}</p>` : ''}
+    <div class="fields">
+      <div class="field full"><label for="sp-name">Nombre</label><input id="sp-name" maxlength="120" value="${esc(d.name || '')}" required${dis}></div>
+      <div class="field"><label for="sp-rnc">RNC o cédula</label><input id="sp-rnc" class="mono" inputmode="numeric" maxlength="15" value="${esc(RD.normRnc(d.rnc))}"${dis}></div>
+      <div class="field"><label for="sp-phone">Teléfono</label><input id="sp-phone" inputmode="tel" maxlength="20" value="${esc(d.phone || '')}"${dis}></div>
+      <div class="field"><label for="sp-bank">Banco</label><input id="sp-bank" list="dl-banks" maxlength="40" value="${esc(d.bank || '')}"${dis}></div>
+      <div class="field"><label for="sp-acct-type">Tipo de cuenta</label><select id="sp-acct-type"${dis}><option value="">—</option>${['Ahorros', 'Corriente'].map((v) => `<option${d.accountType === v ? ' selected' : ''}>${v}</option>`).join('')}</select></div>
+      <div class="field full"><label for="sp-acct">No. de cuenta</label><input id="sp-acct" class="mono" inputmode="numeric" maxlength="30" value="${esc(d.account || '')}"${dis}></div>
+      <div class="field"><label for="sp-credit">Días de crédito</label><input id="sp-credit" class="mono" inputmode="numeric" maxlength="3" placeholder="0 = de contado" value="${esc(isNum(d.creditDays) ? String(d.creditDays) : '')}"${dis}></div>
+      <label class="field check-row"><input type="checkbox" id="sp-pf"${d.personaFisica ? ' checked' : ''}${dis}><span>Es persona física</span></label>
+      <div class="field full"><label for="sp-notes">Notas</label><textarea id="sp-notes" rows="2" maxlength="300"${dis}>${esc(d.notes || '')}</textarea></div>
+    </div>
+    ${s && edit ? `<div><button type="button" class="btn danger sm" data-act="sup-del" data-id="${esc(s.id)}">${ICON.trash} Eliminar ficha</button></div>` : ''}
+  </div>${edit ? '<div class="sheet-f"><button type="submit" class="btn primary block">Guardar</button></div>' : ''}</form><datalist id="dl-banks">${banks.map((v) => `<option value="${v}"></option>`).join('')}</datalist>`, { type: 'sup', id: s ? s.id : 'new' });
+}
+async function saveSupplier(f) {
+  const id = f.dataset.id;
+  const name = $('#sp-name').value.trim();
+  if (!name) return;
+  const rnc = RD.normRnc($('#sp-rnc').value);
+  if (rnc && rnc.length !== 9 && rnc.length !== 11) { toast('El RNC debe tener 9 dígitos (u 11 si es cédula).'); return; }
+  const cr = $('#sp-credit').value.trim();
+  const credit = cr === '' ? null : Math.max(0, Math.min(365, parseInt(cr, 10) || 0));
+  const data = { name: name.slice(0, 120), rnc, phone: $('#sp-phone').value.trim().slice(0, 20), bank: $('#sp-bank').value.trim().slice(0, 40), accountType: $('#sp-acct-type').value, account: $('#sp-acct').value.trim().slice(0, 30), creditDays: credit, personaFisica: $('#sp-pf').checked, notes: $('#sp-notes').value.trim().slice(0, 300), updatedAt: new Date().toISOString() };
+  const dupe = S.suppliers.find((s) => s.id !== id && ((rnc && RD.normRnc(s.rnc) === rnc) || sameName(s.name, name)));
+  if (dupe) { toast(`Ya hay una ficha de ${dupe.name}.`); return; }
+  const ok = await write(() => (id ? db.doc('suppliers/' + id).update(data) : db.collection('suppliers').doc().set({ ...data, createdAt: new Date().toISOString() })), 'Proveedor guardado');
+  if (ok) { closeSheet(); setTimeout(openSuppliers, 250); }
+}
+
 async function createPayment(name, date, ids) {
   const ref = db.collection('payments').doc();
   const ok = await write(() => ref.set({ name: String(name || '').trim().slice(0, 80) || 'Pago ' + fmtDate(todayISO()), date: ymd(date) ? date : todayISO(), status: 'armando', invoiceIds: ids, createdAt: new Date().toISOString() }), 'Pago creado');
@@ -2747,7 +2881,7 @@ async function deletePayment(payId) {
 
 /* ---------- órdenes de compra ---------- */
 function itemRowHTML(it, n, dis) {
-  return `<div class="o-row" data-row><span class="o-n mono">${n}</span><input data-f="qty" class="mono" inputmode="decimal" maxlength="12" placeholder="Cant." aria-label="Cantidad" value="${esc(it.qty != null ? String(it.qty) : '')}" ${dis}><input data-f="unit" list="dl-units" maxlength="20" placeholder="Unidad" aria-label="Unidad" value="${esc(it.unit || '')}" ${dis}><input data-f="desc" list="dl-items" maxlength="160" placeholder="Descripción y especificaciones" aria-label="Descripción" value="${esc(it.desc || '')}" ${dis}>${dis ? '' : `<button type="button" class="icon-btn plain" data-act="order-rm-item" aria-label="Quitar artículo">${ICON.close}</button>`}</div>`;
+  return `<div class="o-row" data-row><span class="o-n mono">${n}</span><input data-f="qty" class="mono" inputmode="decimal" maxlength="12" placeholder="Cant." aria-label="Cantidad" value="${esc(it.qty != null ? String(it.qty) : '')}" ${dis}><input data-f="unit" list="dl-units" maxlength="20" placeholder="Unidad" aria-label="Unidad" value="${esc(it.unit || '')}" ${dis}><input data-f="price" class="mono" inputmode="decimal" maxlength="12" placeholder="Precio" aria-label="Precio por unidad" value="${esc(isNum(it.price) ? String(it.price) : '')}" ${dis}><input data-f="desc" list="dl-items" maxlength="160" placeholder="Descripción y especificaciones" aria-label="Descripción" value="${esc(it.desc || '')}" ${dis}>${dis ? '' : `<button type="button" class="icon-btn plain" data-act="order-rm-item" aria-label="Quitar artículo">${ICON.close}</button>`}</div>`;
 }
 function uniqList(list) { const seen = new Set(); const out = []; for (const v of list) { const s = String(v || '').trim(); const k = norm(s); if (s && !seen.has(k)) { seen.add(k); out.push(s); } } return out; }
 function orderSig(o, D) { return JSON.stringify([o.status, o.signedFileId, o.signedAt, o.updatedAt, o.number, (D.invByOrder.get(o.id) || []).map((i) => [i.id, i.supplier, i.number, i.amount, (i.conduces || []).map((c) => [c.id, c.material, c.qty, c.trips])])]); }
@@ -2805,6 +2939,7 @@ function openOrder(id, keepScroll, copyFrom) {
       <h3 class="h2">Artículos o materiales</h3>
       <div id="o-items" class="o-items">${items.map((it, k) => itemRowHTML(it, k + 1, dis)).join('')}</div>
       ${edit ? `<div><button type="button" class="btn sm" data-act="order-add-item">${ICON.plus} Agregar artículo</button></div>` : ''}
+      <p class="usage" id="o-est">${esc(estText(data.items || []))}</p>
       <div class="field"><label for="o-notes">Observaciones / instrucciones especiales</label><textarea id="o-notes" rows="2" maxlength="300" ${dis}>${esc(data.notes || '')}</textarea></div>
       ${signedBox}
       ${invBox}
@@ -2864,7 +2999,9 @@ function collectItems() {
   return $$('#o-items [data-row]').map((r) => {
     const qtyRaw = r.querySelector('[data-f="qty"]').value.trim();
     const qty = /^\d+([.,]\d+)?$/.test(qtyRaw) ? parseAmount(qtyRaw) : qtyRaw.slice(0, 12);
-    return { qty, unit: r.querySelector('[data-f="unit"]').value.trim().slice(0, 20), desc: r.querySelector('[data-f="desc"]').value.trim().slice(0, 160) };
+    const pr = r.querySelector('[data-f="price"]');
+    const price = pr && pr.value.trim() ? parseAmount(pr.value) : null;
+    return { qty, unit: r.querySelector('[data-f="unit"]').value.trim().slice(0, 20), desc: r.querySelector('[data-f="desc"]').value.trim().slice(0, 160), price: isNum(price) && price >= 0 ? round2(price) : null };
   }).filter((x) => x.desc || x.qty !== '');
 }
 async function saveOrder(thenPdf) {
@@ -3283,7 +3420,14 @@ async function buildPackage(pay, D, onProgress) {
   // Por proveedor: lo que se le transfiere a cada uno.
   const supHead = () => { page.drawRectangle({ x: M, y: y - 6, width: W - 2 * M, height: 19, color: C.band }); T('Proveedor', M + 6, y, 9, bold, C.grey); T('RNC', 300, y, 9, bold, C.grey); R('Facturas', 418, y, 9, bold, C.grey); R('Total a pagar', W - M - 6, y, 9, bold, C.grey); y -= 21; };
   ensure(60); T('Por proveedor', M, y, 11.5, bold); y -= 20; supHead();
-  for (const g of supplierGroups(invs)) { ensure(20, supHead); T(fit(g.name || 'Sin nombre', font, 10, 245), M + 6, y, 10); T(g.rnc ? RD.fmtRnc(g.rnc) : '-', 300, y, 10); R(String(g.items.length), 418, y, 10); R(totalStr(g.items), W - M - 6, y, 10, bold); y -= 8; hr(y); y -= 13; }
+  for (const g of supplierGroups(invs)) {
+    const sp = D.supFor(g.items[0]);
+    const bank = sp && (sp.bank || sp.account) ? [sp.bank, sp.accountType, sp.account ? 'Cta. ' + sp.account : ''].filter(Boolean).join(' · ') : '';
+    ensure(bank ? 30 : 20, supHead);
+    T(fit(g.name || 'Sin nombre', font, 10, 245), M + 6, y, 10); T(g.rnc ? RD.fmtRnc(g.rnc) : '-', 300, y, 10); R(String(g.items.length), 418, y, 10); R(totalStr(g.items), W - M - 6, y, 10, bold);
+    if (bank) { y -= 11; T(fit(bank, font, 8, 380), M + 6, y, 8, font, C.grey); }
+    y -= 8; hr(y); y -= 13;
+  }
   y -= 18;
 
   const cols = [
@@ -3529,6 +3673,7 @@ function invoicesWorkbook({ heading, scope, invs, D, isPayment }) {
     { k: 'Tipo', w: 26, v: (i) => { const n = RD.parseNcf(i.number); return { v: n.ok ? n.label : '' }; } },
     { k: 'Vence NCF', w: 11, v: (i) => Dt(i.ncfExpiry) },
     { k: 'Fecha', w: 11, v: (i) => Dt(i.date) },
+    { k: 'Vence', w: 11, v: (i) => Dt(i.due) },
     { k: 'Concepto', w: 36, v: (i) => ({ v: i.concept || '' }) },
     { k: 'Orden de compra', w: 15, v: (i) => ({ v: i.order ? orderNo(i.order) : '' }) },
     { k: 'Estado de la orden', w: 16, v: (i) => (i.order ? { v: ORDER_LABEL[i.order.status] || '', s: i.order.status === 'autorizada' ? undefined : XS.warn } : !D.orders.length ? { v: '' } : i.noOrder ? { v: 'No lleva' } : { v: 'Sin orden', s: needsOrder(i, D) ? XS.warn : undefined }) },
@@ -3555,6 +3700,8 @@ function invoicesWorkbook({ heading, scope, invs, D, isPayment }) {
   addSheet('Por proveedor', [
     { k: 'Proveedor', w: 34, v: (g) => ({ v: g.name || 'Sin nombre' }) },
     { k: 'RNC', w: 13, v: (g) => ({ v: g.rnc || '' }) },
+    { k: 'Banco', w: 20, v: (g) => { const sp = D.supFor(g.items[0]); return { v: sp ? [sp.bank, sp.accountType].filter(Boolean).join(' · ') : '' }; } },
+    { k: 'Cuenta', w: 18, v: (g) => { const sp = D.supFor(g.items[0]); return { v: (sp && sp.account) || '' }; } },
     { k: 'Facturas', w: 10, num: true, sumInt: true, raw: (g) => g.items.length, v: (g) => ({ v: g.items.length, s: XS.int }) },
     { k: 'NCF', w: 40, v: (g) => ({ v: g.items.map((i) => RD.normNcf(i.number)).filter(Boolean).join(', ') }) },
     { k: 'Proyectos', w: 30, v: (g) => ({ v: uniqList(g.items.map((i) => (i.project ? i.project.name : 'Sin proyecto'))).join(', ') }) },
@@ -3580,6 +3727,7 @@ function invoicesWorkbook({ heading, scope, invs, D, isPayment }) {
       { k: 'Estado', w: 12, v: (o) => ({ v: ORDER_LABEL[o.status] || '', s: o.status === 'autorizada' ? undefined : XS.warn }) },
       { k: 'Firmada el', w: 11, v: (o) => Dt(o.signedAt) },
       { k: 'Artículos', w: 10, num: true, v: (o) => ({ v: (o.items || []).length, s: XS.int }) },
+      { k: 'Estimado', w: 15, money: true, raw: (o) => orderEst(o), v: (o) => M(orderEst(o), 'DOP') },
       { k: 'Facturas', w: 10, num: true, v: (o) => ({ v: invOf(o).length, s: XS.int }) },
       { k: 'NCF de las facturas', w: 36, v: (o) => ({ v: invOf(o).map((i) => RD.normNcf(i.number)).filter(Boolean).join(', ') }) },
       { k: 'Observaciones', w: 30, v: (o) => ({ v: o.notes || '' }) },
@@ -3593,6 +3741,8 @@ function invoicesWorkbook({ heading, scope, invs, D, isPayment }) {
       { k: 'Cantidad', w: 10, num: true, v: (x) => ({ v: isNum(x.it.qty) ? x.it.qty : String(x.it.qty ?? '') }) },
       { k: 'Unidad', w: 12, v: (x) => ({ v: x.it.unit || '' }) },
       { k: 'Descripción', w: 60, v: (x) => ({ v: x.it.desc || '' }) },
+      { k: 'Precio', w: 13, money: true, raw: (x) => x.it.price, v: (x) => M(x.it.price, 'DOP') },
+      { k: 'Importe', w: 14, money: true, raw: (x) => (isNum(x.it.qty) && isNum(x.it.price) ? round2(x.it.qty * x.it.price) : null), v: (x) => M(isNum(x.it.qty) && isNum(x.it.price) ? round2(x.it.qty * x.it.price) : null, 'DOP') },
     ], items, { title: 'Artículos de las órdenes' });
   }
   // Conduces de estas facturas.
@@ -3705,7 +3855,7 @@ function onClick(e) {
     case 'new-pay': openPicker('new'); break;
     case 'new-pay-from': { const D = derive(); openPicker('new', visibleList(D).filter((i) => i.status === 'pendiente').map((i) => i.id)); break; }
     case 'more': S.showAll.add(t.dataset.k); renderAll(); break;
-    case 'ack': { const f = t.dataset.f; if (['condOverOk', 'condRefsOk', 'qtyOk'].includes(f)) write(() => db.doc('invoices/' + id).update({ [f]: true }), 'Listo'); break; }
+    case 'ack': { const f = t.dataset.f; if (['condOverOk', 'condRefsOk', 'qtyOk', 'estOk'].includes(f)) write(() => db.doc('invoices/' + id).update({ [f]: true }), 'Listo'); break; }
     case 'pick-more': openPicker('add'); break;
     case 'pay-status': setPayStatus(S.paymentId, t.dataset.s); break;
     case 'pay-rm': removeFromPayment(S.paymentId, id); break;
@@ -3741,6 +3891,10 @@ function onClick(e) {
     case 'cond-link': linkConduce(id, t.dataset.inv); break;
     case 'inv-to-cond': invoiceToConduce(id); break;
     case 'inv-to-page': openPagePick(id); break;
+    case 'sups': openSuppliers(); break;
+    case 'sup-open': openSupplier(id); break;
+    case 'sup-new': openSupplier(null, { name: t.dataset.name || '', rnc: t.dataset.rnc || '' }); break;
+    case 'sup-del': write(() => db.doc('suppliers/' + id).delete(), 'Ficha eliminada').then((ok) => { if (ok) { closeSheet(); setTimeout(openSuppliers, 250); } }); break;
     case 'page-merge': mergeAsPage(id, t.dataset.to); break;
     case 'page-add': pageTarget = id; $('#page-input').click(); break;
     case 'page-rm': removePage(id, Number(t.dataset.k)); break;
@@ -3891,6 +4045,7 @@ function onInput(e) {
   if (t.id === 'o-search') { S.orderSearch = t.value; renderAll(); return; }
   if (t.id === 'o-link-q') { const r = $('#o-link-results'); if (r) r.innerHTML = orderLinkResultsHTML(t.dataset.order, t.value); return; }
   if (S.sheet && S.sheet.type === 'order' && t.closest && t.closest('#order-form') && t.id !== 'o-msg') S.sheet.dirty = true;
+  if (t.closest && t.closest('#o-items') && $('#o-est')) $('#o-est').textContent = estText(collectItems());
   if (t.id === 'f-rnc' || t.id === 'f-num') liveHelp(t);
   if (S.sheet && S.sheet.type === 'inv' && t.closest && t.closest('#inv-form')) S.sheet.dirty = true;
   if (S.sheet && S.sheet.type === 'cond' && t.closest && t.closest('#cond-form')) S.sheet.dirty = true;
@@ -3900,6 +4055,7 @@ function onSubmit(e) {
   e.preventDefault();
   if (f.id === 'inv-form') saveInvoice(f);
   else if (f.id === 'w-add') addWorker();
+  else if (f.id === 'sup-form') saveSupplier(f);
   else if (f.id === 'att-rules-form') saveAttRules();
   else if (f.id === 'cond-form') saveConduce(f);
   else if (f.id === 'order-form') saveOrder(false);
@@ -3919,7 +4075,10 @@ function onSubmit(e) {
     const name = $('#pe-name').value.trim();
     if (!name) return;
     if (S.projects.some((p) => p.id !== f.dataset.id && projKey(p.name) === projKey(name))) { toast('Ya hay otro proyecto con ese nombre.'); return; }
-    write(() => db.doc('projects/' + f.dataset.id).update({ name: name.slice(0, 80) }), 'Nombre guardado').then((ok) => { if (ok) closeSheet(); });
+    const bRaw = $('#pe-budget') ? $('#pe-budget').value.trim() : '';
+    const budget = bRaw ? parseAmount(bRaw) : null;
+    if (bRaw && (budget == null || budget < 0)) { toast('Escribe el presupuesto solo con números.'); return; }
+    write(() => db.doc('projects/' + f.dataset.id).update({ name: name.slice(0, 80), budget: budget == null ? null : round2(budget) }), 'Proyecto guardado').then((ok) => { if (ok) closeSheet(); });
   } else if (f.id === 'settings-form') {
     const rncv = RD.normRnc($('#st-rnc').value);
     if (rncv && rncv.length !== 9 && rncv.length !== 11) { toast('El RNC debe tener 9 dígitos (u 11 si es cédula).'); return; }
@@ -3998,8 +4157,8 @@ function registerSW() {
 function subscribe() {
   db.doc('settings/general').onSnapshot((snap) => { S.settings = (snap.exists && snap.data()) || {}; scheduleRender(); }, (err) => console.warn(err));
   db.doc('settings/asistencia').onSnapshot((snap) => { S.attRules = (snap.exists && snap.data()) || {}; scheduleRender(); }, (err) => console.warn(err));
-  const done = () => { if (S.got.projects && S.got.invoices && S.got.payments && S.got.orders && S.got.conduces && S.got.workers && S.got.asistencia && S.dbState === 'loading') { S.dbState = 'ready'; setTimeout(retryOffline, 1500); setTimeout(() => { fixCreditSigns().catch((e) => console.warn(e)); }, 2500); } };
-  for (const name of ['projects', 'invoices', 'payments', 'orders', 'conduces', 'workers', 'asistencia']) {
+  const done = () => { if (S.got.projects && S.got.invoices && S.got.payments && S.got.orders && S.got.conduces && S.got.workers && S.got.asistencia && S.got.suppliers && S.dbState === 'loading') { S.dbState = 'ready'; setTimeout(retryOffline, 1500); setTimeout(() => { fixCreditSigns().catch((e) => console.warn(e)); }, 2500); } };
+  for (const name of ['projects', 'invoices', 'payments', 'orders', 'conduces', 'workers', 'asistencia', 'suppliers']) {
     db.collection(name).onSnapshot((snap) => {
       S[name] = snap.docs.map((d) => ({ ...d.data(), id: d.id }));
       S.got[name] = true;

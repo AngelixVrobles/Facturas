@@ -327,7 +327,8 @@ details.edit .fields { padding: 12px 14px 14px; }
 .pill.o-autorizada { color: var(--paid); background: var(--paid-bg); }
 .pill.o-anulada { color: var(--warn); background: var(--warn-bg); }
 .o-items { display: flex; flex-direction: column; }
-.o-row { display: grid; grid-template-columns: 22px 76px minmax(0, 1fr) 36px; grid-template-areas: "n q u x" "n d d d"; gap: 6px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); }
+.o-row { display: grid; grid-template-columns: 22px 66px minmax(0, 1fr) 84px 36px; grid-template-areas: "n q u p x" "n d d d d"; gap: 6px; align-items: center; padding: 8px 0; border-top: 1px solid var(--line); }
+.o-row [data-f="price"] { grid-area: p; min-width: 0; }
 .o-row:first-child { border-top: 0; }
 .o-row .o-n { grid-area: n; align-self: start; padding-top: 11px; color: var(--muted); font-size: 13px; text-align: center; }
 .o-row [data-f="qty"] { grid-area: q; }
@@ -371,6 +372,14 @@ details.edit .fields { padding: 12px 14px 14px; }
 .chip .n { font: 600 12.5px var(--font-data); opacity: .75; }
 .pill.cond { color: var(--accent); background: var(--accent-soft); }
 .pill.nc { color: var(--paid); background: var(--paid-bg); }
+.budget .b-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.budget .b-top b { font: 650 18px var(--font-data); }
+.budget small { color: var(--muted); font-size: 13px; }
+.b-bar { display: block; height: 8px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
+.b-bar i { display: block; height: 100%; background: var(--paid); border-radius: 999px; }
+.b-bar i.near { background: var(--pend); }
+.b-bar i.over { background: var(--warn); }
+.b-bar.sm { height: 5px; margin: 4px 0 2px; }
 .pages-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; font-size: 14px; }
 .pages-line .pg-n { color: var(--muted); }
 .pg-list { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -534,6 +543,7 @@ input[type="date"]::-webkit-calendar-picker-indicator { margin: 0 0 0 4px; paddi
       <button class="btn primary" type="submit">Agregar</button>
     </form>
     <p class="hint">La app usa estos nombres para acomodar cada factura que lee. Si una factura menciona un proyecto que no está aquí, te sugiere crearlo.</p>
+    <div class="att-bar" id="sup-bar"></div>
     <div id="p-list" class="list"></div>
   </section>
 </main>
