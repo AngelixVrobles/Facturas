@@ -16,6 +16,7 @@ No necesita servidor, base de datos ni cuenta: se publica gratis en GitHub Pages
 - **Obra:** la toma de campos como *Nota: CAPERUZA 2* y reconoce variantes como "caperuza II" para no duplicar proyectos. El NCF impreso con ceros delante (`00000000B0100003467`) se guarda limpio (`B0100003467`).
 - **Varias páginas:** si una factura viene en varias fotos, **Agregar página** las junta en la misma factura; una foto que entró sola se pasa con **Es otra página**. La lectura automática y el PDF del pago usan todas las páginas.
 - **La grapa:** si la factura y la orden firmada se escanean juntas en un PDF, la app reconoce el código QR de la orden: esa página queda como la copia firmada de la orden y la factura se enlaza a ella. Para lo demás, **Separar páginas** dice qué es cada página (factura, conduce, orden firmada, otra factura o quitar) y la app arma cada parte.
+- **Recortar la foto:** en la factura, **Recortar la foto** endereza la hoja arrastrando sus cuatro esquinas y quita lo que sobra (la mesa, los dedos); también se puede girar. La foto original se guarda y se vuelve a ella con **Volver a la foto original**.
 - **Órdenes de compra** (pestaña *Órdenes*), con el formato de la empresa:
   - Cada vez que piden materiales se llena la orden: obra, solicitante, proveedor, fecha requerida, lugar de entrega, departamento, artículos (cantidad, unidad y descripción) y observaciones. El número sigue solo (`OC-0001`, `OC-0002`…); en Ajustes se cambia el prefijo y el próximo número para seguir el talonario de la empresa.
   - Con la clave de API, se puede pegar el mensaje del pedido (por ejemplo, de WhatsApp) o usar una foto de la lista, y la orden se llena sola para revisarla.
@@ -54,6 +55,8 @@ No necesita servidor, base de datos ni cuenta: se publica gratis en GitHub Pages
 - **Fechas:** en *Facturas* se elige un mes o un rango de fechas (por la fecha de la factura); los contadores, el total, el Excel y el pago que se arma desde ahí siguen ese período. Con muchas facturas, cada grupo muestra 60 y **Ver más**.
 - **Más ayudas en la factura:** la obra se toma del texto del PDF aunque no haya clave ("Obra: Caperuza 2"); si falta el ITBIS, sugiere el 18 % incluido y se guarda con un toque; el concepto sale de los artículos de la orden; **No lleva orden** quita el aviso a las que no la necesitan.
 - **Lectura sin internet:** si una factura no se pudo leer por falta de conexión, se lee sola cuando vuelve el internet. Si pones la clave de API después de cargar facturas, **Leer todas** las lee de una vez.
+- **En la computadora** se ve más ancha: las facturas, las órdenes y los proyectos van en dos columnas y las ventanas se abren centradas.
+- **Si algo falla**, *Ajustes → Registro de errores* dice qué pasó y cuándo; se puede compartir para revisarlo. La página solo carga sus propios archivos y solo se conecta con la lectura automática y la nube del equipo, para proteger la clave guardada en el teléfono.
 - **Funciona sin internet**, salvo la lectura automática de facturas de papel y de pedidos.
 
 ## Publicarla en GitHub Pages (para el autor)

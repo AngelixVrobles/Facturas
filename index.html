@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; font-src 'self' data:; connect-src 'self' https: http://127.0.0.1:* http://localhost:*; worker-src 'self' blob:; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'">
 <title>Facturas de Proyectos</title>
 <meta name="description" content="Recibe las facturas de tus proyectos, ordénalas y presenta cada pago con PDF y Excel.">
 <meta name="theme-color" content="#EDF0F3" media="(prefers-color-scheme: light)">
@@ -372,6 +373,19 @@ details.edit .fields { padding: 12px 14px 14px; }
 .chip .n { font: 600 12.5px var(--font-data); opacity: .75; }
 .pill.cond { color: var(--accent); background: var(--accent-soft); }
 .pill.nc { color: var(--paid); background: var(--paid-bg); }
+.crop-wrap { position: relative; width: min(100%, calc(60vh * var(--ar, 0.75))); aspect-ratio: var(--ar, 0.75); margin: 0 auto; touch-action: none; user-select: none; -webkit-user-select: none; background: var(--surface-2); border-radius: 10px; overflow: visible; }
+.crop-wrap canvas { display: block; width: 100%; height: 100%; border-radius: 10px; }
+.crop-poly { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.crop-poly polygon { fill: rgba(31, 79, 216, .14); stroke: var(--accent); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.crop-h { position: absolute; width: 30px; height: 30px; margin: -15px 0 0 -15px; border-radius: 50%; background: var(--surface); border: 3px solid var(--accent); box-shadow: 0 1px 4px rgba(0, 0, 0, .3); touch-action: none; }
+.err-list { display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow-y: auto; word-break: break-word; }
+/* En la computadora: más ancho, las listas en dos columnas y las hojas como ventana centrada. */
+@media (min-width: 960px) {
+  .wrap, .tabs-in { max-width: 1120px; }
+  #f-list .list, #o-list .list, #p-list.list, .att-list, #pd-body .list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; align-items: start; }
+  .list .more { grid-column: 1 / -1; justify-self: center; }
+  .sheet { bottom: 24px; max-width: 720px; max-height: calc(100% - 48px); border-radius: 18px; }
+}
 .budget .b-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
 .budget .b-top b { font: 650 18px var(--font-data); }
 .budget small { color: var(--muted); font-size: 13px; }

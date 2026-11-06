@@ -10,7 +10,7 @@ const LIB = {
   qrgen: 'js/qr.js',
 };
 const PDF_CREATOR = 'Facturas de Proyectos';
-const APP_VERSION = '1.8.0';
+const APP_VERSION = '1.9.0';
 const SVG = (d) => `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ICON = {
   plus: SVG('<path d="M12 5v14M5 12h14"/>'),
@@ -48,6 +48,28 @@ const ROMAN = { i: '1', ii: '2', iii: '3', iv: '4', v: '5', vi: '6', vii: '7', v
 const projKey = (s) => norm(s).split(' ').map((w) => ROMAN[w] || w.replace(/^0+(\d)/, '$1')).join(' ');
 const lsGet = (k) => { try { return localStorage.getItem(k) || ''; } catch (e) { return ''; } };
 const lsSet = (k, v) => { try { if (v) localStorage.setItem(k, v); else localStorage.removeItem(k); } catch (e) { /* sin almacenamiento */ } };
+/* ---------- registro de errores (para saber qué falló en el teléfono de otra persona) ---------- */
+const ERR_KEY = 'facturas.errores';
+function logErr(msg) {
+  try {
+    const m = String(msg || '').replace(/sk-ant-[\w-]+/g, 'sk-ant-…').replace(/\s+/g, ' ').trim().slice(0, 300);
+    if (!m) return;
+    const list = JSON.parse(lsGet(ERR_KEY) || '[]');
+    const last = list[list.length - 1];
+    if (last && last.m === m) last.n = (last.n || 1) + 1;
+    else list.push({ t: new Date().toISOString(), m, v: APP_VERSION });
+    lsSet(ERR_KEY, JSON.stringify(list.slice(-40)));
+  } catch (e) { /* sin almacenamiento */ }
+}
+const errList = () => { try { return JSON.parse(lsGet(ERR_KEY) || '[]'); } catch (e) { return []; } };
+{
+  const show = (a) => { try { return a && a.message ? a.message + (a.stack ? ' | ' + String(a.stack).split('\n').slice(1, 3).join(' ') : '') : typeof a === 'string' ? a : JSON.stringify(a); } catch (e) { return String(a); } };
+  const orig = console.error.bind(console);
+  console.error = (...args) => { orig(...args); logErr(args.map(show).join(' ')); };
+  window.addEventListener('error', (e) => logErr((e.message || 'Error') + (e.filename ? ' @ ' + String(e.filename).split('/').pop() + ':' + e.lineno : '')));
+  window.addEventListener('unhandledrejection', (e) => logErr('Sin atender: ' + show(e.reason)));
+}
+
 
 const PAY_LABEL = { armando: 'Por presentar', presentado: 'Presentado', pagado: 'Pagado' };
 const INV_LABEL = { pendiente: 'Pendiente', enpago: 'En pago', presentada: 'Presentada', pagada: 'Pagada' };
@@ -986,7 +1008,7 @@ function closeSheet() { const root = $('#sheet-root'); root.hidden = true; root.
 function lockBody() { document.body.classList.toggle('locked', !!S.sheet || !$('#viewer').hidden); }
 const sheetHead = (title) => `<div class="sheet-h"><h2>${title}</h2><button type="button" class="icon-btn plain" data-act="sheet-close" aria-label="Cerrar">${ICON.close}</button></div>`;
 
-function invSig(i, D) { return JSON.stringify([i.orderId, i.orderAuto, i.noOrder, i.order && i.order.status, i.ncfExpiry, i.supplier, i.number, i.rnc, i.date, i.amount, i.itbis, i.currency, i.concept, i.ref, i.projectId, i.projectHint, i.ai, i.notInvoice, i.pay && i.pay.id, i.pay && i.pay.status, i.dup, i.fiscal, i.xmlId, i.fileId, i.pages, (i.extraPages || []).length, i.buyerRnc, i.condOverOk, i.condRefsOk, i.qtyOk, i.estOk, i.due, i.sup && [i.sup.id, i.sup.name, i.sup.creditDays, i.sup.bank, i.sup.account], orderEst(i.order), (i.conduceRefs || []).join(), (i.order && i.order.items || []).length, (i.conduces || []).map((c) => [c.id, c.number, c.date, c.total, c.material, c.qty, c.ai, c.auto, c.dup]), D ? D.conduces.filter((c) => !c.invoiceId).map((c) => c.id + c.ai).join() : '']); }
+function invSig(i, D) { return JSON.stringify([i.orderId, i.orderAuto, i.noOrder, i.order && i.order.status, i.ncfExpiry, i.supplier, i.number, i.rnc, i.date, i.amount, i.itbis, i.currency, i.concept, i.ref, i.projectId, i.projectHint, i.ai, i.notInvoice, i.pay && i.pay.id, i.pay && i.pay.status, i.dup, i.fiscal, i.xmlId, i.fileId, i.origFileId, i.pages, (i.extraPages || []).length, i.buyerRnc, i.condOverOk, i.condRefsOk, i.qtyOk, i.estOk, i.due, i.sup && [i.sup.id, i.sup.name, i.sup.creditDays, i.sup.bank, i.sup.account], orderEst(i.order), (i.conduceRefs || []).join(), (i.order && i.order.items || []).length, (i.conduces || []).map((c) => [c.id, c.number, c.date, c.total, c.material, c.qty, c.ai, c.auto, c.dup]), D ? D.conduces.filter((c) => !c.invoiceId).map((c) => c.id + c.ai).join() : '']); }
 function openInvoice(id, keepScroll) {
   const D = derive();
   const i = D.invoices.find((x) => x.id === id);
@@ -1282,6 +1304,7 @@ async function openSettings() {
       <h3 class="h2">Compartir con otros teléfonos (prueba)</h3>
       <div id="nube-box" data-k="${nubeKey(RT.sync.status())}">${nubeBoxHTML()}</div>
       <p class="usage" id="st-usage">Calculando espacio…</p>
+      ${(() => { const l = errList(); return l.length ? `<details class="edit" id="err-box"><summary>Registro de errores (${l.length})</summary><div class="err-list">${l.slice(-8).reverse().map((x) => `<p class="usage"><b>${esc(fmtDate(String(x.t).slice(0, 10)))} ${esc(String(x.t).slice(11, 16))}</b> ${esc(x.m)}${x.n > 1 ? ` (×${x.n})` : ''}</p>`).join('')}</div><div class="actions"><button type="button" class="btn sm" data-act="err-share">Compartir el registro</button><button type="button" class="btn sm ghost" data-act="err-clear">Borrar</button></div></details>` : ''; })()}
       <p class="usage">Versión ${APP_VERSION}. Se actualiza sola.<br>© 2026 AngelixVrobles. Uso gratuito; no se permite venderla ni copiarla sin permiso del autor.</p>
     </div>
     <div class="sheet-f"><button type="submit" class="btn primary block">Guardar</button></div>
@@ -1931,7 +1954,7 @@ async function deleteInvoice(id) {
   }, 'Factura eliminada');
   if (!ok) return;
   closeSheet();
-  for (const a of new Set([i.fileId, i.thumbId, i.xmlId, ...(i.extraPages || []).flatMap((x) => [x.fileId, x.thumbId])])) if (a) { try { await assets.delete(a); } catch (e) { console.warn(e); } }
+  for (const a of new Set([i.fileId, i.thumbId, i.xmlId, i.origFileId, ...(i.extraPages || []).flatMap((x) => [x.fileId, x.thumbId])])) if (a) { try { await assets.delete(a); } catch (e) { console.warn(e); } }
 }
 /* ---------- conduces: guardar, leer y enlazar ---------- */
 let condTarget = null;
@@ -2628,7 +2651,7 @@ function pagesLineHTML(i, edit) {
   }).join('');
   const split = edit && i.fileType === 'application/pdf' && (i.pages || 1) > 1 ? `<button type="button" class="link" data-act="split-open" data-id="${esc(i.id)}">Separar páginas</button>` : '';
   if (!extra.length && !edit) return '';
-  return `<div class="pages-line">${extra.length ? `<span class="pg-n">${plural(total, 'página', 'páginas')}</span><span class="pg-list">${thumbs}</span>` : ''}<span class="pg-acts">${edit ? `<button type="button" class="link" data-act="page-add" data-id="${esc(i.id)}">${ICON.plus} Agregar página</button>` : ''}${split}</span></div>`;
+  return `<div class="pages-line">${extra.length ? `<span class="pg-n">${plural(total, 'página', 'páginas')}</span><span class="pg-list">${thumbs}</span>` : ''}<span class="pg-acts">${edit ? `<button type="button" class="link" data-act="page-add" data-id="${esc(i.id)}">${ICON.plus} Agregar página</button>` : ''}${split}${edit && String(i.fileType || '').startsWith('image/') && i.fileId ? `<button type="button" class="link" data-act="crop-open" data-id="${esc(i.id)}">Recortar la foto</button>` : ''}${edit && i.origFileId ? `<button type="button" class="link" data-act="crop-undo" data-id="${esc(i.id)}">Volver a la foto original</button>` : ''}</span></div>`;
 }
 let pageTarget = null;
 async function addPages(invId, files) {
@@ -2848,6 +2871,156 @@ async function saveSupplier(f) {
   if (dupe) { toast(`Ya hay una ficha de ${dupe.name}.`); return; }
   const ok = await write(() => (id ? db.doc('suppliers/' + id).update(data) : db.collection('suppliers').doc().set({ ...data, createdAt: new Date().toISOString() })), 'Proveedor guardado');
   if (ok) { closeSheet(); setTimeout(openSuppliers, 250); }
+}
+
+/* ---------- recortar y enderezar la foto ---------- */
+// Homografía: lleva el rectángulo de salida a las cuatro esquinas marcadas en la foto.
+function solveLinear(A, B) {
+  const n = B.length;
+  const M = A.map((r, i) => [...r, B[i]]);
+  for (let c = 0; c < n; c++) {
+    let p = c;
+    for (let r = c + 1; r < n; r++) if (Math.abs(M[r][c]) > Math.abs(M[p][c])) p = r;
+    [M[c], M[p]] = [M[p], M[c]];
+    const d = M[c][c] || 1e-12;
+    for (let k = c; k <= n; k++) M[c][k] /= d;
+    for (let r = 0; r < n; r++) if (r !== c && M[r][c]) { const f = M[r][c]; for (let k = c; k <= n; k++) M[r][k] -= f * M[c][k]; }
+  }
+  return M.map((r) => r[n]);
+}
+function warpQuad(src, quad) {
+  const d = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+  let W = Math.max(d(quad[0], quad[1]), d(quad[3], quad[2])), H = Math.max(d(quad[0], quad[3]), d(quad[1], quad[2]));
+  const k = Math.min(1, 2000 / Math.max(W, H));
+  W = Math.max(1, Math.round(W * k)); H = Math.max(1, Math.round(H * k));
+  const dst = [[0, 0], [W, 0], [W, H], [0, H]];
+  const A = [], B = [];
+  for (let j = 0; j < 4; j++) {
+    const [x, y] = dst[j], [u, v] = quad[j];
+    A.push([x, y, 1, 0, 0, 0, -u * x, -u * y]); B.push(u);
+    A.push([0, 0, 0, x, y, 1, -v * x, -v * y]); B.push(v);
+  }
+  const h = solveLinear(A, B);
+  const sw = src.width, sh = src.height;
+  const sd = src.getContext('2d').getImageData(0, 0, sw, sh).data;
+  const out = document.createElement('canvas');
+  out.width = W; out.height = H;
+  const octx = out.getContext('2d');
+  const od = octx.createImageData(W, H);
+  const o = od.data;
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const den = h[6] * x + h[7] * y + 1;
+      const u = (h[0] * x + h[1] * y + h[2]) / den, v = (h[3] * x + h[4] * y + h[5]) / den;
+      const i = (y * W + x) * 4;
+      const x0 = Math.floor(u), y0 = Math.floor(v);
+      if (x0 < 0 || y0 < 0 || x0 >= sw - 1 || y0 >= sh - 1) { o[i] = o[i + 1] = o[i + 2] = o[i + 3] = 255; continue; }
+      const fx = u - x0, fy = v - y0;
+      const p = (y0 * sw + x0) * 4, q = p + 4, r = p + sw * 4, s = r + 4;
+      for (let c = 0; c < 3; c++) o[i + c] = (sd[p + c] * (1 - fx) + sd[q + c] * fx) * (1 - fy) + (sd[r + c] * (1 - fx) + sd[s + c] * fx) * fy;
+      o[i + 3] = 255;
+    }
+  }
+  octx.putImageData(od, 0, 0);
+  return out;
+}
+let cropState = null;
+async function openCrop(invId) {
+  const i = S.invoices.find((x) => x.id === invId);
+  if (!i || !String(i.fileType || '').startsWith('image/')) return;
+  openSheet(`${sheetHead('Recortar y enderezar')}<div class="sheet-b"><p class="hint">Arrastra las cuatro esquinas a las esquinas de la factura: la app la endereza y quita lo que sobra. La foto original se guarda por si quieres volver a ella.</p><div class="crop-wrap" id="crop-wrap"><p class="hint">Abriendo la foto…</p></div><div class="actions"><button type="button" class="btn sm" data-act="crop-rot">Girar</button><button type="button" class="btn sm ghost" data-act="crop-all">Toda la foto</button></div></div><div class="sheet-f"><button type="button" class="btn primary block" data-act="crop-go" disabled>Recortar</button></div>`, { type: 'crop', id: invId });
+  try {
+    const img = await loadImage(await getBlob(i.fileId));
+    if (!S.sheet || S.sheet.type !== 'crop' || S.sheet.id !== invId) return;
+    cropState = { invId, src: scaledCanvas(img, 2000), pts: [[0.04, 0.04], [0.96, 0.04], [0.96, 0.96], [0.04, 0.96]] };
+    $('#crop-wrap').innerHTML = '';
+    drawCrop();
+    const go = $('[data-act="crop-go"]');
+    if (go) go.disabled = false;
+  } catch (e) {
+    console.error(e);
+    const w = $('#crop-wrap');
+    if (w) w.innerHTML = '<p class="hint">No se pudo abrir la foto.</p>';
+  }
+}
+function drawCrop() {
+  const w = $('#crop-wrap');
+  if (!w || !cropState) return;
+  const { src, pts } = cropState;
+  if (!w.dataset.bound) {
+    w.dataset.bound = '1';
+    w.innerHTML = `<canvas></canvas><svg class="crop-poly" viewBox="0 0 1 1" preserveAspectRatio="none"><polygon points=""/></svg>${[0, 1, 2, 3].map((k) => `<span class="crop-h" data-h="${k}"></span>`).join('')}`;
+    let drag = -1;
+    const at = (e) => { const r = w.getBoundingClientRect(); return [Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), Math.min(1, Math.max(0, (e.clientY - r.top) / r.height))]; };
+    w.addEventListener('pointerdown', (e) => {
+      if (!cropState) return;
+      const h = e.target.closest('.crop-h');
+      if (h) drag = Number(h.dataset.h);
+      else {
+        const p = at(e);
+        let best = -1, bd = 0.25;
+        cropState.pts.forEach((q, k) => { const dd = Math.hypot(q[0] - p[0], q[1] - p[1]); if (dd < bd) { bd = dd; best = k; } });
+        drag = best;
+      }
+      if (drag >= 0) { try { w.setPointerCapture(e.pointerId); } catch (er) { /* nada */ } e.preventDefault(); }
+    });
+    w.addEventListener('pointermove', (e) => { if (drag < 0 || !cropState) return; cropState.pts[drag] = at(e); drawCrop(); });
+    const end = () => { drag = -1; };
+    w.addEventListener('pointerup', end);
+    w.addEventListener('pointercancel', end);
+  }
+  const c = w.querySelector('canvas');
+  const k = Math.min(1, 900 / Math.max(src.width, src.height));
+  const cw = Math.round(src.width * k), ch = Math.round(src.height * k);
+  if (c.width !== cw || c.height !== ch) { c.width = cw; c.height = ch; }
+  c.getContext('2d').drawImage(src, 0, 0, cw, ch);
+  w.style.setProperty('--ar', String(src.width / src.height));
+  w.querySelector('polygon').setAttribute('points', pts.map((p) => p.join(',')).join(' '));
+  w.querySelectorAll('.crop-h').forEach((hd) => { const p = pts[Number(hd.dataset.h)]; hd.style.left = p[0] * 100 + '%'; hd.style.top = p[1] * 100 + '%'; });
+}
+function rotateCrop() {
+  if (!cropState) return;
+  const s = cropState.src;
+  const c = document.createElement('canvas');
+  c.width = s.height; c.height = s.width;
+  const ctx = c.getContext('2d');
+  ctx.translate(c.width, 0);
+  ctx.rotate(Math.PI / 2);
+  ctx.drawImage(s, 0, 0);
+  const m = cropState.pts.map(([x, y]) => [1 - y, x]);
+  cropState.src = c;
+  cropState.pts = [m[3], m[0], m[1], m[2]];
+  drawCrop();
+}
+async function applyCrop(btn) {
+  const st = cropState;
+  const i = st && S.invoices.find((x) => x.id === st.invId);
+  if (!i) return;
+  btn.disabled = true;
+  btn.textContent = 'Enderezando…';
+  try {
+    await new Promise((r) => setTimeout(r, 30));
+    const W = st.src.width, H = st.src.height;
+    const out = warpQuad(st.src, st.pts.map(([x, y]) => [x * W, y * H]));
+    const up = await assets.upload(await canvasToJpeg(out, 0.88), { type: 'image/jpeg' });
+    const orig = i.origFileId || i.fileId;
+    const drop = i.origFileId && i.fileId !== i.origFileId ? i.fileId : null;
+    if (!(await write(() => db.doc('invoices/' + i.id).update({ fileId: up.id, fileType: 'image/jpeg', thumbId: null, origFileId: orig }), 'Foto recortada y enderezada'))) { btn.disabled = false; btn.textContent = 'Recortar'; return; }
+    if (drop) assets.delete(drop).catch(() => {});
+    cropState = null;
+    closeSheet();
+  } catch (e) {
+    console.error(e);
+    toast('No se pudo recortar la foto.');
+    btn.disabled = false;
+    btn.textContent = 'Recortar';
+  }
+}
+async function undoCrop(invId) {
+  const i = S.invoices.find((x) => x.id === invId);
+  if (!i || !i.origFileId) return;
+  const cur = i.fileId;
+  if (await write(() => db.doc('invoices/' + invId).update({ fileId: i.origFileId, fileType: 'image/jpeg', thumbId: null, origFileId: null }), 'Volvió la foto original') && cur !== i.origFileId) assets.delete(cur).catch(() => {});
 }
 
 async function createPayment(name, date, ids) {
@@ -3891,6 +4064,13 @@ function onClick(e) {
     case 'cond-link': linkConduce(id, t.dataset.inv); break;
     case 'inv-to-cond': invoiceToConduce(id); break;
     case 'inv-to-page': openPagePick(id); break;
+    case 'crop-open': openCrop(id); break;
+    case 'crop-rot': rotateCrop(); break;
+    case 'crop-all': if (cropState) { cropState.pts = [[0, 0], [1, 0], [1, 1], [0, 1]]; drawCrop(); } break;
+    case 'crop-go': applyCrop(t); break;
+    case 'crop-undo': undoCrop(id); break;
+    case 'err-share': deliverFile(new Blob([errList().map((x) => `${x.t} [${x.v}] ${x.m}${x.n > 1 ? ` (x${x.n})` : ''}`).join('\n')], { type: 'text/plain' }), 'registro-de-errores.txt'); break;
+    case 'err-clear': lsSet(ERR_KEY, ''); toast('Registro borrado'); { const b = $('#err-box'); if (b) b.remove(); } break;
     case 'sups': openSuppliers(); break;
     case 'sup-open': openSupplier(id); break;
     case 'sup-new': openSupplier(null, { name: t.dataset.name || '', rnc: t.dataset.rnc || '' }); break;
