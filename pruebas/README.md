@@ -48,8 +48,9 @@ Cada prueba dice `OK` o `FALLA` en cada revisión, y al final `correr.js` dice c
 | `excel.js` | El Excel detallado: hojas, columnas, totales por moneda y fórmulas (abierto con LibreOffice). |
 | `conduces.js` | Conduces: lectura, enlace solo a su factura, conduces esperando factura, PDF y Excel; órdenes por proyecto. |
 | `notas-credito-cruce-fechas.js` | Notas de crédito que restan, avisos del cruce orden-conduce-factura, filtro por fecha y listas largas. |
-| `pase-de-lista.js` | Obreros, marcas de entrada, pase sorpresa y salida, reglas, resumen, Excel y PDF de la planilla. |
+| `pase-de-lista.js` | Obreros, marcas de entrada, pase sorpresa y salida, reglas de la empresa (tardanza y sábado, medio día), resumen, Excel y PDF de la planilla. |
 | `paginas-y-grapa.js` | Factura y orden engrapadas en un PDF, agregar página, «Es otra página» y separar páginas. |
 | `proveedores-presupuesto.js` | Ficha de proveedores, vencimientos, banco en el pago, precio estimado y presupuesto por obra. |
 | `fotos-computadora-errores.js` | Recortar y enderezar fotos, vista de computadora, registro de errores y la protección de la página. |
 | `abonos.js` | Abonos: balance en la factura, y el pago, el PDF y el Excel con lo que falta por pagar. |
+| `digitadora.js` | Envíos a la digitadora: lo que falta por mandar, el PDF y la lista en papel, confirmar, «No se la mandé», deshacer y el Excel. |

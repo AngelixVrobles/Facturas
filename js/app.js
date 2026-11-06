@@ -10,7 +10,7 @@ const LIB = {
   qrgen: 'js/qr.js',
 };
 const PDF_CREATOR = 'Facturas de Proyectos';
-const APP_VERSION = '1.10.0';
+const APP_VERSION = '1.11.0';
 const SVG = (d) => `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ICON = {
   plus: SVG('<path d="M12 5v14M5 12h14"/>'),
@@ -95,7 +95,7 @@ const DEFAULT_ORDER_NOTE = 'Toda factura recibida por compras deberá estar acom
 
 const S = {
   tab: 'facturas', filter: 'pendientes', projectFilter: 'all', search: '', paymentId: null,
-  projects: [], invoices: [], payments: [], orders: [], conduces: [], workers: [], asistencia: [], suppliers: [], settings: {}, attRules: {}, got: { projects: false, invoices: false, payments: false, orders: false, conduces: false, workers: false, asistencia: false, suppliers: false },
+  projects: [], invoices: [], payments: [], orders: [], conduces: [], workers: [], asistencia: [], suppliers: [], envios: [], settings: {}, attRules: {}, digi: {}, envioPending: null, got: { projects: false, invoices: false, payments: false, orders: false, conduces: false, workers: false, asistencia: false, suppliers: false, envios: false },
   attProject: '', attSheet: '', attDay: 0, orderFilter: 'todas', orderSearch: '', orderProject: 'all', focus: null, invOrder: 'all', dateFilter: '', dateFrom: '', dateTo: '', showAll: new Set(),
   dbState: 'loading', aiState: 'ok', queue: [], sheet: null, payDel: false, busyPdf: false, pdfMsg: '',
   updateReg: null, updating: false, ready: null, restoreFile: null,
@@ -177,6 +177,9 @@ function derive() {
   const supByRnc = new Map(suppliers.filter((s) => RD.normRnc(s.rnc)).map((s) => [RD.normRnc(s.rnc), s]));
   const supFor = (i) => supByRnc.get(RD.normRnc(i.rnc)) || (i.supplier ? suppliers.find((s) => s.name && sameName(s.name, i.supplier)) : null) || null;
   const invIds = new Set(S.invoices.map((i) => i.id));
+  const envios = [...S.envios].sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
+  const envioOf = new Map();
+  for (const e of envios) for (const id of e.invoiceIds || []) envioOf.set(id, e);
   const condKey = (c) => (condNum(c.number) ? (supKey(c.supplier) || '?') + '|' + condNum(c.number) : '');
   const cdups = new Map();
   for (const c of S.conduces) { const k = condKey(c); if (k) cdups.set(k, (cdups.get(k) || 0) + 1); }
@@ -196,13 +199,13 @@ function derive() {
     let aiSt = i.ai || 'off';
     if (aiSt === 'pending' && !S.queue.some((q) => q.invId === i.id && !q.done) && !aiBusy(i.id) && now - (Date.parse(i.createdAt) || 0) > 120000) aiSt = 'failed';
     const k = dupKey(i);
-    return { ...i, ai: aiSt, pay, status, abonado, toPay, project: projById.get(i.projectId) || null, order: orderById.get(i.orderId) || null, dup: k ? dups.get(k) > 1 : false, conduces: condByInv.get(i.id) || [], ...(() => { const sp = supFor(i); return { sup: sp, due: sp && isNum(sp.creditDays) && sp.creditDays > 0 && ymd(i.date) ? addDays(i.date, sp.creditDays) : '' }; })() };
+    return { ...i, ai: aiSt, pay, status, abonado, toPay, envio: envioOf.get(i.id) || null, project: projById.get(i.projectId) || null, order: orderById.get(i.orderId) || null, dup: k ? dups.get(k) > 1 : false, conduces: condByInv.get(i.id) || [], ...(() => { const sp = supFor(i); return { sup: sp, due: sp && isNum(sp.creditDays) && sp.creditDays > 0 && ymd(i.date) ? addDays(i.date, sp.creditDays) : '' }; })() };
   });
   const invByOrder = new Map();
   const namesByRnc = new Map();
   for (const i of S.invoices) if (i.rnc && i.supplier) { const a = namesByRnc.get(i.rnc) || []; if (!a.includes(i.supplier)) a.push(i.supplier); namesByRnc.set(i.rnc, a); }
   for (const i of invoices) if (i.order) { const a = invByOrder.get(i.order.id) || []; a.push(i); invByOrder.set(i.order.id, a); }
-  return { projects: projects.map((p) => projById.get(p.id)), projById, invoices, orders, orderById, invByOrder, namesByRnc, firstOrderAt, conduces, condByInv, suppliers, supByRnc, supFor, companyRnc: RD.normRnc(S.settings.companyRnc) };
+  return { projects: projects.map((p) => projById.get(p.id)), projById, invoices, orders, orderById, invByOrder, namesByRnc, firstOrderAt, conduces, condByInv, suppliers, supByRnc, supFor, envios, companyRnc: RD.normRnc(S.settings.companyRnc) };
 }
 function reviewFlags(i, D) {
   const r = [];
@@ -383,6 +386,14 @@ function signAmounts(doc, base) {
   return doc;
 }
 // Las notas de crédito que se guardaron antes de esto (con el monto en positivo) se arreglan una vez.
+// Reglas guardadas antes de la 1.11 con la tardanza y el sábado como venían: se ponen las de la empresa (medio día cada una).
+async function fixAttRules() {
+  if (!canEdit()) return;
+  const snap = await db.doc('settings/asistencia').get();
+  const r = snap.exists ? snap.data() : null;
+  if (!r || r.rev || r.late !== 0 || r.saturday !== 1) return;
+  await db.doc('settings/asistencia').set({ ...r, late: 0.5, saturday: 0.5, rev: 2, updatedAt: new Date().toISOString() });
+}
 async function fixCreditSigns() {
   if (!canEdit()) return;
   for (const i of S.invoices) {
@@ -750,6 +761,7 @@ function cardHTML(i, D, opts = {}) {
   }
   const nc = (i.conduces || []).length;
   if (nc) tags.push(`<span class="pill cond">${nc === 1 ? (i.conduces[0].number ? 'Conduce <b>' + esc(i.conduces[0].number) + '</b>' : 'Conduce') : nc + ' conduces'}</span>`);
+  if (!i.envio && !i.notInvoice && !opts.hideDigi) tags.push('<span class="pill digi" title="Todavía no se ha mandado a la digitadora">Por digitar</span>');
   if (i.abonado > 0 && i.status !== 'pagada') tags.push(`<span class="pill pendiente">Balance ${esc(money(i.toPay, i.currency))}</span>`);
   const di = dueInfo(i);
   if (di && (di.overdue || di.days <= 7)) tags.push(`<span class="pill ${di.overdue ? 'warn' : 'pendiente'}">${dueText(di)}</span>`);
@@ -831,7 +843,7 @@ function readyToPay(i, D) { return i.status === 'pendiente' && isNum(i.amount) &
 function renderTodo(D) {
   const el = $('#todo');
   if (!el) return;
-  if (!S.got.invoices || !S.got.orders || !S.got.payments || !S.got.conduces || !canEdit()) { el.hidden = true; el.innerHTML = ''; return; }
+  if (!S.got.invoices || !S.got.orders || !S.got.payments || !S.got.conduces || !S.got.envios || !canEdit()) { el.hidden = true; el.innerHTML = ''; return; }
   const live = D.invoices.filter((i) => i.status !== 'pagada');
   const unread = live.filter((i) => needsReading(i) && i.ai !== 'pending');
   const review = live.filter((i) => reviewFlags(i, D).some((f) => f !== 'Sin orden'));
@@ -849,6 +861,8 @@ function renderTodo(D) {
   if (noOrd.length) rows.push(row(noOrd.length, plural(noOrd.length, 'factura sin orden de compra', 'facturas sin orden de compra'), b('focus', 'Ver', ' data-f="sinorden"'), 'warn'));
   const condWait = D.conduces.filter((c) => !c.invoiceId && c.ai !== 'pending');
   if (condWait.length) rows.push(row(condWait.length, plural(condWait.length, 'conduce esperando su factura', 'conduces esperando su factura'), b('cond-list', 'Ver')));
+  const toDigi = pendingDigi(D);
+  if (toDigi.length) rows.push(row(toDigi.length, plural(toDigi.length, 'factura por mandar a la digitadora', 'facturas por mandar a la digitadora'), b('digi-open', 'Mandar')));
   const overdue = live.filter((i) => FOCUS.vencidas(i)), soon = live.filter((i) => FOCUS.porvencer(i));
   if (overdue.length) rows.push(row(overdue.length, `${plural(overdue.length, 'factura vencida', 'facturas vencidas')} · <b class="mono">${esc(totalStr(overdue))}</b>`, b('focus', 'Ver', ' data-f="vencidas"'), 'warn'));
   if (soon.length) rows.push(row(soon.length, `${plural(soon.length, 'factura vence', 'facturas vencen')} esta semana · <b class="mono">${esc(totalStr(soon))}</b>`, b('focus', 'Ver', ' data-f="porvencer"')));
@@ -983,7 +997,8 @@ function renderOrdenes(D) {
 function renderProyectos(D) {
   $('#proj-add').hidden = !canEdit();
   const sb = $('#sup-bar');
-  if (sb) sb.innerHTML = `<button type="button" class="btn sm" data-act="sups">Proveedores (${S.suppliers.length})</button>`;
+  const nDigi = S.got.envios ? pendingDigi(D).length : 0;
+  if (sb) sb.innerHTML = `<button type="button" class="btn sm" data-act="sups">Proveedores (${S.suppliers.length})</button><button type="button" class="btn sm" data-act="digi-open">Digitadora${nDigi ? ` (${nDigi} por mandar)` : ''}</button>`;
   const el = $('#p-list');
   if (!S.got.projects) { el.innerHTML = S.dbState === 'absent' ? '' : '<p class="loading">Cargando proyectos…</p>'; return; }
   const rows = D.projects.map((p) => {
@@ -1011,7 +1026,7 @@ function closeSheet() { const root = $('#sheet-root'); root.hidden = true; root.
 function lockBody() { document.body.classList.toggle('locked', !!S.sheet || !$('#viewer').hidden); }
 const sheetHead = (title) => `<div class="sheet-h"><h2>${title}</h2><button type="button" class="icon-btn plain" data-act="sheet-close" aria-label="Cerrar">${ICON.close}</button></div>`;
 
-function invSig(i, D) { return JSON.stringify([i.orderId, i.orderAuto, i.noOrder, i.order && i.order.status, i.ncfExpiry, i.supplier, i.number, i.rnc, i.date, i.amount, i.itbis, i.currency, i.concept, i.ref, i.projectId, i.projectHint, i.ai, i.notInvoice, i.pay && i.pay.id, i.pay && i.pay.status, i.dup, i.fiscal, i.xmlId, i.fileId, i.origFileId, i.abonado, i.pages, (i.extraPages || []).length, i.buyerRnc, i.condOverOk, i.condRefsOk, i.qtyOk, i.estOk, i.due, i.sup && [i.sup.id, i.sup.name, i.sup.creditDays, i.sup.bank, i.sup.account], orderEst(i.order), (i.conduceRefs || []).join(), (i.order && i.order.items || []).length, (i.conduces || []).map((c) => [c.id, c.number, c.date, c.total, c.material, c.qty, c.ai, c.auto, c.dup]), D ? D.conduces.filter((c) => !c.invoiceId).map((c) => c.id + c.ai).join() : '']); }
+function invSig(i, D) { return JSON.stringify([i.orderId, i.orderAuto, i.noOrder, i.order && i.order.status, i.ncfExpiry, i.supplier, i.number, i.rnc, i.date, i.amount, i.itbis, i.currency, i.concept, i.ref, i.projectId, i.projectHint, i.ai, i.notInvoice, i.pay && i.pay.id, i.pay && i.pay.status, i.dup, i.fiscal, i.xmlId, i.fileId, i.origFileId, i.abonado, i.envio && [i.envio.id, i.envio.date, i.envio.number], i.pages, (i.extraPages || []).length, i.buyerRnc, i.condOverOk, i.condRefsOk, i.qtyOk, i.estOk, i.due, i.sup && [i.sup.id, i.sup.name, i.sup.creditDays, i.sup.bank, i.sup.account], orderEst(i.order), (i.conduceRefs || []).join(), (i.order && i.order.items || []).length, (i.conduces || []).map((c) => [c.id, c.number, c.date, c.total, c.material, c.qty, c.ai, c.auto, c.dup]), D ? D.conduces.filter((c) => !c.invoiceId).map((c) => c.id + c.ai).join() : '']); }
 function openInvoice(id, keepScroll) {
   const D = derive();
   const i = D.invoices.find((x) => x.id === id);
@@ -1058,6 +1073,8 @@ function openInvoice(id, keepScroll) {
   if (!i.order && i.noOrder) msgs.push(`<div class="msg"><span>Marcada como factura que no lleva orden de compra.${edit ? ` <button type="button" class="link" data-act="no-order-undo" data-id="${esc(i.id)}">Deshacer</button>` : ''}</span></div>`);
   if (i.order && i.order.status !== 'autorizada') msgs.push(`<div class="msg warn">${ICON.alert}<span>La orden ${esc(orderNo(i.order))} todavía no tiene la copia firmada y sellada.</span></div>`);
   msgs.push(crossMsgsHTML(i, D, edit));
+  if (i.envio) msgs.push(`<div class="msg">${ICON.check}<span>Se le mandó a la digitadora el ${esc(fmtDate(i.envio.date))}, ${esc(ENVIO_LABEL[i.envio.method] || '')}${i.envio.to ? ', a ' + esc(i.envio.to) : ''}. <button type="button" class="link" data-act="envio-view" data-id="${esc(i.envio.id)}">Ver envío ${esc(String(i.envio.number || ''))}</button>${edit ? ` <button type="button" class="link" data-act="digi-undo-one" data-id="${esc(i.id)}">No se la mandé</button>` : ''}</span></div>`);
+  else if (!i.notInvoice) msgs.push(`<div class="msg"><span>Todavía no se la has mandado a la digitadora.${edit ? ` <button type="button" class="link" data-act="digi-open">Mandar</button> <button type="button" class="link" data-act="digi-one" data-id="${esc(i.id)}">Ya se la mandé</button>` : ''}</span></div>`);
   if (i.sup) {
     const di = dueInfo(i);
     const cred = isNum(i.sup.creditDays) && i.sup.creditDays > 0 ? `crédito de ${i.sup.creditDays} días${i.due ? ', vence el ' + esc(fmtDate(i.due)) : ''}` : 'de contado';
@@ -2205,7 +2222,7 @@ const ATT_E = [['ok', '✓'], ['t', 'T'], ['x', 'x']];
 const ATT_P = [['ok', '✓'], ['x', 'x']];
 const ATT_S = [['ok', '✓'], ['c', 'C'], ['cc', '1½'], ['x', 'x']];
 const ATT_SHOW = { ok: '✓', t: 'T', x: 'x', c: 'C', cc: '1½' };
-const ATT_RULES = { late: 0, surpriseMiss: 0, leftEarly: 0.5, corrido: 1, corridoFull: 1.5, saturday: 1, sunday: 1 };
+const ATT_RULES = { late: 0.5, surpriseMiss: 0, leftEarly: 0.5, corrido: 1, corridoFull: 1.5, saturday: 0.5, sunday: 1 };
 const ROLES = ['Ayudante', 'Terminador', 'Albañil', 'Maestro', 'Carpintero', 'Varillero', 'Plomero', 'Electricista', 'Pintor', 'Ceramista', 'Soldador', 'Operador', 'Chofer', 'Sereno'];
 const attRules = () => ({ ...ATT_RULES, ...(S.attRules || {}) });
 function addDays(iso, n) { const d = ymd(iso); if (!d) return iso; d.setDate(d.getDate() + n); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
@@ -2473,7 +2490,7 @@ function openAttRules() {
 }
 async function saveAttRules() {
   const g = (id) => Number($(id).value);
-  const data = { late: g('#ar-late'), surpriseMiss: g('#ar-sm'), leftEarly: g('#ar-le'), corrido: g('#ar-c'), corridoFull: g('#ar-cc'), saturday: g('#ar-sat'), sunday: g('#ar-sun'), updatedAt: new Date().toISOString() };
+  const data = { late: g('#ar-late'), surpriseMiss: g('#ar-sm'), leftEarly: g('#ar-le'), corrido: g('#ar-c'), corridoFull: g('#ar-cc'), saturday: g('#ar-sat'), sunday: g('#ar-sun'), rev: 2, updatedAt: new Date().toISOString() };
   if (await write(() => db.doc('settings/asistencia').set(data), 'Reglas guardadas')) { S.attRules = data; closeSheet(); renderAll(); }
 }
 // Excel de la quincena: la planilla con las marcas y el resumen para pagar.
@@ -3060,6 +3077,177 @@ async function removeAbono(invId, k) {
   const raw = S.invoices.find((x) => x.id === invId);
   if (!raw || !raw.abonos || !raw.abonos[k]) return;
   if (await write(() => db.doc('invoices/' + invId).update({ abonos: raw.abonos.filter((_, j) => j !== k) }), 'Abono quitado')) refreshAbonos(invId);
+}
+
+/* ---------- envíos a la digitadora ---------- */
+// Cada envío guarda qué facturas se mandaron, cuándo y cómo; así cada factura sabe si ya se mandó.
+const ENVIO_LABEL = { archivo: 'en PDF', papel: 'en papel', manual: 'marcada a mano' };
+const digiName = () => String((S.digi && S.digi.name) || '').trim();
+const pendingDigi = (D) => D.invoices.filter((i) => !i.envio && !i.notInvoice).sort(sortByDateDesc);
+function nextEnvioNumber() { return S.envios.reduce((m, e) => Math.max(m, Number(e.number) || 0), 0) + 1; }
+function openDigi() {
+  const D = derive();
+  const pend = pendingDigi(D);
+  const edit = canEdit();
+  const groups = groupByProject(pend, D);
+  const row = (i, k) => `<label class="pick-row"><input type="checkbox" data-digi="inv" data-g="${k}" value="${esc(i.id)}" checked><span class="pr-name"><span>${esc(i.supplier || 'Factura sin datos')}</span><small>${esc([i.number ? 'NCF ' + RD.normNcf(i.number) : 'sin NCF', fmtDate(i.date)].filter(Boolean).join(' · '))}</small></span><span class="num">${esc(money(i.amount, i.currency))}</span></label>`;
+  const list = pend.length ? groups.map((g, k) => `<div class="pick-group"><label class="pick-row head"><input type="checkbox" data-digi="group" data-g="${k}" checked><span class="pr-name"><span>${esc(g.name)}</span><small>${plural(g.items.length, 'factura', 'facturas')}</small></span><span class="num">${esc(totalStr(g.items))}</span></label>${g.items.map((i) => row(i, k)).join('')}</div>`).join('') : '<div class="empty"><p>No hay facturas por mandar. Las nuevas salen aquí hasta que se las mandes.</p></div>';
+  const envs = [...D.envios].sort((a, b) => (Number(b.number) || 0) - (Number(a.number) || 0)).slice(0, 12);
+  const hist = envs.map((e) => `<div class="o-inv"><button type="button" class="link" data-act="envio-view" data-id="${esc(e.id)}">Envío ${esc(String(e.number || ''))} · ${esc(fmtDate(e.date))} · ${plural((e.invoiceIds || []).length, 'factura', 'facturas')} · ${esc(ENVIO_LABEL[e.method] || '')}${e.to ? ' · a ' + esc(e.to) : ''}</button>${edit ? `<button type="button" class="btn ghost sm" data-act="envio-undo" data-id="${esc(e.id)}">Deshacer</button>` : ''}</div>`).join('');
+  openSheet(`${sheetHead('Mandar a la digitadora')}<div class="sheet-b">
+    <div class="field"><label for="digi-name">Digitadora</label><input id="digi-name" maxlength="60" placeholder="Nombre (opcional)" value="${esc(digiName())}"${edit ? '' : ' disabled'}></div>
+    <p class="hint">Elige las facturas y mándalas en PDF (por WhatsApp o correo) o en papel con una lista para que firme de recibido. Cada factura queda marcada con la fecha en que se mandó, y deja de salir aquí.${!D.envios.length && pend.length ? ' Si algunas ya se las habías mandado antes de tener esto, márcalas y toca «Ya se las mandé».' : ''}</p>
+    ${pend.length > 1 ? `<label class="check-row"><input type="checkbox" id="digi-all" checked><span>Todas (${pend.length})</span></label>` : ''}
+    ${list}
+    ${hist ? `<h3 class="h2">Envíos anteriores</h3><div class="list">${hist}</div>` : ''}
+  </div>${edit && pend.length ? `<div class="sheet-f"><span class="grow" id="digi-sum">${plural(pend.length, 'factura', 'facturas')}</span><button type="button" class="btn primary" data-act="digi-pdf">${ICON.share} Mandar en PDF</button><button type="button" class="btn" data-act="digi-paper">Lista en papel</button><button type="button" class="btn ghost" data-act="digi-mark">Ya se las mandé</button></div>` : ''}`, { type: 'digi', id: 'digi' });
+}
+const digiChecked = () => $$('#sheet-root input[data-digi="inv"]').filter((b) => b.checked).map((b) => b.value);
+function syncDigi() {
+  const boxes = $$('#sheet-root input[data-digi="inv"]');
+  const on = boxes.filter((b) => b.checked).length;
+  for (const g of $$('#sheet-root input[data-digi="group"]')) {
+    const kids = boxes.filter((b) => b.dataset.g === g.dataset.g);
+    const n = kids.filter((b) => b.checked).length;
+    g.checked = n === kids.length && n > 0;
+    g.indeterminate = n > 0 && n < kids.length;
+  }
+  const all = $('#digi-all');
+  if (all) { all.checked = on === boxes.length; all.indeterminate = on > 0 && on < boxes.length; }
+  const s = $('#digi-sum');
+  if (s) s.textContent = on ? plural(on, 'factura', 'facturas') : 'Ninguna elegida';
+  for (const b of $$('[data-act="digi-pdf"], [data-act="digi-paper"], [data-act="digi-mark"]')) b.disabled = !on;
+}
+// PDF para la digitadora: la lista de las facturas (con firma de recibido) y, si va en PDF, cada factura detrás.
+async function buildDigiPdf(invs, number, withFiles, rep = {}) {
+  const { PDFDocument, StandardFonts, rgb } = await pdflib();
+  const out = await PDFDocument.create();
+  const font = await out.embedFont(StandardFonts.Helvetica);
+  const bold = await out.embedFont(StandardFonts.HelveticaBold);
+  out.setTitle(pdfSafe(`Facturas para digitar - envío ${number}`));
+  out.setCreator(PDF_CREATOR);
+  const st = S.settings || {};
+  const W = 612, H = 792, M = 42;
+  const C = { ink: rgb(0.08, 0.11, 0.16), grey: rgb(0.38, 0.42, 0.48), line: rgb(0.84, 0.86, 0.9), band: rgb(0.94, 0.95, 0.97), accent: rgb(0.13, 0.26, 0.75) };
+  let page, y;
+  const T = (s, x, yy, size, f = font, color = C.ink) => page.drawText(pdfSafe(s), { x, y: yy, size, font: f, color });
+  const R = (s, xr, yy, size, f = font, color = C.ink) => { const t = pdfSafe(s); page.drawText(t, { x: xr - f.widthOfTextAtSize(t, size), y: yy, size, font: f, color }); };
+  const fit = (s, f, size, w) => { let t = pdfSafe(s); if (f.widthOfTextAtSize(t, size) <= w) return t; while (t.length > 1 && f.widthOfTextAtSize(t + '…', size) > w) t = t.slice(0, -1); return t + '…'; };
+  const newPage = () => { page = out.addPage([W, H]); y = H - M; };
+  const cols = [{ k: '#', x: M + 2, w: 14 }, { k: 'Proyecto', x: M + 18, w: 70 }, { k: 'Proveedor', x: M + 92, w: 108 }, { k: 'RNC', x: M + 204, w: 54 }, { k: 'NCF', x: M + 262, w: 66 }, { k: 'Fecha', x: M + 332, w: 46 }, { k: 'ITBIS', xr: M + 444, w: 60 }, { k: 'Total', xr: W - M - 2, w: 76 }];
+  const head = () => { page.drawRectangle({ x: M, y: y - 6, width: W - 2 * M, height: 19, color: C.band }); cols.forEach((c) => (c.xr ? R(c.k, c.xr, y, 8, bold, C.grey) : T(c.k, c.x, y, 8, bold, C.grey))); y -= 21; };
+  newPage();
+  if (st.company) { T(fit(st.company, bold, 11, W - 2 * M - 180), M, y - 8, 11, bold); if (st.companyRnc) T('RNC ' + RD.fmtRnc(st.companyRnc), M, y - 21, 9, font, C.grey); }
+  R('FACTURAS PARA DIGITAR', W - M, y - 8, 9, bold, C.accent);
+  y -= 56;
+  T(`Envío ${number}`, M, y, 22, bold); y -= 20;
+  T([`Fecha: ${fmtDate(todayISO())}`, digiName() ? 'Para: ' + digiName() : '', st.preparedBy ? 'Entrega: ' + st.preparedBy : '', plural(invs.length, 'factura', 'facturas')].filter(Boolean).join('   ·   '), M, y, 9, font, C.grey); y -= 30;
+  head();
+  invs.forEach((i, n) => {
+    if (y < M + 40) { newPage(); head(); }
+    const vals = [String(n + 1), i.project ? i.project.name : 'Sin proyecto', i.supplier || 'Sin nombre', RD.normRnc(i.rnc) || '-', RD.normNcf(i.number) || '-', fmtDmy(i.date) || '-', isNum(i.itbis) ? money(i.itbis, i.currency) : '-', money(i.amount, i.currency)];
+    cols.forEach((c, k) => { const t = fit(vals[k], font, 8, c.w); if (c.xr) R(t, c.xr, y, 8); else T(t, c.x, y, 8); });
+    y -= 7; page.drawLine({ start: { x: M, y }, end: { x: W - M, y }, thickness: 0.5, color: C.line }); y -= 12;
+  });
+  if (y < M + 110) newPage();
+  y -= 8;
+  // Un renglón para cada total, alineados a la derecha: así no se montan aunque haya pesos y dólares.
+  R(`Total  ${totalStr(invs)}`, W - M - 2, y, 10, bold);
+  y -= 14;
+  R(`ITBIS  ${totalStr(invs, 'itbis')}`, W - M - 2, y, 9, font, C.grey);
+  y -= 80;
+  const sw = (W - 2 * M - 40) / 2;
+  [['Entregó', st.preparedBy || ''], ['Recibió (nombre y fecha)', digiName()]].forEach(([lbl, who], k) => {
+    const x = M + k * (sw + 40);
+    page.drawLine({ start: { x, y }, end: { x: x + sw, y }, thickness: 0.8, color: C.ink });
+    T(lbl, x, y - 13, 9, bold, C.grey);
+    if (who) T(fit(who, font, 9, sw), x, y - 25, 9);
+  });
+  if (!withFiles) return out.save();
+  for (const [n, i] of invs.entries()) {
+    const label = `${n + 1} de ${invs.length} · ${i.supplier || 'Sin nombre'}${i.number ? ' · NCF ' + RD.normNcf(i.number) : ''} · ${money(i.amount, i.currency)}`;
+    for (const f of [{ fileId: i.fileId, fileType: i.fileType }, ...(i.extraPages || [])]) {
+      if (!f.fileId) continue;
+      try {
+        if (f.fileType === 'application/xml') continue;
+        const b = await (await getBlob(f.fileId)).arrayBuffer();
+        if (f.fileType === 'application/pdf') { const src = await PDFDocument.load(b, { ignoreEncryption: true }); (await out.copyPages(src, src.getPageIndices())).forEach((p) => out.addPage(p)); continue; }
+        const img = isPng(b) ? await out.embedPng(b) : await out.embedJpg(b);
+        newPage();
+        T(fit(label, font, 8.5, W - 2 * M), M, H - M + 12, 8.5, font, C.grey);
+        const bw = W - 2 * M, bh = H - 2 * M - 8, s = Math.min(bw / img.width, bh / img.height);
+        page.drawImage(img, { x: M + (bw - img.width * s) / 2, y: M + (bh - img.height * s), width: img.width * s, height: img.height * s });
+      } catch (e) { console.warn('PDF digitadora', e); (rep.missing = rep.missing || new Set()).add(i.supplier || i.fileName || 'Sin nombre'); }
+    }
+  }
+  return out.save();
+}
+async function digiSend(method, btn) {
+  const ids = digiChecked();
+  if (!ids.length) return;
+  const D = derive();
+  const invs = ids.map((id) => D.invoices.find((i) => i.id === id)).filter(Boolean);
+  const number = nextEnvioNumber();
+  if (method === 'manual') { btn.disabled = true; if (!(await saveEnvio(ids, 'manual', number))) btn.disabled = false; return; }
+  const label = btn.innerHTML;
+  btn.disabled = true;
+  btn.textContent = 'Preparando…';
+  try {
+    const rep = {};
+    const bytes = await buildDigiPdf(invs, number, method === 'archivo', rep);
+    const miss = rep.missing ? [...rep.missing] : [];
+    S.envioPending = { ids, method, number };
+    deliverFile(new Blob([bytes], { type: 'application/pdf' }), fileSafe(`Facturas para digitar - envío ${number} - ${plural(invs.length, 'factura', 'facturas')}`) + '.pdf');
+    // Se marca cuando se confirma que se mandó, no antes: así no queda marcada una que no salió.
+    const b = $('.sheet-b');
+    if (b && miss.length) b.insertAdjacentHTML('beforeend', `<div class="msg warn">${ICON.alert}<span>No se pudo poner en el PDF el archivo de ${esc(miss.join(', '))}; va solo en la lista. Mándaselo aparte.</span></div>`);
+    if (b) b.insertAdjacentHTML('beforeend', `<div class="msg hint" id="envio-confirm"><span>${method === 'papel' ? 'Imprímela y entrégala con las facturas. Cuando se las entregues' : 'Cuando se lo mandes'}, toca aquí para que queden marcadas:</span><button type="button" class="btn primary sm" data-act="envio-ok">Ya se las ${method === 'papel' ? 'entregué' : 'mandé'}: marcar ${plural(ids.length, 'factura', 'facturas')}</button></div>`);
+    if (S.ready) S.ready.onDone = () => { const c = $('#envio-confirm'); if (c) { c.classList.add('pulse'); c.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } };
+  } catch (e) {
+    console.error(e);
+    toast('No se pudo preparar el PDF. Intenta de nuevo.');
+    btn.innerHTML = label;
+    btn.disabled = false;
+  }
+}
+async function saveEnvio(ids, method, number) {
+  const D = derive();
+  const fresh = ids.filter((id) => { const i = D.invoices.find((x) => x.id === id); return i && !i.envio; });
+  if (!fresh.length) { toast('Esas facturas ya estaban marcadas como enviadas.'); closeSheet(); return true; }
+  const ok = await write(() => db.collection('envios').doc().set({ number: number || nextEnvioNumber(), date: todayISO(), method, to: digiName(), invoiceIds: fresh, createdAt: new Date().toISOString() }), `Listo: ${plural(fresh.length, 'factura marcada', 'facturas marcadas')} como ${method === 'papel' ? 'entregadas' : 'enviadas'}`);
+  if (ok) { S.envioPending = null; closeSheet(); }
+  return ok;
+}
+async function digiOne(invId, btn) {
+  const i = derive().invoices.find((x) => x.id === invId);
+  if (!i || i.envio) return;
+  if (btn) btn.disabled = true;
+  if (await write(() => db.collection('envios').doc().set({ number: nextEnvioNumber(), date: todayISO(), method: 'manual', to: digiName(), invoiceIds: [invId], createdAt: new Date().toISOString() }), 'Marcada como enviada a la digitadora')) scheduleRender();
+  else if (btn) btn.disabled = false;
+}
+async function digiUndoOne(invId) {
+  const e = S.envios.find((x) => (x.invoiceIds || []).includes(invId));
+  if (!e) return;
+  const left = (e.invoiceIds || []).filter((x) => x !== invId);
+  await write(() => (left.length ? db.doc('envios/' + e.id).update({ invoiceIds: left }) : db.doc('envios/' + e.id).delete()), 'Quitada del envío: sale otra vez como por mandar');
+}
+function openEnvio(id) {
+  const D = derive();
+  const e = D.envios.find((x) => x.id === id);
+  if (!e) return;
+  const invs = (e.invoiceIds || []).map((x) => D.invoices.find((i) => i.id === x)).filter(Boolean);
+  openSheet(`${sheetHead('Envío ' + esc(String(e.number || '')))}<div class="sheet-b">
+    <p class="hint">${esc(fmtDate(e.date))} · ${esc(ENVIO_LABEL[e.method] || '')}${e.to ? ' · a ' + esc(e.to) : ''} · ${plural(invs.length, 'factura', 'facturas')} · ${esc(totalStr(invs))}</p>
+    <div class="list">${invs.map((i) => cardHTML(i, D)).join('') || '<p class="hint">Las facturas de este envío ya no están.</p>'}</div>
+  </div><div class="sheet-f">${invs.length ? `<button type="button" class="btn" data-act="envio-pdf" data-id="${esc(e.id)}">${ICON.down} Sacar el PDF otra vez</button>` : ''}<button type="button" class="btn ghost" data-act="digi-open">Todos los envíos</button></div>`, { type: 'envio', id: e.id });
+}
+async function envioPdfAgain(id) {
+  const D = derive();
+  const e = D.envios.find((x) => x.id === id);
+  if (!e) return;
+  const invs = (e.invoiceIds || []).map((x) => D.invoices.find((i) => i.id === x)).filter(Boolean);
+  try { deliverFile(new Blob([await buildDigiPdf(invs, e.number, e.method !== 'papel')], { type: 'application/pdf' }), fileSafe(`Facturas para digitar - envío ${e.number}`) + '.pdf'); }
+  catch (er) { console.error(er); toast('No se pudo preparar el PDF.'); }
 }
 
 async function createPayment(name, date, ids) {
@@ -3909,6 +4097,7 @@ function invoicesWorkbook({ heading, scope, invs, D, isPayment }) {
     { k: 'Avisos', w: 32, v: (i) => { const f = reviewFlags(i, D); return f.length ? { v: f.join('; '), s: XS.warn } : { v: '' }; } },
     { k: 'Verificar en la DGII', w: 17, v: (i) => (RD.isDgiiUrl(i.qrUrl) && i.qrUrl.length < 250 && !/"/.test(i.qrUrl) ? { f: `HYPERLINK("${i.qrUrl}","Verificar")`, v: 'Verificar', s: XS.link } : { v: '' }) },
     { k: 'Agregada', w: 11, v: (i) => Dt(i.createdAt) },
+    { k: 'Mandada a digitar', w: 14, v: (i) => Dt(i.envio ? i.envio.date : '') },
   ];
   addSheet('Facturas', facturaCols, list, { fitWidth: 3, titleCols: 5, countKey: 'Proyecto', countAt: '#', curKey: multi ? 'Moneda' : null, curOf: (i) => normCur(i.currency) });
 
@@ -4109,6 +4298,20 @@ function onClick(e) {
     case 'cond-link': linkConduce(id, t.dataset.inv); break;
     case 'inv-to-cond': invoiceToConduce(id); break;
     case 'inv-to-page': openPagePick(id); break;
+    case 'digi-open': closeSheet(); openDigi(); break;
+    case 'digi-pdf': digiSend('archivo', t); break;
+    case 'digi-paper': digiSend('papel', t); break;
+    case 'digi-mark': digiSend('manual', t); break;
+    case 'envio-ok': if (S.envioPending) { t.disabled = true; saveEnvio(S.envioPending.ids, S.envioPending.method, S.envioPending.number).then((ok) => { if (!ok) t.disabled = false; }); } break;
+    case 'envio-view': openEnvio(id); break;
+    case 'envio-undo':
+      // Dos toques: deshacer un envío hace que sus facturas salgan otra vez como por mandar.
+      if (t.dataset.armed !== '1') { t.dataset.armed = '1'; t.textContent = '¿Deshacer? Toca otra vez'; t.classList.add('danger'); setTimeout(() => { if (t.isConnected) { t.dataset.armed = ''; t.textContent = 'Deshacer'; t.classList.remove('danger'); } }, 4000); break; }
+      write(() => db.doc('envios/' + id).delete(), 'Envío deshecho: sus facturas salen otra vez como por mandar').then((ok) => { if (ok) { closeSheet(); setTimeout(openDigi, 250); } });
+      break;
+    case 'envio-pdf': envioPdfAgain(id); break;
+    case 'digi-one': digiOne(id, t); break;
+    case 'digi-undo-one': digiUndoOne(id); break;
     case 'ab-add': addAbono(id); break;
     case 'ab-rm': removeAbono(id, Number(t.dataset.k)); break;
     case 'crop-open': openCrop(id); break;
@@ -4259,6 +4462,10 @@ function onChange(e) {
       for (const o of derive().orders) { const it = (o.items || []).find((x) => x.unit && norm(x.desc) === k); if (it) { u.value = it.unit; break; } }
     }
   }
+  if (t.id === 'digi-all') { for (const b of $$('#sheet-root input[data-digi="inv"]')) b.checked = t.checked; syncDigi(); }
+  if (t.dataset && t.dataset.digi === 'group') { for (const b of $$(`#sheet-root input[data-digi="inv"][data-g="${t.dataset.g}"]`)) b.checked = t.checked; syncDigi(); }
+  if (t.dataset && t.dataset.digi === 'inv') syncDigi();
+  if (t.id === 'digi-name' && canEdit()) write(() => db.doc('settings/digitacion').set({ ...(S.digi || {}), name: t.value.trim().slice(0, 60), updatedAt: new Date().toISOString() }), 'Guardado');
   if (t.dataset && t.dataset.pick === 'group') { for (const b of $$(`#sheet-root input[data-pick="inv"][data-g="${t.dataset.g}"]`)) b.checked = t.checked; syncPicker(); } else if (t.dataset && t.dataset.pick === 'inv') syncPicker();
   if ((t.id === 'pd-name' || t.id === 'pd-date') && S.paymentId) {
     const v = t.value.trim();
@@ -4384,8 +4591,9 @@ function registerSW() {
 function subscribe() {
   db.doc('settings/general').onSnapshot((snap) => { S.settings = (snap.exists && snap.data()) || {}; scheduleRender(); }, (err) => console.warn(err));
   db.doc('settings/asistencia').onSnapshot((snap) => { S.attRules = (snap.exists && snap.data()) || {}; scheduleRender(); }, (err) => console.warn(err));
-  const done = () => { if (S.got.projects && S.got.invoices && S.got.payments && S.got.orders && S.got.conduces && S.got.workers && S.got.asistencia && S.got.suppliers && S.dbState === 'loading') { S.dbState = 'ready'; setTimeout(retryOffline, 1500); setTimeout(() => { fixCreditSigns().catch((e) => console.warn(e)); }, 2500); } };
-  for (const name of ['projects', 'invoices', 'payments', 'orders', 'conduces', 'workers', 'asistencia', 'suppliers']) {
+  db.doc('settings/digitacion').onSnapshot((snap) => { S.digi = (snap.exists && snap.data()) || {}; scheduleRender(); }, (err) => console.warn(err));
+  const done = () => { if (S.got.projects && S.got.invoices && S.got.payments && S.got.orders && S.got.conduces && S.got.workers && S.got.asistencia && S.got.suppliers && S.got.envios && S.dbState === 'loading') { S.dbState = 'ready'; setTimeout(retryOffline, 1500); setTimeout(() => { fixCreditSigns().catch((e) => console.warn(e)); fixAttRules().catch((e) => console.warn(e)); }, 2500); } };
+  for (const name of ['projects', 'invoices', 'payments', 'orders', 'conduces', 'workers', 'asistencia', 'suppliers', 'envios']) {
     db.collection(name).onSnapshot((snap) => {
       S[name] = snap.docs.map((d) => ({ ...d.data(), id: d.id }));
       S.got[name] = true;
