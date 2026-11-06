@@ -10,7 +10,7 @@ const LIB = {
   qrgen: 'js/qr.js',
 };
 const PDF_CREATOR = 'Facturas de Proyectos';
-const APP_VERSION = '1.9.0';
+const APP_VERSION = '1.10.0';
 const SVG = (d) => `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ICON = {
   plus: SVG('<path d="M12 5v14M5 12h14"/>'),
@@ -190,11 +190,13 @@ function derive() {
   for (const c of conduces) if (c.invoiceId) { const a = condByInv.get(c.invoiceId) || []; a.push(c); condByInv.set(c.invoiceId, a); }
   const invoices = S.invoices.map((i) => {
     const pay = payOf.get(i.id) || null;
-    const status = !pay ? 'pendiente' : pay.status === 'pagado' ? 'pagada' : pay.status === 'presentado' ? 'presentada' : 'enpago';
+    const abonado = round2((i.abonos || []).reduce((t, a) => t + (isNum(a.amount) ? a.amount : 0), 0));
+    const toPay = isNum(i.amount) ? round2(i.amount - abonado) : i.amount;
+    const status = !pay ? (abonado > 0 && isNum(i.amount) && toPay <= 0.005 ? 'pagada' : 'pendiente') : pay.status === 'pagado' ? 'pagada' : pay.status === 'presentado' ? 'presentada' : 'enpago';
     let aiSt = i.ai || 'off';
     if (aiSt === 'pending' && !S.queue.some((q) => q.invId === i.id && !q.done) && !aiBusy(i.id) && now - (Date.parse(i.createdAt) || 0) > 120000) aiSt = 'failed';
     const k = dupKey(i);
-    return { ...i, ai: aiSt, pay, status, project: projById.get(i.projectId) || null, order: orderById.get(i.orderId) || null, dup: k ? dups.get(k) > 1 : false, conduces: condByInv.get(i.id) || [], ...(() => { const sp = supFor(i); return { sup: sp, due: sp && isNum(sp.creditDays) && sp.creditDays > 0 && ymd(i.date) ? addDays(i.date, sp.creditDays) : '' }; })() };
+    return { ...i, ai: aiSt, pay, status, abonado, toPay, project: projById.get(i.projectId) || null, order: orderById.get(i.orderId) || null, dup: k ? dups.get(k) > 1 : false, conduces: condByInv.get(i.id) || [], ...(() => { const sp = supFor(i); return { sup: sp, due: sp && isNum(sp.creditDays) && sp.creditDays > 0 && ymd(i.date) ? addDays(i.date, sp.creditDays) : '' }; })() };
   });
   const invByOrder = new Map();
   const namesByRnc = new Map();
@@ -748,6 +750,7 @@ function cardHTML(i, D, opts = {}) {
   }
   const nc = (i.conduces || []).length;
   if (nc) tags.push(`<span class="pill cond">${nc === 1 ? (i.conduces[0].number ? 'Conduce <b>' + esc(i.conduces[0].number) + '</b>' : 'Conduce') : nc + ' conduces'}</span>`);
+  if (i.abonado > 0 && i.status !== 'pagada') tags.push(`<span class="pill pendiente">Balance ${esc(money(i.toPay, i.currency))}</span>`);
   const di = dueInfo(i);
   if (di && (di.overdue || di.days <= 7)) tags.push(`<span class="pill ${di.overdue ? 'warn' : 'pendiente'}">${dueText(di)}</span>`);
   for (const r of reviewFlags(i, D)) tags.push(`<span class="pill warn">${esc(r)}</span>`);
@@ -795,7 +798,7 @@ function renderFacturas(D) {
     const canMake = !S.focus && S.filter === 'pendientes' && list.length && canEdit();
     const acts = (list.length ? `<button type="button" class="btn sm" data-act="list-xlsx">${ICON.sheet} Excel</button>` : '') + (canMake ? `<button type="button" class="btn sm" data-act="new-pay-from">Armar pago con estas ${ICON.right}</button>` : '');
     const focusLine = S.focus ? `<div class="focus-line"><span class="grow">Mostrando: <b>${FOCUS_LABEL[S.focus] || FOCUS_LABEL.sinorden}</b></span><button type="button" class="btn sm" data-act="focus-off">Ver todas</button></div>` : '';
-    sum.innerHTML = `${focusLine}<div class="sumline"><span>${plural(list.length, 'factura', 'facturas')} · <b class="mono">${esc(totalStr(list))}</b></span>${acts ? `<span class="acts">${acts}</span>` : ''}</div>`;
+    sum.innerHTML = `${focusLine}<div class="sumline"><span>${plural(list.length, 'factura', 'facturas')} · <b class="mono">${esc(totalStr(list, 'toPay'))}</b></span>${acts ? `<span class="acts">${acts}</span>` : ''}</div>`;
   } else sum.innerHTML = '';
 
   const el = $('#f-list');
@@ -816,7 +819,7 @@ function renderFacturas(D) {
   const cards = (items, key) => (items.length <= LIM || S.showAll.has(key) ? items : items.slice(0, LIM)).map((i) => cardHTML(i, D, { hideProject: true })).join('')
     + (items.length > LIM && !S.showAll.has(key) ? `<button type="button" class="btn sm more" data-act="more" data-k="${esc(key)}">Ver ${items.length - LIM} más</button>` : '');
   if (S.projectFilter === 'all') {
-    el.innerHTML = groupByProject(list, D).map((g) => `<section class="group"><h2 class="group-h">${g.color ? `<i class="dot" style="--c:${g.color}"></i>` : '<i class="dot ring"></i>'}<span class="gname">${esc(g.name)}</span><span class="gmeta">${g.items.length} · ${esc(totalStr(g.items))}</span></h2><div class="list">${cards(g.items, g.id)}</div></section>`).join('');
+    el.innerHTML = groupByProject(list, D).map((g) => `<section class="group"><h2 class="group-h">${g.color ? `<i class="dot" style="--c:${g.color}"></i>` : '<i class="dot ring"></i>'}<span class="gname">${esc(g.name)}</span><span class="gmeta">${g.items.length} · ${esc(totalStr(g.items, 'toPay'))}</span></h2><div class="list">${cards(g.items, g.id)}</div></section>`).join('');
   } else {
     el.innerHTML = `<div class="list">${cards(list, 'p:' + S.projectFilter)}</div>`;
   }
@@ -851,7 +854,7 @@ function renderTodo(D) {
   if (soon.length) rows.push(row(soon.length, `${plural(soon.length, 'factura vence', 'facturas vencen')} esta semana · <b class="mono">${esc(totalStr(soon))}</b>`, b('focus', 'Ver', ' data-f="porvencer"')));
   if (toSign.length) rows.push(row(toSign.length, plural(toSign.length, 'orden por firmar', 'órdenes por firmar'), b('go-orders', 'Ver', ' data-f="porfirmar"')));
   if (waiting.length) rows.push(row(waiting.length, plural(waiting.length, 'orden firmada esperando factura', 'órdenes firmadas esperando factura'), b('go-orders', 'Ver', ' data-f="sinfactura"')));
-  if (ready.length) rows.push(row(ready.length, `${plural(ready.length, 'factura lista', 'facturas listas')} para pagar · <b class="mono">${esc(totalStr(ready))}</b>`, b('pay-ready', 'Armar pago', '', ' primary'), 'ok'));
+  if (ready.length) rows.push(row(ready.length, `${plural(ready.length, 'factura lista', 'facturas listas')} para pagar · <b class="mono">${esc(totalStr(ready, 'toPay'))}</b>`, b('pay-ready', 'Armar pago', '', ' primary'), 'ok'));
   if (presented.length) rows.push(row(presented.length, plural(presented.length, 'pago presentado, esperando que lo paguen', 'pagos presentados, esperando que los paguen'), b('tab', 'Ver', ' data-tab="pagos"')));
   el.hidden = !rows.length;
   el.innerHTML = rows.length ? `<div class="todo"><h2>Para hacer</h2>${rows.join('')}</div>` : '';
@@ -886,7 +889,7 @@ function renderPagos(D, pay) {
     const invs = payInvoices(p, D);
     const projN = new Set(invs.map((i) => (i.project ? i.project.id : 'none'))).size;
     const st = PAY_LABEL[p.status] ? p.status : 'armando';
-    return `<button type="button" class="pay" data-act="open-pay" data-id="${esc(p.id)}"><span class="pay-name">${esc(p.name || 'Pago')}</span><span class="stamp ${st}">${PAY_LABEL[st]}</span><span class="pay-meta">${[fmtDate(p.date), plural(invs.length, 'factura', 'facturas'), invs.length ? plural(projN, 'proyecto', 'proyectos') : ''].filter(Boolean).join(' · ')}</span><span class="pay-total">${esc(totalStr(invs))}</span></button>`;
+    return `<button type="button" class="pay" data-act="open-pay" data-id="${esc(p.id)}"><span class="pay-name">${esc(p.name || 'Pago')}</span><span class="stamp ${st}">${PAY_LABEL[st]}</span><span class="pay-meta">${[fmtDate(p.date), plural(invs.length, 'factura', 'facturas'), invs.length ? plural(projN, 'proyecto', 'proyectos') : ''].filter(Boolean).join(' · ')}</span><span class="pay-total">${esc(totalStr(invs, 'toPay'))}</span></button>`;
   }).join('')}</div>`;
 }
 
@@ -909,14 +912,14 @@ function renderPayDetail(D, pay) {
   const warnN = invs.filter((i) => reviewFlags(i, D).some((f) => f !== 'Sin orden')).length;
   const noOrd = invs.filter((i) => needsOrder(i, D)).length;
   const unsignedOrd = new Set(invs.filter((i) => i.order && i.order.status !== 'autorizada').map((i) => i.order.id)).size;
-  const listHTML = groups.map((g) => `<section class="group"><h2 class="group-h">${dot(g)}<span class="gname">${esc(g.name)}</span><span class="gmeta">${g.items.length} · ${esc(totalStr(g.items))}</span></h2><div class="list">${g.items.sort(sortByDateDesc).map((i) => (canRemove ? `<div class="rowx">${cardHTML(i, D, { hideProject: true, hideStatus: true })}<button type="button" class="icon-btn" data-act="pay-rm" data-id="${esc(i.id)}" aria-label="Quitar del pago">${ICON.close}</button></div>` : cardHTML(i, D, { hideProject: true, hideStatus: true }))).join('')}</div></section>`).join('');
+  const listHTML = groups.map((g) => `<section class="group"><h2 class="group-h">${dot(g)}<span class="gname">${esc(g.name)}</span><span class="gmeta">${g.items.length} · ${esc(totalStr(g.items, 'toPay'))}</span></h2><div class="list">${g.items.sort(sortByDateDesc).map((i) => (canRemove ? `<div class="rowx">${cardHTML(i, D, { hideProject: true, hideStatus: true })}<button type="button" class="icon-btn" data-act="pay-rm" data-id="${esc(i.id)}" aria-label="Quitar del pago">${ICON.close}</button></div>` : cardHTML(i, D, { hideProject: true, hideStatus: true }))).join('')}</div></section>`).join('');
   $('#pd-body').innerHTML = `
     <ol class="steps" aria-label="Avance del pago"><li class="${stepCls('armando')}">Por presentar</li><li class="${stepCls('presentado')}">Presentado</li><li class="${stepCls('pagado')}">Pagado</li></ol>
-    <div class="bigtotal"><span>Total del pago · ${plural(invs.length, 'factura', 'facturas')}</span><b>${esc(totalStr(invs))}</b><span>ITBIS incluido: ${esc(totalStr(invs, 'itbis'))}</span>${dates ? `<span>${esc(dates)}</span>` : ''}</div>
+    <div class="bigtotal"><span>Total del pago · ${plural(invs.length, 'factura', 'facturas')}</span><b>${esc(totalStr(invs, 'toPay'))}</b><span>ITBIS incluido: ${esc(totalStr(invs, 'itbis'))}</span>${dates ? `<span>${esc(dates)}</span>` : ''}</div>
     ${warnN ? `<div class="msg warn">${ICON.alert}<span>${plural(warnN, 'factura tiene', 'facturas tienen')} algo que revisar antes de presentar (por ejemplo, falta el NCF o es de consumo).</span></div>` : ''}
     ${noOrd || unsignedOrd ? `<div class="msg warn">${ICON.alert}<span>${[noOrd ? plural(noOrd, 'factura no tiene', 'facturas no tienen') + ' orden de compra' : '', unsignedOrd ? plural(unsignedOrd, 'orden no tiene', 'órdenes no tienen') + ' la copia firmada y sellada' : ''].filter(Boolean).join(' y ')}. En el PDF van marcadas.</span></div>` : ''}
     <div class="actions">${pdfBtn}${xlsBtn}${statusBtns.join('')}</div>${undo ? `<div>${undo}</div>` : ''}
-    ${groups.length ? `<div class="card"><h2>Por proyecto</h2><div class="table-wrap"><table class="sum"><thead><tr><th>Proyecto</th><th class="num">Facturas</th><th class="num">ITBIS</th><th class="num">Total</th></tr></thead><tbody>${groups.map((g) => `<tr><td><span class="pname">${dot(g)}${esc(g.name)}</span></td><td class="num">${g.items.length}</td><td class="num">${esc(totalStr(g.items, 'itbis'))}</td><td class="num">${esc(totalStr(g.items))}</td></tr>`).join('')}</tbody><tfoot><tr><td>Total</td><td class="num">${invs.length}</td><td class="num">${esc(totalStr(invs, 'itbis'))}</td><td class="num">${esc(totalStr(invs))}</td></tr></tfoot></table></div></div>` : ''}
+    ${groups.length ? `<div class="card"><h2>Por proyecto</h2><div class="table-wrap"><table class="sum"><thead><tr><th>Proyecto</th><th class="num">Facturas</th><th class="num">ITBIS</th><th class="num">Total</th></tr></thead><tbody>${groups.map((g) => `<tr><td><span class="pname">${dot(g)}${esc(g.name)}</span></td><td class="num">${g.items.length}</td><td class="num">${esc(totalStr(g.items, 'itbis'))}</td><td class="num">${esc(totalStr(g.items, 'toPay'))}</td></tr>`).join('')}</tbody><tfoot><tr><td>Total</td><td class="num">${invs.length}</td><td class="num">${esc(totalStr(invs, 'itbis'))}</td><td class="num">${esc(totalStr(invs, 'toPay'))}</td></tr></tfoot></table></div></div>` : ''}
     <div class="sumline"><span class="h2">Facturas en este pago</span>${edit && st === 'armando' ? `<button type="button" class="btn sm" data-act="pick-more">${ICON.plus} Agregar pendientes</button>` : ''}</div>
     ${invs.length ? listHTML : '<div class="empty"><p>Este pago todavía no tiene facturas.</p></div>'}`;
   if (renderedPayFields !== pay.id) {
@@ -1008,7 +1011,7 @@ function closeSheet() { const root = $('#sheet-root'); root.hidden = true; root.
 function lockBody() { document.body.classList.toggle('locked', !!S.sheet || !$('#viewer').hidden); }
 const sheetHead = (title) => `<div class="sheet-h"><h2>${title}</h2><button type="button" class="icon-btn plain" data-act="sheet-close" aria-label="Cerrar">${ICON.close}</button></div>`;
 
-function invSig(i, D) { return JSON.stringify([i.orderId, i.orderAuto, i.noOrder, i.order && i.order.status, i.ncfExpiry, i.supplier, i.number, i.rnc, i.date, i.amount, i.itbis, i.currency, i.concept, i.ref, i.projectId, i.projectHint, i.ai, i.notInvoice, i.pay && i.pay.id, i.pay && i.pay.status, i.dup, i.fiscal, i.xmlId, i.fileId, i.origFileId, i.pages, (i.extraPages || []).length, i.buyerRnc, i.condOverOk, i.condRefsOk, i.qtyOk, i.estOk, i.due, i.sup && [i.sup.id, i.sup.name, i.sup.creditDays, i.sup.bank, i.sup.account], orderEst(i.order), (i.conduceRefs || []).join(), (i.order && i.order.items || []).length, (i.conduces || []).map((c) => [c.id, c.number, c.date, c.total, c.material, c.qty, c.ai, c.auto, c.dup]), D ? D.conduces.filter((c) => !c.invoiceId).map((c) => c.id + c.ai).join() : '']); }
+function invSig(i, D) { return JSON.stringify([i.orderId, i.orderAuto, i.noOrder, i.order && i.order.status, i.ncfExpiry, i.supplier, i.number, i.rnc, i.date, i.amount, i.itbis, i.currency, i.concept, i.ref, i.projectId, i.projectHint, i.ai, i.notInvoice, i.pay && i.pay.id, i.pay && i.pay.status, i.dup, i.fiscal, i.xmlId, i.fileId, i.origFileId, i.abonado, i.pages, (i.extraPages || []).length, i.buyerRnc, i.condOverOk, i.condRefsOk, i.qtyOk, i.estOk, i.due, i.sup && [i.sup.id, i.sup.name, i.sup.creditDays, i.sup.bank, i.sup.account], orderEst(i.order), (i.conduceRefs || []).join(), (i.order && i.order.items || []).length, (i.conduces || []).map((c) => [c.id, c.number, c.date, c.total, c.material, c.qty, c.ai, c.auto, c.dup]), D ? D.conduces.filter((c) => !c.invoiceId).map((c) => c.id + c.ai).join() : '']); }
 function openInvoice(id, keepScroll) {
   const D = derive();
   const i = D.invoices.find((x) => x.id === id);
@@ -1087,6 +1090,7 @@ function openInvoice(id, keepScroll) {
         <div class="field full"><label for="f-ref">Otra referencia (cubicación, contrato)</label><input id="f-ref" maxlength="60" placeholder="Opcional" value="${esc(i.ref || '')}" ${dis}></div>
       </div>
       ${invCondBoxHTML(i, D, edit)}
+      ${abonosHTML(i, edit)}
       ${delBtn}
       <div id="inv-del-box" hidden><div class="confirm"><p>¿Eliminar esta factura? También se borran sus archivos y se quita del pago donde esté.${(i.conduces || []).length ? ' Sus conduces quedan guardados, esperando factura.' : ''}</p><div class="actions"><button type="button" class="btn danger solid" data-act="inv-del-yes" data-id="${esc(i.id)}">Eliminar factura</button><button type="button" class="btn" data-act="inv-del-no">Cancelar</button></div></div></div>
     </div>
@@ -1224,7 +1228,7 @@ function openPicker(mode, preselect) {
   const groups = groupByProject(pending, D);
   const isNew = mode === 'new';
   const body = pending.length
-    ? groups.map((g, k) => `<div class="pick-group"><label class="pick-row head"><input type="checkbox" data-pick="group" data-g="${k}"><span class="pr-name"><span>${esc(g.name)}</span><small>${plural(g.items.length, 'pendiente', 'pendientes')}</small></span><span class="num">${esc(totalStr(g.items))}</span></label>${g.items.map((i) => `<label class="pick-row"><input type="checkbox" data-pick="inv" data-g="${k}" value="${esc(i.id)}" data-amt="${isNum(i.amount) ? i.amount : ''}" data-cur="${esc(normCur(i.currency))}"${pre.has(i.id) ? ' checked' : ''}><span class="pr-name"><span>${esc(i.supplier || 'Factura sin datos')}</span><small>${esc([i.number ? 'NCF ' + RD.normNcf(i.number) : '', fmtDate(i.date)].filter(Boolean).join(' · '))}</small></span><span class="num">${esc(money(i.amount, i.currency))}</span></label>`).join('')}</div>`).join('')
+    ? groups.map((g, k) => `<div class="pick-group"><label class="pick-row head"><input type="checkbox" data-pick="group" data-g="${k}"><span class="pr-name"><span>${esc(g.name)}</span><small>${plural(g.items.length, 'pendiente', 'pendientes')}</small></span><span class="num">${esc(totalStr(g.items))}</span></label>${g.items.map((i) => `<label class="pick-row"><input type="checkbox" data-pick="inv" data-g="${k}" value="${esc(i.id)}" data-amt="${isNum(i.toPay) ? i.toPay : ''}" data-cur="${esc(normCur(i.currency))}"${pre.has(i.id) ? ' checked' : ''}><span class="pr-name"><span>${esc(i.supplier || 'Factura sin datos')}</span><small>${esc([i.number ? 'NCF ' + RD.normNcf(i.number) : '', fmtDate(i.date)].filter(Boolean).join(' · '))}</small></span><span class="num">${esc(money(i.amount, i.currency))}</span></label>`).join('')}</div>`).join('')
     : '<div class="empty"><p>No tienes facturas pendientes. Primero agrégalas en la pestaña <b>Facturas</b>.</p></div>';
   const fields = isNew ? `<div class="fields"><div class="field"><label for="pk-name">Nombre del pago</label><input id="pk-name" maxlength="80" value="${esc('Pago ' + fmtDate(todayISO()))}"></div><div class="field"><label for="pk-date">Fecha del pago</label><input id="pk-date" type="date" value="${todayISO()}"></div></div>` : '';
   openSheet(`<form id="pick-form" autocomplete="off">${sheetHead(isNew ? 'Nuevo pago' : 'Agregar facturas')}
@@ -3023,6 +3027,41 @@ async function undoCrop(invId) {
   if (await write(() => db.doc('invoices/' + invId).update({ fileId: i.origFileId, fileType: 'image/jpeg', thumbId: null, origFileId: null }), 'Volvió la foto original') && cur !== i.origFileId) assets.delete(cur).catch(() => {});
 }
 
+/* ---------- abonos (pagos parciales) ---------- */
+function abonosHTML(i, edit) {
+  if (!isNum(i.amount) || i.amount <= 0) return '';
+  const list = i.abonos || [];
+  if (!list.length && !edit) return '';
+  const rows = list.map((a, k) => `<div class="ab-row"><span>${esc(fmtDate(a.date) || '')}${a.note ? ' · ' + esc(a.note) : ''}</span><b class="mono">${esc(money(a.amount, i.currency))}</b>${edit ? `<button type="button" class="icon-btn plain" data-act="ab-rm" data-id="${esc(i.id)}" data-k="${k}" aria-label="Quitar abono">${ICON.close}</button>` : ''}</div>`).join('');
+  const sum = list.length ? ` · abonado ${esc(money(i.abonado, i.currency))} · balance ${esc(money(i.toPay, i.currency))}` : '';
+  return `<details class="edit" id="inv-abonos"${list.length ? ' open' : ''}><summary>Abonos${sum}</summary><div class="ab-box">${rows || '<p class="hint">Si a esta factura ya se le pagó una parte (un abono o un avance), anótalo aquí: el pago toma solo el balance.</p>'}${edit && i.toPay > 0 ? `<div class="ab-add"><input type="date" id="ab-date" value="${todayISO()}" aria-label="Fecha del abono"><input id="ab-amt" class="mono" inputmode="decimal" maxlength="16" placeholder="Monto" aria-label="Monto del abono"><input id="ab-note" maxlength="60" placeholder="Nota (cheque, transferencia…)" aria-label="Nota del abono"><button type="button" class="btn sm" data-act="ab-add" data-id="${esc(i.id)}">Anotar abono</button></div>` : ''}</div></details>`;
+}
+function refreshAbonos(invId) {
+  setTimeout(() => {
+    const box = $('#inv-abonos');
+    if (!box || !S.sheet || S.sheet.type !== 'inv' || S.sheet.id !== invId) return;
+    const i = derive().invoices.find((x) => x.id === invId);
+    if (i) box.outerHTML = abonosHTML(i, canEdit());
+  }, 150);
+}
+async function addAbono(invId) {
+  const D = derive();
+  const i = D.invoices.find((x) => x.id === invId);
+  if (!i) return;
+  const amt = parseAmount($('#ab-amt').value);
+  if (!isNum(amt) || amt <= 0) { toast('Escribe el monto del abono.'); return; }
+  if (isNum(i.toPay) && amt > i.toPay + 0.005) { toast(`El abono pasa el balance (${money(i.toPay, i.currency)}).`); return; }
+  const date = $('#ab-date').value;
+  const raw = S.invoices.find((x) => x.id === invId) || i;
+  const list = [...(raw.abonos || []), { date: ymd(date) ? date : todayISO(), amount: round2(amt), note: $('#ab-note').value.trim().slice(0, 60) }];
+  if (await write(() => db.doc('invoices/' + invId).update({ abonos: list }), 'Abono anotado')) refreshAbonos(invId);
+}
+async function removeAbono(invId, k) {
+  const raw = S.invoices.find((x) => x.id === invId);
+  if (!raw || !raw.abonos || !raw.abonos[k]) return;
+  if (await write(() => db.doc('invoices/' + invId).update({ abonos: raw.abonos.filter((_, j) => j !== k) }), 'Abono quitado')) refreshAbonos(invId);
+}
+
 async function createPayment(name, date, ids) {
   const ref = db.collection('payments').doc();
   const ok = await write(() => ref.set({ name: String(name || '').trim().slice(0, 80) || 'Pago ' + fmtDate(todayISO()), date: ymd(date) ? date : todayISO(), status: 'armando', invoiceIds: ids, createdAt: new Date().toISOString() }), 'Pago creado');
@@ -3581,13 +3620,13 @@ async function buildPackage(pay, D, onProgress) {
   T(fit(pay.name || 'Pago', bold, 22, W - 2 * M), M, y, 22, bold); y -= 20;
   T([pay.date ? 'Fecha del pago: ' + fmtDate(pay.date) : '', 'Estado: ' + (PAY_LABEL[pay.status] || 'Por presentar'), 'Generado el ' + fmtDate(todayISO()), st.preparedBy ? 'Elaboró: ' + st.preparedBy : ''].filter(Boolean).join('   ·   '), M, y, 9, font, C.grey); y -= 34;
   T('Total a pagar', M, y, 10, font, C.grey); R(plural(invs.length, 'factura', 'facturas') + ' · ' + plural(groups.length, 'proyecto', 'proyectos') + (condN ? ' · ' + plural(condN, 'conduce', 'conduces') : ''), W - M, y, 10, font, C.grey); y -= 28;
-  T(fit(totalStr(invs), bold, 26, W - 2 * M), M, y, 26, bold); y -= 16;
+  T(fit(totalStr(invs, 'toPay'), bold, 26, W - 2 * M), M, y, 26, bold); y -= 16;
   T('ITBIS incluido: ' + totalStr(invs, 'itbis'), M, y - 2, 9.5, font, C.grey); y -= 12; hr(y, C.ink, 1.2); y -= 28;
 
   T('Por proyecto', M, y, 11.5, bold); y -= 20;
   page.drawRectangle({ x: M, y: y - 6, width: W - 2 * M, height: 19, color: C.band });
   T('Proyecto', M + 6, y, 9, bold, C.grey); R('Facturas', 360, y, 9, bold, C.grey); R('ITBIS', 460, y, 9, bold, C.grey); R('Total', W - M - 6, y, 9, bold, C.grey); y -= 21;
-  for (const g of groups) { ensure(20); T(fit(g.name, font, 10, 260), M + 6, y, 10); R(String(g.items.length), 360, y, 10); R(totalStr(g.items, 'itbis'), 460, y, 10); R(totalStr(g.items), W - M - 6, y, 10, bold); y -= 8; hr(y); y -= 13; }
+  for (const g of groups) { ensure(20); T(fit(g.name, font, 10, 260), M + 6, y, 10); R(String(g.items.length), 360, y, 10); R(totalStr(g.items, 'itbis'), 460, y, 10); R(totalStr(g.items, 'toPay'), W - M - 6, y, 10, bold); y -= 8; hr(y); y -= 13; }
   y -= 18;
 
   // Por proveedor: lo que se le transfiere a cada uno.
@@ -3597,7 +3636,7 @@ async function buildPackage(pay, D, onProgress) {
     const sp = D.supFor(g.items[0]);
     const bank = sp && (sp.bank || sp.account) ? [sp.bank, sp.accountType, sp.account ? 'Cta. ' + sp.account : ''].filter(Boolean).join(' · ') : '';
     ensure(bank ? 30 : 20, supHead);
-    T(fit(g.name || 'Sin nombre', font, 10, 245), M + 6, y, 10); T(g.rnc ? RD.fmtRnc(g.rnc) : '-', 300, y, 10); R(String(g.items.length), 418, y, 10); R(totalStr(g.items), W - M - 6, y, 10, bold);
+    T(fit(g.name || 'Sin nombre', font, 10, 245), M + 6, y, 10); T(g.rnc ? RD.fmtRnc(g.rnc) : '-', 300, y, 10); R(String(g.items.length), 418, y, 10); R(totalStr(g.items, 'toPay'), W - M - 6, y, 10, bold);
     if (bank) { y -= 11; T(fit(bank, font, 8, 380), M + 6, y, 8, font, C.grey); }
     y -= 8; hr(y); y -= 13;
   }
@@ -3612,12 +3651,14 @@ async function buildPackage(pay, D, onProgress) {
   ensure(70); T('Detalle', M, y, 11.5, bold); y -= 20; head();
   invs.forEach((i, n) => {
     ensure(20, head);
-    const vals = [String(n + 1), i.project ? i.project.name : 'Sin proyecto', i.supplier || 'Sin nombre', RD.normRnc(i.rnc) || '-', RD.normNcf(i.number) || '-', i.order ? orderNo(i.order) : !D.orders.length ? '-' : i.noOrder ? 'No lleva' : 'Sin OC', fmtDmy(i.date) || '-', isNum(i.itbis) ? money(i.itbis, i.currency) : '-', money(i.amount, i.currency)];
+    const vals = [String(n + 1), i.project ? i.project.name : 'Sin proyecto', i.supplier || 'Sin nombre', RD.normRnc(i.rnc) || '-', RD.normNcf(i.number) || '-', i.order ? orderNo(i.order) : !D.orders.length ? '-' : i.noOrder ? 'No lleva' : 'Sin OC', fmtDmy(i.date) || '-', isNum(i.itbis) ? money(i.itbis, i.currency) : '-', money(i.toPay, i.currency)];
     cols.forEach((c, k) => { const t = fit(vals[k], font, 8, c.w); if (c.xr) R(t, c.xr, y, 8); else T(t, c.x, y, 8); });
     y -= 7; hr(y, C.line, 0.5); y -= 12;
   });
   ensure(30); y -= 6;
-  T('Total', M + 294, y, 10, bold); R(totalStr(invs, 'itbis'), M + 454, y, 10, bold); R(totalStr(invs), W - M - 2, y, 10, bold);
+  T('Total', M + 294, y, 10, bold); R(totalStr(invs, 'itbis'), M + 454, y, 10, bold); R(totalStr(invs, 'toPay'), W - M - 2, y, 10, bold);
+  const withAb = invs.filter((i) => i.abonado > 0);
+  if (withAb.length) { y -= 16; T(fit('Con abonos (se paga el balance): ' + withAb.map((i) => `${i.supplier || 'Factura'} ${RD.normNcf(i.number)} por ${money(i.amount, i.currency)}, abonado ${money(i.abonado, i.currency)}`).join('; '), font, 8, W - 2 * M), M, y, 8, font, C.grey); }
   y -= 20;
   ensure(110);
   y -= 66;
@@ -3856,6 +3897,10 @@ function invoicesWorkbook({ heading, scope, invs, D, isPayment }) {
     { k: 'Subtotal', w: 15, money: true, raw: subOf, v: (i) => M(subOf(i), i.currency) },
     { k: 'ITBIS', w: 14, money: true, raw: (i) => i.itbis, v: (i) => M(i.itbis, i.currency) },
     { k: 'Total', w: 15, money: true, raw: (i) => i.amount, v: (i) => M(i.amount, i.currency) },
+    ...(list.some((i) => i.abonado > 0) ? [
+      { k: 'Abonado', w: 14, money: true, raw: (i) => i.abonado || null, v: (i) => M(i.abonado || null, i.currency) },
+      { k: 'Por pagar', w: 15, money: true, raw: (i) => i.toPay, v: (i) => M(i.toPay, i.currency) },
+    ] : []),
     ...(multi ? [{ k: 'Moneda', w: 9, v: (i) => ({ v: normCur(i.currency) }) }] : []),
     { k: 'Estado', w: 21, ind: true, v: (i) => ({ v: XL_STATUS[i.status] || '', s: XS.ind }) },
     { k: 'Pago', w: 24, v: (i) => ({ v: i.pay ? i.pay.name || 'Pago' : '' }) },
@@ -3881,7 +3926,7 @@ function invoicesWorkbook({ heading, scope, invs, D, isPayment }) {
     ...(multi ? [{ k: 'Moneda', w: 9, v: (g) => ({ v: g.cur }) }] : []),
     { k: 'Subtotal', w: 16, money: true, raw: (g) => sumF(g.items, subOf), v: (g) => M(sumF(g.items, subOf), g.cur) },
     { k: 'ITBIS', w: 15, money: true, raw: (g) => sumF(g.items, (i) => i.itbis), v: (g) => M(sumF(g.items, (i) => i.itbis), g.cur) },
-    { k: 'Total a pagar', w: 16, money: true, raw: (g) => sumF(g.items, (i) => i.amount), v: (g) => M(sumF(g.items, (i) => i.amount), g.cur) },
+    { k: 'Total a pagar', w: 16, money: true, raw: (g) => sumF(g.items, (i) => i.toPay), v: (g) => M(sumF(g.items, (i) => i.toPay), g.cur) },
   ], sups, { curKey: multi ? 'Moneda' : null, curOf: (g) => g.cur, title: 'Por proveedor' });
 
   // Órdenes de compra de estas facturas y sus artículos.
@@ -4064,6 +4109,8 @@ function onClick(e) {
     case 'cond-link': linkConduce(id, t.dataset.inv); break;
     case 'inv-to-cond': invoiceToConduce(id); break;
     case 'inv-to-page': openPagePick(id); break;
+    case 'ab-add': addAbono(id); break;
+    case 'ab-rm': removeAbono(id, Number(t.dataset.k)); break;
     case 'crop-open': openCrop(id); break;
     case 'crop-rot': rotateCrop(); break;
     case 'crop-all': if (cropState) { cropState.pts = [[0, 0], [1, 0], [1, 1], [0, 1]]; drawCrop(); } break;
@@ -4227,7 +4274,7 @@ function onInput(e) {
   if (S.sheet && S.sheet.type === 'order' && t.closest && t.closest('#order-form') && t.id !== 'o-msg') S.sheet.dirty = true;
   if (t.closest && t.closest('#o-items') && $('#o-est')) $('#o-est').textContent = estText(collectItems());
   if (t.id === 'f-rnc' || t.id === 'f-num') liveHelp(t);
-  if (S.sheet && S.sheet.type === 'inv' && t.closest && t.closest('#inv-form')) S.sheet.dirty = true;
+  if (S.sheet && S.sheet.type === 'inv' && t.closest && t.closest('#inv-form') && !String(t.id || '').startsWith('ab-')) S.sheet.dirty = true;
   if (S.sheet && S.sheet.type === 'cond' && t.closest && t.closest('#cond-form')) S.sheet.dirty = true;
 }
 function onSubmit(e) {

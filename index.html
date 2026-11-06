@@ -378,6 +378,14 @@ details.edit .fields { padding: 12px 14px 14px; }
 .crop-poly { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .crop-poly polygon { fill: rgba(31, 79, 216, .14); stroke: var(--accent); stroke-width: 2; vector-effect: non-scaling-stroke; }
 .crop-h { position: absolute; width: 30px; height: 30px; margin: -15px 0 0 -15px; border-radius: 50%; background: var(--surface); border: 3px solid var(--accent); box-shadow: 0 1px 4px rgba(0, 0, 0, .3); touch-action: none; }
+.ab-box { display: flex; flex-direction: column; gap: 8px; padding: 10px 14px 14px; }
+.ab-row { display: flex; align-items: center; gap: 10px; }
+.ab-row span { flex: 1; min-width: 0; color: var(--muted); font-size: 14px; }
+.ab-row b { font-size: 15px; }
+.ab-add { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.ab-add input { min-width: 0; border: 1px solid var(--line); border-radius: 8px; padding: 9px; background: var(--surface); color: var(--ink); font-size: 15px; }
+.ab-add #ab-note { grid-column: 1 / -1; }
+.ab-add .btn { grid-column: 1 / -1; }
 .err-list { display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow-y: auto; word-break: break-word; }
 /* En la computadora: más ancho, las listas en dos columnas y las hojas como ventana centrada. */
 @media (min-width: 960px) {
