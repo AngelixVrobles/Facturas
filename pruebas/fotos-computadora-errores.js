@@ -145,7 +145,7 @@ const imgInfo = (page, id) => page.evaluate(async (fid) => {
   const fab = await dp.$eval('#fab', (e) => e.getBoundingClientRect().top);
   check(nav.x === 0 && nav.w > 180 && nav.w < 300 && nav.h >= 850 && fab < 80 && !!(await dp.$('.tabs .nav-only[data-act="settings"]:visible')), 'en la computadora: menú a la izquierda (con Ajustes) y «Agregar facturas» arriba');
   const rowsN = await dp.$$eval('#f-list table.inv-tbl tbody tr', (r) => r.length);
-  const heads = await dp.$$eval('#f-list table.inv-tbl thead th', (t) => t.map((x) => x.textContent.trim()));
+  const heads = await dp.$$eval('#f-list table.inv-tbl thead th:not(.c-sel)', (t) => t.map((x) => x.textContent.trim()));
   check(rowsN === 6 && heads.join('|') === 'Proveedor|NCF|Fecha|Estado|Etiquetas|Monto', 'las facturas van en una tabla: proveedor, NCF, fecha, estado, etiquetas y monto');
   const firstRow = () => dp.$eval('#f-list table.inv-tbl tbody tr .row-btn', (b) => b.textContent.trim());
   await dp.click('[data-act="sort"][data-scope="inv"][data-k="amount"]');

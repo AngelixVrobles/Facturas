@@ -35,7 +35,7 @@ async function download(page, clickSel, name) {
 // Lo que muestra cada tarjeta: proveedor y sus etiquetas de orden (texto y clase).
 const cards = (page) => page.$$eval('#f-list [data-act="open-inv"]', (els) => els.map((e) => ({
   sup: e.querySelector('.supplier').textContent,
-  oc: [...e.querySelectorAll('.pill.oc, .pill.nooc')].map((p) => p.className.replace('pill ', '') + '=' + p.textContent),
+  oc: [...e.querySelectorAll('.pill.oc, .pill.nooc')].map((p) => p.className.replace('pill ', '').replace(' minor', '') + '=' + p.textContent),
   warnSinOrden: [...e.querySelectorAll('.pill.warn')].some((p) => p.textContent === 'Sin orden'),
 })));
 const chipText = (page) => page.$$eval('#f-ochips .chip', (els) => els.map((e) => [...e.querySelectorAll('span')].map((x) => x.textContent.trim()).join(' ') + (e.getAttribute('aria-pressed') === 'true' ? '*' : '')));

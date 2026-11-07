@@ -10,7 +10,7 @@ const LIB = {
   qrgen: 'js/qr.js',
 };
 const PDF_CREATOR = 'Facturas de Proyectos';
-const APP_VERSION = '1.15.0';
+const APP_VERSION = '1.16.0';
 const SVG = (d) => `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ICON = {
   plus: SVG('<path d="M12 5v14M5 12h14"/>'),
@@ -96,7 +96,7 @@ const DEFAULT_ORDER_NOTE = 'Toda factura recibida por compras deberá estar acom
 const S = {
   tab: 'facturas', filter: 'pendientes', projectFilter: 'all', search: '', paymentId: null,
   projects: [], invoices: [], payments: [], orders: [], conduces: [], workers: [], asistencia: [], suppliers: [], envios: [], papelera: [], settings: {}, attRules: {}, digi: {}, bk: {}, envioPending: null, got: { projects: false, invoices: false, payments: false, orders: false, conduces: false, workers: false, asistencia: false, suppliers: false, envios: false, papelera: false },
-  attProject: '', attSheet: '', attDay: 0, orderFilter: 'todas', orderSearch: '', orderProject: 'all', condFilter: 'esperando', condSearch: '', condProject: 'all', sort: { inv: null, cond: null, ord: null }, focus: null, invOrder: 'all', dateFilter: '', dateFrom: '', dateTo: '', showAll: new Set(),
+  attProject: '', attSheet: '', attDay: 0, orderFilter: 'todas', orderSearch: '', orderProject: 'all', condFilter: 'esperando', condSearch: '', condProject: 'all', sort: { inv: null, cond: null, ord: null }, sel: new Set(), todoAll: false, focus: null, invOrder: 'all', dateFilter: '', dateFrom: '', dateTo: '', showAll: new Set(),
   dbState: 'loading', aiState: 'ok', queue: [], sheet: null, payDel: false, busyPdf: false, pdfMsg: '',
   updateReg: null, updating: false, ready: null, restoreFile: null,
 };
@@ -731,6 +731,7 @@ const isIOS = () => /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.
 function renderAll() {
   const D = derive();
   $$('.tabs [data-tab]').forEach((b) => { if (b.dataset.tab === S.tab) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current'); });
+  { const m = $('.tabs .more-tab'); if (m) { if (S.tab === 'asistencia' || S.tab === 'proyectos') m.setAttribute('aria-current', 'page'); else m.removeAttribute('aria-current'); } }
   for (const t of ['facturas', 'conduces', 'ordenes', 'pagos', 'asistencia', 'proyectos']) $('#v-' + t).hidden = S.tab !== t;
   const pay = S.tab === 'pagos' && S.paymentId ? S.payments.find((p) => p.id === S.paymentId) : null;
   $('#back').hidden = !pay;
@@ -749,6 +750,7 @@ function renderAll() {
   $('#fab-label').textContent = condTab ? 'Agregar conduces' : 'Agregar facturas';
   $('#settings-btn').hidden = S.dbState === 'absent';
   renderSyncChip();
+  renderSelBar(D);
   refreshInvoiceSheet(D);
   refreshOrderSheet(D);
   refreshCondSheet(D);
@@ -786,7 +788,8 @@ function invTags(i, D, opts = {}) {
   const tags = [], reading = i.ai === 'pending';
   if (!opts.hideProject && i.project) tags.push(`<span class="proj"><i class="dot" style="--c:${i.project.color}"></i><span>${esc(i.project.name)}</span></span>`);
   if (!opts.hideStatus) tags.push(`<span class="pill ${i.status}">${INV_LABEL[i.status]}</span>`);
-  if (i.fiscal === 'qr' || i.fiscal === 'xml') tags.push(`<span class="pill official">${i.fiscal === 'xml' ? 'XML' : 'QR'} DGII</span>`);
+  const minor = []; // lo que casi todas tienen o es solo informativo: va al final, como texto suave
+  if (i.fiscal === 'qr' || i.fiscal === 'xml') minor.push(`<span class="pill official minor">${i.fiscal === 'xml' ? 'XML' : 'QR'} DGII</span>`);
   if (isCreditNcf(i.number)) tags.push('<span class="pill nc">Nota de crédito</span>');
   if (reading) tags.push('<span class="pill reading">Leyendo…</span>');
   if (D.orders.length && (i.order || !isCreditNcf(i.number))) {
@@ -795,17 +798,17 @@ function invTags(i, D, opts = {}) {
       const cls = st === 'autorizada' ? 'ok' : st === 'anulada' ? 'bad' : 'pend';
       tags.push(`<span class="pill oc ${cls}" title="Orden de compra ${esc(orderNo(i.order))}: ${esc(ORDER_LABEL[st] || '')}"><b>${esc(orderNo(i.order))}</b>${st === 'autorizada' ? '' : `<span> ${esc((ORDER_LABEL[st] || '').toLowerCase())}</span>`}</span>`);
     }
-    else if (i.noOrder) tags.push('<span class="pill nooc">No lleva orden</span>');
-    else if (!needsOrder(i, D)) tags.push('<span class="pill nooc">Sin orden</span>');
+    else if (i.noOrder) minor.push('<span class="pill nooc minor">No lleva orden</span>');
+    else if (!needsOrder(i, D)) minor.push('<span class="pill nooc minor">Sin orden</span>');
   }
   const nc = (i.conduces || []).length;
-  if (nc) tags.push(`<span class="pill cond">${nc === 1 ? (i.conduces[0].number ? 'Conduce <b>' + esc(i.conduces[0].number) + '</b>' : 'Conduce') : nc + ' conduces'}</span>`);
-  if (!i.envio && !i.notInvoice && !opts.hideDigi) tags.push('<span class="pill digi" title="Todavía no se ha mandado a la digitadora">Por digitar</span>');
+  if (nc) minor.push(`<span class="pill cond minor">${nc === 1 ? (i.conduces[0].number ? 'Conduce <b>' + esc(i.conduces[0].number) + '</b>' : 'Conduce') : nc + ' conduces'}</span>`);
+  if (!i.envio && !i.notInvoice && !opts.hideDigi) minor.push('<span class="pill digi minor" title="Todavía no se ha mandado a la digitadora">Por digitar</span>');
   if (i.abonado > 0 && i.status !== 'pagada') tags.push(`<span class="pill pendiente">Balance ${esc(money(i.toPay, i.currency))}</span>`);
   const di = dueInfo(i);
   if (di && (di.overdue || di.days <= 7)) tags.push(`<span class="pill ${di.overdue ? 'warn' : 'pendiente'}">${dueText(di)}</span>`);
   for (const r of reviewFlags(i, D)) tags.push(`<span class="pill warn">${esc(r)}</span>`);
-  return tags;
+  return [...tags, ...minor];
 }
 function cardHTML(i, D, opts = {}) {
   const reading = i.ai === 'pending';
@@ -838,12 +841,13 @@ function toggleSort(scope, k) {
   S.sort[scope] = !cur || cur.k !== k ? { k, dir: first } : cur.dir === first ? { k, dir: -first } : null;
 }
 const invVal = (i, k) => (k === 'amount' ? (isNum(i.amount) ? i.amount : -Infinity) : k === 'date' ? i.date || '' : k === 'number' ? RD.normNcf(i.number) || '' : k === 'status' ? INV_LABEL[i.status] || '' : norm(i.supplier || ''));
-function invTableHTML(items, D) {
+function invTableHTML(items, D, gk = 'g') {
+  const pick = canEdit();
   const rows = sortRows('inv', items, invVal).map((i) => {
     const name = i.supplier || (i.ai === 'pending' ? 'Leyendo factura…' : 'Factura sin datos');
-    return `<tr data-act="open-inv" data-id="${esc(i.id)}"><td class="c-main"><span class="c-th">${thumbHTML(i)}</span><button type="button" class="row-btn${i.supplier ? '' : ' muted'}" data-act="open-inv" data-id="${esc(i.id)}">${esc(name)}</button></td><td class="mono">${esc(i.number ? RD.normNcf(i.number) : '—')}</td><td>${esc(fmtDate(i.date) || '—')}</td><td><span class="pill ${i.status}">${INV_LABEL[i.status]}</span></td><td class="c-tags">${invTags(i, D, { hideProject: true, hideStatus: true }).join('')}</td><td class="r mono">${esc(money(i.amount, i.currency))}</td></tr>`;
+    return `<tr data-act="open-inv" data-id="${esc(i.id)}"${S.sel.has(i.id) ? ' class="sel"' : ''}>${pick ? `<td class="c-sel" data-act="sel-cell"><input type="checkbox" data-act="sel" data-sel="inv" data-g="${esc(gk)}" value="${esc(i.id)}" aria-label="Elegir"${S.sel.has(i.id) ? ' checked' : ''}></td>` : ''}<td class="c-main"><span class="c-th">${thumbHTML(i)}</span><button type="button" class="row-btn${i.supplier ? '' : ' muted'}" data-act="open-inv" data-id="${esc(i.id)}">${esc(name)}</button></td><td class="mono">${esc(i.number ? RD.normNcf(i.number) : '—')}</td><td>${esc(fmtDate(i.date) || '—')}</td><td><span class="pill ${i.status}">${INV_LABEL[i.status]}</span></td><td class="c-tags">${invTags(i, D, { hideProject: true, hideStatus: true }).join('')}</td><td class="r mono">${esc(money(i.amount, i.currency))}</td></tr>`;
   }).join('');
-  return `<table class="tbl inv-tbl"><colgroup><col class="w-main"><col class="w-ncf"><col class="w-date"><col class="w-st"><col><col class="w-amt"></colgroup><thead><tr>${thHTML('inv', 'supplier', 'Proveedor')}${thHTML('inv', 'number', 'NCF')}${thHTML('inv', 'date', 'Fecha')}${thHTML('inv', 'status', 'Estado')}${thHTML('inv', '', 'Etiquetas')}${thHTML('inv', 'amount', 'Monto', 'r')}</tr></thead><tbody>${rows}</tbody></table>`;
+  return `<table class="tbl inv-tbl"><colgroup>${pick ? '<col class="w-sel">' : ''}<col class="w-main"><col class="w-ncf"><col class="w-date"><col class="w-st"><col><col class="w-amt"></colgroup><thead><tr>${pick ? `<th class="c-sel"><input type="checkbox" data-act="sel" data-sel="all" data-g="${esc(gk)}" aria-label="Elegir todas"></th>` : ''}${thHTML('inv', 'supplier', 'Proveedor')}${thHTML('inv', 'number', 'NCF')}${thHTML('inv', 'date', 'Fecha')}${thHTML('inv', 'status', 'Estado')}${thHTML('inv', '', 'Etiquetas')}${thHTML('inv', 'amount', 'Monto', 'r')}</tr></thead><tbody>${rows}</tbody></table>`;
 }
 function condTableHTML(items, D, invById) {
   const invOf = (c) => { const inv = c.invoiceId ? invById.get(c.invoiceId) : null; return inv ? (inv.number ? RD.normNcf(inv.number) : inv.supplier || 'sin NCF') : ''; };
@@ -861,6 +865,46 @@ function orderTableHTML(items, D) {
     return `<tr data-act="open-order" data-id="${esc(o.id)}"><td class="c-main"><button type="button" class="row-btn mono" data-act="open-order" data-id="${esc(o.id)}">${esc(orderNo(o))}</button></td><td>${esc(fmtDate(o.date) || '—')}</td><td>${esc(o.supplier || '—')}</td><td><span class="pill o-${o.status}">${ORDER_LABEL[o.status]}</span></td><td class="r mono">${(o.items || []).length}</td><td class="r mono">${est ? esc(money(est)) : '—'}</td><td>${invs.length ? esc(plural(invs.length, 'factura', 'facturas')) : '—'}</td></tr>`;
   }).join('');
   return `<table class="tbl ord-tbl"><colgroup><col class="w-ord"><col class="w-date"><col><col class="w-st"><col class="w-trips"><col class="w-amt"><col class="w-ncf"></colgroup><thead><tr>${thHTML('ord', 'number', 'Orden')}${thHTML('ord', 'date', 'Fecha')}${thHTML('ord', 'supplier', 'Proveedor')}${thHTML('ord', 'status', 'Estado')}${thHTML('ord', '', 'Artículos', 'r')}${thHTML('ord', 'est', 'Estimado', 'r')}${thHTML('ord', '', 'Facturas')}</tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+/* ---------- en la computadora: marcar varias facturas y hacer algo con todas ---------- */
+function renderSelBar(D) {
+  const el = $('#sel-bar');
+  if (!el) return;
+  const ids = [...S.sel];
+  if (!wide() || S.tab !== 'facturas' || !ids.length || !canEdit()) { el.hidden = true; el.innerHTML = ''; return; }
+  const invs = ids.map((id) => D.invoices.find((i) => i.id === id)).filter(Boolean);
+  const pend = invs.filter((i) => i.status === 'pendiente').length, toDigi = invs.filter((i) => !i.envio && !i.notInvoice).length;
+  el.hidden = false;
+  el.innerHTML = `<span class="grow"><b>${plural(invs.length, 'factura elegida', 'facturas elegidas')}</b> · <span class="mono">${esc(totalStr(invs, 'toPay'))}</span></span>`
+    + `<button type="button" class="btn sm primary" data-act="sel-pay"${pend ? '' : ' disabled title="Ninguna está pendiente"'}>Armar pago${pend && pend < invs.length ? ' (' + pend + ')' : ''}</button>`
+    + `<button type="button" class="btn sm" data-act="sel-digi"${toDigi ? '' : ' disabled title="Ya se le mandaron todas"'}>Mandar a la digitadora${toDigi && toDigi < invs.length ? ' (' + toDigi + ')' : ''}</button>`
+    + `<button type="button" class="btn sm" data-act="sel-xlsx">${ICON.sheet} Excel</button>`
+    + `<button type="button" class="btn sm ghost" data-act="sel-clear">Quitar</button>`;
+}
+function syncSelBoxes() {
+  for (const b of $$('#f-list input[data-sel="inv"]')) b.checked = S.sel.has(b.value);
+  for (const g of $$('#f-list input[data-sel="all"]')) {
+    const kids = $$(`#f-list input[data-sel="inv"][data-g="${g.dataset.g}"]`);
+    const on = kids.filter((b) => b.checked).length;
+    g.checked = on > 0 && on === kids.length;
+    g.indeterminate = on > 0 && on < kids.length;
+  }
+  renderSelBar(derive());
+}
+
+/* ---------- «Más» en el teléfono: lo que no cabe en la barra de abajo ---------- */
+function openMoreMenu() {
+  const row = (attrs, icon, title, sub) => `<button type="button" class="menu-row" ${attrs}><span class="menu-ic">${icon}</span><span class="grow"><b>${title}</b><small>${sub}</small></span></button>`;
+  const IC = (d) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
+  openSheet(`${sheetHead('Más')}<div class="sheet-b"><div class="menu-list">
+    ${row('data-act="go-tab" data-go="asistencia"', IC('<rect x="4" y="4" width="16" height="17" rx="2"/><path d="M8 2.5v3M16 2.5v3M8 13l2.5 2.5L16 10"/>'), 'Pase de lista', 'Asistencia de los obreros, por quincena')}
+    ${row('data-act="go-tab" data-go="proyectos"', IC('<path d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2h8.5A1.5 1.5 0 0 1 21 9.5v8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z"/>'), 'Proyectos', 'Obras, presupuesto y lo gastado')}
+    ${row('data-act="sups"', IC('<path d="M4 20V9l8-5 8 5v11"/><path d="M9 20v-6h6v6"/>'), 'Proveedores', 'Crédito, banco y cuenta de cada uno')}
+    ${row('data-act="digi-open"', IC('<path d="M4 6h16v12H4z"/><path d="M4 7l8 6 8-6"/>'), 'Digitadora', 'Lo que falta por mandar y los envíos')}
+    ${row('data-act="trash-open"', ICON.trash, 'Papelera', S.papelera.length ? plural(S.papelera.length, 'cosa', 'cosas') + ' para recuperar' : 'Lo borrado se queda aquí 30 días')}
+    ${row('data-act="settings"', IC('<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/>'), 'Ajustes', 'Empresa, lectura automática, nube y respaldos')}
+  </div></div>`, { type: 'more', id: 'more' });
 }
 
 function renderFacturas(D) {
@@ -922,7 +966,9 @@ function renderFacturas(D) {
     return;
   }
   const LIM = wide() ? 300 : 60;
-  const cards = (items, key) => ((sh) => (wide() ? invTableHTML(sh, D) : sh.map((i) => cardHTML(i, D, { hideProject: true })).join('')))(items.length <= LIM || S.showAll.has(key) ? items : items.slice(0, LIM))
+  const vis = new Set(list.map((i) => i.id));
+  for (const id of [...S.sel]) if (!vis.has(id)) S.sel.delete(id);
+  const cards = (items, key) => ((sh) => (wide() ? invTableHTML(sh, D, key) : sh.map((i) => cardHTML(i, D, { hideProject: true })).join('')))(items.length <= LIM || S.showAll.has(key) ? items : items.slice(0, LIM))
     + (items.length > LIM && !S.showAll.has(key) ? `<button type="button" class="btn sm more" data-act="more" data-k="${esc(key)}">Ver ${items.length - LIM} más</button>` : '');
   if (S.projectFilter === 'all') {
     el.innerHTML = groupByProject(list, D).map((g) => `<section class="group"><h2 class="group-h">${g.color ? `<i class="dot" style="--c:${g.color}"></i>` : '<i class="dot ring"></i>'}<span class="gname">${esc(g.name)}</span><span class="gmeta">${g.items.length} · ${esc(totalStr(g.items, 'toPay'))}</span></h2><div class="list">${cards(g.items, g.id)}</div></section>`).join('');
@@ -975,7 +1021,12 @@ function renderTodo(D) {
   if (ready.length) rows.push(row(ready.length, `${plural(ready.length, 'factura lista', 'facturas listas')} para pagar · <b class="mono">${esc(totalStr(ready, 'toPay'))}</b>`, b('pay-ready', 'Armar pago', '', ' primary'), 'ok'));
   if (presented.length) rows.push(row(presented.length, plural(presented.length, 'pago presentado, esperando que lo paguen', 'pagos presentados, esperando que los paguen'), b('tab', 'Ver', ' data-tab="pagos"')));
   el.hidden = !rows.length;
-  el.innerHTML = rows.length ? `<div class="todo"><h2>Para hacer</h2>${rows.join('')}</div>` : '';
+  // Lo urgente arriba; si son muchas, se ven las primeras y «Ver todo».
+  const RANK = { now: 0, warn: 1, ok: 2 };
+  const ranked = rows.map((h, k) => ({ h, k, r: (RANK[(/class="todo-row ([a-z]*)/.exec(h) || [])[1]] ?? 3) })).sort((a, b) => a.r - b.r || a.k - b.k).map((x) => x.h);
+  const LIMIT = 4, shown = S.todoAll || ranked.length <= LIMIT + 1 ? ranked : ranked.slice(0, LIMIT);
+  const more = ranked.length > LIMIT + 1 ? `<div class="todo-more"><button type="button" class="link" data-act="todo-all">${S.todoAll ? 'Ver menos' : `Ver todo (${ranked.length})`}</button></div>` : '';
+  el.innerHTML = rows.length ? `<div class="todo"><h2>Para hacer</h2>${shown.join('')}${more}</div>` : '';
 }
 
 function renderQueue() {
@@ -3301,12 +3352,12 @@ function digiByDay(list) {
   const pn = (i) => (i.project ? i.project.name : '\uffff');
   return [...m.entries()].sort((a, b) => b[0].localeCompare(a[0])).map(([day, items]) => ({ day, items: items.sort((a, b) => pn(a).localeCompare(pn(b), 'es') || String(a.supplier || '').localeCompare(String(b.supplier || ''), 'es')) }));
 }
-function openDigi() {
+function openDigi(pre) {
   const D = derive();
   const pend = pendingDigi(D);
   const edit = canEdit();
   const groups = digiByDay(pend);
-  const row = (i, k) => `<label class="pick-row"><input type="checkbox" data-digi="inv" data-g="${k}" value="${esc(i.id)}" checked><span class="pr-name"><span>${esc(i.supplier || 'Factura sin datos')}</span><small>${esc([i.number ? 'NCF ' + RD.normNcf(i.number) : 'sin NCF', i.project ? i.project.name : 'Sin proyecto'].join(' · '))}</small></span><span class="num">${esc(money(i.amount, i.currency))}</span></label>`;
+  const row = (i, k) => `<label class="pick-row"><input type="checkbox" data-digi="inv" data-g="${k}" value="${esc(i.id)}"${!pre || pre.has(i.id) ? ' checked' : ''}><span class="pr-name"><span>${esc(i.supplier || 'Factura sin datos')}</span><small>${esc([i.number ? 'NCF ' + RD.normNcf(i.number) : 'sin NCF', i.project ? i.project.name : 'Sin proyecto'].join(' · '))}</small></span><span class="num">${esc(money(i.amount, i.currency))}</span></label>`;
   const list = pend.length ? groups.map((g, k) => `<div class="pick-group"><label class="pick-row head"><input type="checkbox" data-digi="group" data-g="${k}" checked><span class="pr-name"><span>${esc(dayGroupName(g.day))}</span><small>${plural(g.items.length, 'factura', 'facturas')}${g.day && g.day < todayISO() ? ' · sin mandar' : ''}</small></span><span class="num">${esc(totalStr(g.items))}</span></label>${g.items.map((i) => row(i, k)).join('')}</div>`).join('') : '<div class="empty"><p>No hay facturas por mandar. Las nuevas salen aquí hasta que se las mandes.</p></div>';
   const envs = [...D.envios].sort((a, b) => (Number(b.number) || 0) - (Number(a.number) || 0)).slice(0, 12);
   const hist = envs.map((e) => `<div class="o-inv"><button type="button" class="link" data-act="envio-view" data-id="${esc(e.id)}">Envío ${esc(String(e.number || ''))} · ${esc(fmtDate(e.date))} · ${plural((e.invoiceIds || []).length, 'factura', 'facturas')} · ${esc(ENVIO_LABEL[e.method] || '')}${e.to ? ' · a ' + esc(e.to) : ''}</button>${edit ? `<button type="button" class="btn ghost sm" data-act="envio-undo" data-id="${esc(e.id)}">Deshacer</button>` : ''}</div>`).join('');
@@ -4539,15 +4590,15 @@ function exportPaymentExcel(payId) {
   const scope = [pay.name || 'Pago', pay.date ? 'Fecha del pago: ' + fmtDate(pay.date) : '', PAY_LABEL[pay.status] || 'Por presentar'].filter(Boolean).join(' · ');
   deliverFile(invoicesWorkbook({ heading: 'Relación de facturas para pago', scope, invs, D, isPayment: true }), fileSafe(`${pay.name || 'Pago'} - facturas`) + '.xlsx');
 }
-function exportListExcel() {
+function exportListExcel(only) {
   const D = derive();
-  const invs = visibleList(D);
+  const invs = only ? D.invoices.filter((i) => only.has(i.id)) : visibleList(D);
   if (!invs.length) { toast('No hay facturas en esta lista.'); return; }
   const heading = { pendientes: 'Facturas pendientes', tramite: 'Facturas en trámite', pagadas: 'Facturas pagadas', todas: 'Todas las facturas' }[S.filter] || 'Facturas';
   const proj = S.projectFilter === 'all' ? 'Todos los proyectos' : S.projectFilter === 'none' ? 'Sin proyecto' : (D.projById.get(S.projectFilter) || {}).name || 'Proyecto';
   const ocScope = D.orders.length && !S.focus && S.invOrder !== 'all' ? (S.invOrder === 'con' ? 'Con orden de compra' : 'Sin orden de compra') : '';
   const when = dateLabel();
-  const scope = [proj, when, ocScope, S.search.trim() ? `Búsqueda: "${S.search.trim()}"` : ''].filter(Boolean).join(' · ');
+  const scope = only ? `${plural(invs.length, 'factura elegida', 'facturas elegidas')} a mano` : [proj, when, ocScope, S.search.trim() ? `Búsqueda: "${S.search.trim()}"` : ''].filter(Boolean).join(' · ');
   deliverFile(invoicesWorkbook({ heading, scope, invs, D, isPayment: false }), fileSafe(`${heading} - ${proj}${when ? ' - ' + when : ''} - ${todayISO()}`) + '.xlsx');
 }
 
@@ -4649,6 +4700,15 @@ function onClick(e) {
     case 'cond-list': closeSheet(); S.tab = 'conduces'; S.condFilter = 'esperando'; S.paymentId = null; renderAll(); window.scrollTo(0, 0); break;
     case 'cfilter': S.condFilter = t.dataset.f; renderAll(); break;
     case 'sort': toggleSort(t.dataset.scope, t.dataset.k); renderAll(); break;
+    case 'sel': break; // la casilla se maneja en «change»
+    case 'sel-cell': { const b = t.querySelector('input'); if (b && e.target === t) { b.checked = !b.checked; b.dispatchEvent(new Event('change', { bubbles: true })); } break; }
+    case 'sel-pay': { const D = derive(); openPicker('new', [...S.sel].filter((id) => (D.invoices.find((i) => i.id === id) || {}).status === 'pendiente')); break; }
+    case 'sel-digi': closeSheet(); openDigi(new Set(S.sel)); syncDigi(); break;
+    case 'sel-xlsx': exportListExcel(new Set(S.sel)); break;
+    case 'sel-clear': S.sel.clear(); renderAll(); break;
+    case 'todo-all': S.todoAll = !S.todoAll; renderAll(); break;
+    case 'more-menu': openMoreMenu(); break;
+    case 'go-tab': closeSheet(); if (S.tab === 'asistencia') flushAtt(); S.tab = t.dataset.go; S.paymentId = null; S.payDel = false; renderAll(); window.scrollTo(0, 0); break;
     case 'cprojf': S.condProject = t.dataset.p; renderAll(); break;
     case 'cond-link-many': { const ids = $$('#cpick input[data-cpick="c"]').filter((b) => b.checked).map((b) => b.value); if (ids.length) { t.disabled = true; linkConduces(ids, t.dataset.inv); } break; }
     case 'cond-add': condTarget = t.dataset.inv || null; $('#cond-input').click(); break;
@@ -4835,6 +4895,8 @@ function onChange(e) {
       for (const o of derive().orders) { const it = (o.items || []).find((x) => x.unit && norm(x.desc) === k); if (it) { u.value = it.unit; break; } }
     }
   }
+  if (t.dataset && t.dataset.sel === 'inv') { if (t.checked) S.sel.add(t.value); else S.sel.delete(t.value); const tr = t.closest('tr'); if (tr) tr.classList.toggle('sel', t.checked); syncSelBoxes(); }
+  else if (t.dataset && t.dataset.sel === 'all') { for (const b of $$(`#f-list input[data-sel="inv"][data-g="${t.dataset.g}"]`)) { if (t.checked) S.sel.add(b.value); else S.sel.delete(b.value); const tr = b.closest('tr'); if (tr) tr.classList.toggle('sel', t.checked); } syncSelBoxes(); }
   if (t.dataset && t.dataset.cpick === 'all') { for (const b of $$('#cpick input[data-cpick="c"]')) b.checked = t.checked; syncCondPick(); }
   else if (t.dataset && t.dataset.cpick === 'c') syncCondPick();
   if (t.id === 'digi-all') { for (const b of $$('#sheet-root input[data-digi="inv"]')) b.checked = t.checked; syncDigi(); }

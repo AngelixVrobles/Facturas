@@ -60,7 +60,7 @@ const val = async (page, name) => (await rowOf(page, name).locator('.att-val').t
   });
   await page.click('[data-act="backup-later"]').catch(() => {});
   check((await page.$$('.tabs [data-tab]')).length === 6 && /Asistencia/.test(await page.textContent('.tabs')) && /Conduces/.test(await page.textContent('.tabs')), 'la barra de abajo tiene las pestañas Conduces y Asistencia');
-  await page.click('[data-tab="asistencia"]');
+  await page.evaluate(() => document.querySelector('.tabs [data-tab="asistencia"]').click());
   await page.waitForSelector('#v-asistencia .empty');
   check(/Anota los obreros de esta obra/.test(await page.textContent('#v-asistencia')) && (await page.textContent('#title')) === 'Pase de lista', 'sin obreros: invita a anotarlos');
 
@@ -174,7 +174,7 @@ print(json.dumps(res, ensure_ascii=False, default=str))
   await page.click('[data-act="att-prev"]');
   await settle(page);
   await page.reload();
-  await page.click('[data-tab="asistencia"]');
+  await page.evaluate(() => document.querySelector('.tabs [data-tab="asistencia"]').click());
   await page.waitForSelector('.att-row');
   await page.click('.att-day[data-k="1"]');
   check(await val(page, 'Marcelo') === '1.5', 'después de recargar, las marcas siguen ahí');

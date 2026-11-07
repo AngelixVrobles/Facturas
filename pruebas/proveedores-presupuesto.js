@@ -69,7 +69,7 @@ const daysAgo = (n) => { const d = new Date(); d.setDate(d.getDate() - n); retur
   await page.click('[data-act="backup-later"]').catch(() => {});
 
   // 1) Ficha del proveedor desde las facturas: crédito, banco y cuenta.
-  await page.click('[data-tab="proyectos"]');
+  await page.evaluate(() => document.querySelector('.tabs [data-tab="proyectos"]').click());
   await page.click('[data-act="sups"]');
   await page.waitForSelector('.sheet [data-act="sup-new"][data-rnc="131023452"]');
   await page.click('.sheet [data-act="sup-new"][data-rnc="131023452"]');
@@ -149,7 +149,7 @@ print(json.dumps({'vence': [str(r[h.index('Vence')])[:10] for r in f[5:] if r[0]
     const w = RT.db.collection('workers').doc(); await w.set({ projectId: pid, name: 'Marcelo', role: 'Ayudante', pay: 1000, active: true, seq: 1, createdAt: '2026-11-01T08:00:00.000Z' });
     const a = RT.db.collection('asistencia').doc(); await a.set({ projectId: pid, start: '2026-11-01', days: 14, entryLimit: '', exitFrom: '', workers: [w.id], marks: { [w.id]: { 1: { e: 'ok', p: 'ok', s: 'ok' } } }, surprise: {}, createdAt: '2026-11-01T08:00:00.000Z' });
   }, ids.p);
-  await page.click('[data-tab="proyectos"]');
+  await page.evaluate(() => document.querySelector('.tabs [data-tab="proyectos"]').click());
   await page.click(`[data-act="open-proj"][data-id="${ids.p}"]`);
   await page.waitForSelector('#proj-form');
   await page.fill('#pe-budget', '12,500');

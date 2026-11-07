@@ -249,7 +249,7 @@ print(json.dumps(res, ensure_ascii=False, default=str))
   await closeSheet(page);
 
   // Un proyecto con órdenes no se puede eliminar (las órdenes quedarían sin proyecto).
-  await page.click('[data-tab="proyectos"]');
+  await page.evaluate(() => document.querySelector('.tabs [data-tab="proyectos"]').click());
   await page.click(`[data-act="open-proj"][data-id="${ids.pB}"]`);
   await page.waitForSelector('#proj-form');
   await page.click('[data-act="proj-del"]');
