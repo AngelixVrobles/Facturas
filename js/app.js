@@ -10,7 +10,7 @@ const LIB = {
   qrgen: 'js/qr.js',
 };
 const PDF_CREATOR = 'Facturas de Proyectos';
-const APP_VERSION = '1.16.0';
+const APP_VERSION = '1.17.0';
 const SVG = (d) => `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ICON = {
   plus: SVG('<path d="M12 5v14M5 12h14"/>'),
@@ -841,13 +841,13 @@ function toggleSort(scope, k) {
   S.sort[scope] = !cur || cur.k !== k ? { k, dir: first } : cur.dir === first ? { k, dir: -first } : null;
 }
 const invVal = (i, k) => (k === 'amount' ? (isNum(i.amount) ? i.amount : -Infinity) : k === 'date' ? i.date || '' : k === 'number' ? RD.normNcf(i.number) || '' : k === 'status' ? INV_LABEL[i.status] || '' : norm(i.supplier || ''));
-function invTableHTML(items, D, gk = 'g') {
-  const pick = canEdit();
+function invTableHTML(items, D, gk = 'g', opts = {}) {
+  const pick = canEdit() && !opts.noPick, rm = !!opts.rm;
   const rows = sortRows('inv', items, invVal).map((i) => {
     const name = i.supplier || (i.ai === 'pending' ? 'Leyendo factura…' : 'Factura sin datos');
-    return `<tr data-act="open-inv" data-id="${esc(i.id)}"${S.sel.has(i.id) ? ' class="sel"' : ''}>${pick ? `<td class="c-sel" data-act="sel-cell"><input type="checkbox" data-act="sel" data-sel="inv" data-g="${esc(gk)}" value="${esc(i.id)}" aria-label="Elegir"${S.sel.has(i.id) ? ' checked' : ''}></td>` : ''}<td class="c-main"><span class="c-th">${thumbHTML(i)}</span><button type="button" class="row-btn${i.supplier ? '' : ' muted'}" data-act="open-inv" data-id="${esc(i.id)}">${esc(name)}</button></td><td class="mono">${esc(i.number ? RD.normNcf(i.number) : '—')}</td><td>${esc(fmtDate(i.date) || '—')}</td><td><span class="pill ${i.status}">${INV_LABEL[i.status]}</span></td><td class="c-tags">${invTags(i, D, { hideProject: true, hideStatus: true }).join('')}</td><td class="r mono">${esc(money(i.amount, i.currency))}</td></tr>`;
+    return `<tr data-act="open-inv" data-id="${esc(i.id)}"${S.sel.has(i.id) ? ' class="sel"' : ''}>${pick ? `<td class="c-sel" data-act="sel-cell"><input type="checkbox" data-act="sel" data-sel="inv" data-g="${esc(gk)}" value="${esc(i.id)}" aria-label="Elegir"${S.sel.has(i.id) ? ' checked' : ''}></td>` : ''}<td class="c-main"><span class="c-th">${thumbHTML(i)}</span><button type="button" class="row-btn${i.supplier ? '' : ' muted'}" data-act="open-inv" data-id="${esc(i.id)}">${esc(name)}</button></td><td class="mono">${esc(i.number ? RD.normNcf(i.number) : '—')}</td><td>${esc(fmtDate(i.date) || '—')}</td><td><span class="pill ${i.status}">${INV_LABEL[i.status]}</span></td><td class="c-tags">${invTags(i, D, { hideProject: true, hideStatus: true }).join('')}</td><td class="r mono">${esc(money(i.amount, i.currency))}</td>${rm ? `<td class="c-rm"><button type="button" class="icon-btn sm" data-act="pay-rm" data-id="${esc(i.id)}" aria-label="Quitar del pago" title="Quitar del pago">${ICON.close}</button></td>` : ''}</tr>`;
   }).join('');
-  return `<table class="tbl inv-tbl"><colgroup>${pick ? '<col class="w-sel">' : ''}<col class="w-main"><col class="w-ncf"><col class="w-date"><col class="w-st"><col><col class="w-amt"></colgroup><thead><tr>${pick ? `<th class="c-sel"><input type="checkbox" data-act="sel" data-sel="all" data-g="${esc(gk)}" aria-label="Elegir todas"></th>` : ''}${thHTML('inv', 'supplier', 'Proveedor')}${thHTML('inv', 'number', 'NCF')}${thHTML('inv', 'date', 'Fecha')}${thHTML('inv', 'status', 'Estado')}${thHTML('inv', '', 'Etiquetas')}${thHTML('inv', 'amount', 'Monto', 'r')}</tr></thead><tbody>${rows}</tbody></table>`;
+  return `<table class="tbl inv-tbl"><colgroup>${pick ? '<col class="w-sel">' : ''}<col class="w-main"><col class="w-ncf"><col class="w-date"><col class="w-st"><col><col class="w-amt">${rm ? '<col class="w-rm">' : ''}</colgroup><thead><tr>${pick ? `<th class="c-sel"><input type="checkbox" data-act="sel" data-sel="all" data-g="${esc(gk)}" aria-label="Elegir todas"></th>` : ''}${thHTML('inv', 'supplier', 'Proveedor')}${thHTML('inv', 'number', 'NCF')}${thHTML('inv', 'date', 'Fecha')}${thHTML('inv', 'status', 'Estado')}${thHTML('inv', '', 'Etiquetas')}${thHTML('inv', 'amount', 'Monto', 'r')}${rm ? '<th class="c-rm"></th>' : ''}</tr></thead><tbody>${rows}</tbody></table>`;
 }
 function condTableHTML(items, D, invById) {
   const invOf = (c) => { const inv = c.invoiceId ? invById.get(c.invoiceId) : null; return inv ? (inv.number ? RD.normNcf(inv.number) : inv.supplier || 'sin NCF') : ''; };
@@ -1081,7 +1081,7 @@ function renderPayDetail(D, pay) {
   const warnN = invs.filter((i) => reviewFlags(i, D).some((f) => f !== 'Sin orden')).length;
   const noOrd = invs.filter((i) => needsOrder(i, D)).length;
   const unsignedOrd = new Set(invs.filter((i) => i.order && i.order.status !== 'autorizada').map((i) => i.order.id)).size;
-  const listHTML = groups.map((g) => `<section class="group"><h2 class="group-h">${dot(g)}<span class="gname">${esc(g.name)}</span><span class="gmeta">${g.items.length} · ${esc(totalStr(g.items, 'toPay'))}</span></h2><div class="list">${g.items.sort(sortByDateDesc).map((i) => (canRemove ? `<div class="rowx">${cardHTML(i, D, { hideProject: true, hideStatus: true })}<button type="button" class="icon-btn" data-act="pay-rm" data-id="${esc(i.id)}" aria-label="Quitar del pago">${ICON.close}</button></div>` : cardHTML(i, D, { hideProject: true, hideStatus: true }))).join('')}</div></section>`).join('');
+  const listHTML = groups.map((g) => `<section class="group"><h2 class="group-h">${dot(g)}<span class="gname">${esc(g.name)}</span><span class="gmeta">${g.items.length} · ${esc(totalStr(g.items, 'toPay'))}</span></h2>${wide() ? invTableHTML(g.items.sort(sortByDateDesc), D, 'pay', { noPick: true, rm: canRemove }) : `<div class="list">${g.items.sort(sortByDateDesc).map((i) => (canRemove ? `<div class="rowx">${cardHTML(i, D, { hideProject: true, hideStatus: true })}<button type="button" class="icon-btn" data-act="pay-rm" data-id="${esc(i.id)}" aria-label="Quitar del pago">${ICON.close}</button></div>` : cardHTML(i, D, { hideProject: true, hideStatus: true }))).join('')}</div>`}</section>`).join('');
   $('#pd-body').innerHTML = `
     <ol class="steps" aria-label="Avance del pago"><li class="${stepCls('armando')}">Por presentar</li><li class="${stepCls('presentado')}">Presentado</li><li class="${stepCls('pagado')}">Pagado</li></ol>
     <div class="bigtotal"><span>Total del pago · ${plural(invs.length, 'factura', 'facturas')}</span><b>${esc(totalStr(invs, 'toPay'))}</b><span>ITBIS incluido: ${esc(totalStr(invs, 'itbis'))}</span>${dates ? `<span>${esc(dates)}</span>` : ''}</div>
@@ -1233,6 +1233,37 @@ function lockBody() { document.body.classList.toggle('locked', !!S.sheet || !$('
 const sheetHead = (title) => `<div class="sheet-h"><h2>${title}</h2><button type="button" class="icon-btn plain" data-act="sheet-close" aria-label="Cerrar">${ICON.close}</button></div>`;
 
 function invSig(i, D) { return JSON.stringify([i.orderId, i.orderAuto, i.noOrder, i.order && i.order.status, i.ncfExpiry, i.supplier, i.number, i.rnc, i.date, i.amount, i.itbis, i.currency, i.concept, i.ref, i.projectId, i.projectHint, i.ai, i.notInvoice, i.pay && i.pay.id, i.pay && i.pay.status, i.dup, i.fiscal, i.xmlId, i.fileId, i.origFileId, i.abonado, i.envio && [i.envio.id, i.envio.date, i.envio.number], i.pages, (i.extraPages || []).length, i.buyerRnc, i.condOverOk, i.condRefsOk, i.qtyOk, i.estOk, i.due, i.sup && [i.sup.id, i.sup.name, i.sup.creditDays, i.sup.bank, i.sup.account], orderEst(i.order), (i.conduceRefs || []).join(), (i.order && i.order.items || []).length, (i.conduces || []).map((c) => [c.id, c.number, c.date, c.total, c.material, c.qty, c.ai, c.auto, c.dup]), D ? D.conduces.filter((c) => !c.invoiceId).map((c) => c.id + c.ai).join() : '']); }
+// En la computadora: el documento grande a la izquierda y los datos a la derecha, para revisarlos sin abrir y cerrar.
+const revCache = { key: '', node: null };
+function mountReviewDoc(i) {
+  const sheet = $('#sheet-root .sheet'), form = $('#inv-form');
+  if (!sheet || !form) return;
+  const files = [{ fileId: i.fileId, fileType: i.fileType }, ...(i.extraPages || [])].filter((f) => f.fileId && f.fileType !== 'application/xml');
+  if (!files.length) return;
+  sheet.classList.add('review');
+  const key = i.id + '|' + files.map((f) => f.fileId).join(',');
+  let node = revCache.key === key ? revCache.node : null;
+  if (!node) {
+    node = document.createElement('div');
+    node.className = 'rev-doc';
+    node.innerHTML = files.map((f, n) => (f.fileType === 'application/pdf' ? `<div class="rev-pdf" data-n="${n}"><p class="viewer-msg">Abriendo…</p></div>` : `<img src="${esc(assetUrl(f.fileId))}" alt="Página ${n + 1} de la factura">`)).join('');
+    revCache.key = key;
+    revCache.node = node;
+    renderRevPdfs(node, files).catch((e) => console.warn(e));
+  }
+  form.prepend(node);
+}
+async function renderRevPdfs(node, files) {
+  for (let n = 0; n < files.length; n++) {
+    if (files[n].fileType !== 'application/pdf') continue;
+    const box = node.querySelector(`.rev-pdf[data-n="${n}"]`);
+    try {
+      const doc = await openPdf(await (await getBlob(files[n].fileId)).arrayBuffer());
+      box.innerHTML = '';
+      for (let p = 1; p <= doc.numPages; p++) { const c = await renderPdfCanvas(doc, p, 1100); c.className = 'rev-page'; box.appendChild(c); }
+    } catch (e) { console.warn(e); box.innerHTML = '<p class="viewer-msg">No se pudo abrir el PDF.</p>'; }
+  }
+}
 function openInvoice(id, keepScroll) {
   const D = derive();
   const i = D.invoices.find((x) => x.id === id);
@@ -1321,6 +1352,7 @@ function openInvoice(id, keepScroll) {
   </form>`;
   const prevScroll = keepScroll && $('.sheet-b') ? $('.sheet-b').scrollTop : 0;
   openSheet(html, { type: 'inv', id: i.id, dirty: false, sig: invSig(i, D) });
+  if (wide()) mountReviewDoc(i);
   if (keepScroll && $('.sheet-b')) $('.sheet-b').scrollTop = prevScroll;
 }
 function refreshInvoiceSheet(D) {
@@ -2604,12 +2636,17 @@ function renderAsistencia(D) {
   const noExit = tots.reduce((s, x) => s + x.t.noExit, 0);
   const sumRows = tots.map((x) => `<tr><td><span class="pname">${esc(x.w.name)}</span><small class="att-sub">${esc([x.t.late ? plural(x.t.late, 'tarde', 'tardes') : '', x.t.absent ? plural(x.t.absent, 'falta', 'faltas') : '', x.t.surpriseMiss ? `${x.t.surpriseMiss} sin estar en el pase` : '', x.t.corrido ? `${x.t.corrido} C` : '', x.t.corridoFull ? `${x.t.corridoFull} de 1½` : '', x.t.leftEarly ? `${x.t.leftEarly} se fue antes` : ''].filter(Boolean).join(' · '))}</small></td><td class="num">${fmtDays(x.t.days)}</td><td class="num">${payOf(x) === null ? '—' : esc(money(payOf(x)))}</td></tr>`).join('');
   const ruleTxt = [R.late ? `T descuenta ${fmtDays(R.late)} día` : 'T no descuenta', R.surpriseMiss ? `x en el pase descuenta ${fmtDays(R.surpriseMiss)} día` : 'x en el pase no descuenta', `x en la salida cuenta ${fmtDays(R.leftEarly)}`, `C cuenta ${fmtDays(R.corrido)}`, `1½ cuenta ${fmtDays(R.corridoFull)}`, R.saturday !== 1 ? `el sábado vale ${fmtDays(R.saturday)}` : '', R.sunday !== 1 ? `el domingo vale ${fmtDays(R.sunday)}` : ''].filter(Boolean).join(' · ');
+  // En la computadora: la quincena entera como la planilla de papel (obreros por días); tocando un día se marca abajo.
+  const nDays = attLen(sh);
+  const cellMark = (m) => (!m || !m.e ? '' : m.e === 'x' ? 'x' : [ATT_SHOW[m.e] || '', m.p ? ATT_SHOW[m.p] || '' : '·', m.s ? ATT_SHOW[m.s] || '' : '·'].join('\u2009'));
+  const plan = wide() && rows.length ? `<div class="card att-plan"><div class="att-plan-in"><table class="tbl att-tbl"><colgroup><col class="w-aname">${'<col>'.repeat(nDays)}<col class="w-adays"><col class="w-apay"></colgroup><thead><tr><th><span class="th-txt">Obrero</span></th>${Array.from({ length: nDays }, (_, j) => { const d = ymd(attDate(sh, j)); return `<th class="att-h${j === k ? ' on' : ''}${attDate(sh, j) === todayISO() ? ' today' : ''}"><button type="button" class="th-sort" data-act="att-day" data-k="${j}" aria-pressed="${j === k}">${DOW[d.getDay()]} <b>${d.getDate()}</b></button></th>`; }).join('')}<th class="r"><span class="th-txt">Días</span></th><th class="r"><span class="th-txt">Pago</span></th></tr></thead><tbody>${tots.map((x) => `<tr><td class="c-aname"><b>${esc(x.w.name)}</b><small>${esc(x.w.role || '')}</small></td>${Array.from({ length: nDays }, (_, j) => { const m = (marks[x.w.id] || {})[j]; const v = attDayValue(m, R, attDow(sh, j)); return `<td class="att-c${j === k ? ' on' : ''}${m && m.e === 'x' ? ' abs' : ''}" data-act="att-day" data-k="${j}"><span>${esc(cellMark(m))}</span>${v === null ? '' : `<small>${esc(fmtDays(v))}</small>`}</td>`; }).join('')}<td class="r mono">${esc(fmtDays(x.t.days))}</td><td class="r mono">${isNum(payOf(x)) ? esc(money(payOf(x))) : '—'}</td></tr>`).join('')}</tbody></table></div><p class="usage">En cada día: entrada · pase sorpresa · salida, y lo que cuenta. Toca un día para marcarlo abajo.</p></div>` : '';
   el.innerHTML = chips + bar + `
     <div class="card att-head">
       <div class="att-period"><button type="button" class="icon-btn" data-act="att-prev" aria-label="Quincena anterior"${idx < sheets.length - 1 ? '' : ' disabled'}>‹</button><b>${esc(attPeriodLabel(sh))}</b><button type="button" class="icon-btn" data-act="att-next" aria-label="Quincena siguiente"${idx > 0 ? '' : ' disabled'}>›</button></div>
       <div class="fields"><div class="field"><label for="att-in">Entrada hasta las</label><input id="att-in" maxlength="8" placeholder="7:30" value="${esc(sh.entryLimit || '')}"${dis}></div><div class="field"><label for="att-out">Salida desde las</label><input id="att-out" maxlength="8" placeholder="5:00" value="${esc(sh.exitFrom || '')}"${dis}></div></div>
       ${edit && idx === 0 ? '<button type="button" class="btn sm" data-act="att-new">Empezar la quincena siguiente</button>' : ''}
     </div>
+    ${plan}
     <div class="att-days" role="group" aria-label="Día">${dayBtns}</div>
     <div class="att-quick"><b>${esc(DOW_LONG[dayDate.getDay()].replace(/^./, (c) => c.toUpperCase()) + ' ' + fmtDate(attDate(sh, k)))}</b>
       ${edit && rows.length ? `<div class="actions"><button type="button" class="btn sm" data-act="att-all" data-f="e">Entrada: todos ✓</button><button type="button" class="btn sm" data-act="att-surprise">${ptime ? 'Pase sorpresa: ' + esc(ptime) : 'Pase sorpresa ahora'}</button><button type="button" class="btn sm" data-act="att-all" data-f="s">Salida: todos ✓</button></div>` : ''}

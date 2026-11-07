@@ -547,6 +547,37 @@ body.locked .toast { top: calc(14px + env(safe-area-inset-top, 0px)); bottom: au
 .att-ptime { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--muted); }
 .att-ptime input { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; background: var(--surface); color: var(--ink); font: 550 14px var(--font-data); }
 .att-list { display: flex; flex-direction: column; gap: 8px; }
+.rev-doc, .att-plan { display: none; }
+@media (min-width: 960px) {
+  .att-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; align-items: start; }
+  /* Planilla de la quincena */
+  .att-plan { display: block; padding: 12px; }
+  .att-plan ~ .att-days { display: none; }
+  .att-plan-in { overflow-x: auto; }
+  .att-tbl { min-width: 900px; font-size: 13px; }
+  .att-tbl .w-aname { width: 170px; } .att-tbl .w-adays { width: 64px; } .att-tbl .w-apay { width: 112px; }
+  .att-tbl th .th-sort { text-align: center; padding: 7px 2px; font-size: 12px; }
+  .att-tbl th .th-sort b { font-family: var(--font-data); color: var(--ink); }
+  .att-tbl th.att-h.today .th-sort { box-shadow: inset 0 -2px 0 var(--accent); }
+  .att-tbl th.att-h.on, .att-tbl td.att-c.on { background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
+  .att-tbl td { padding: 6px 4px; }
+  .att-tbl .c-aname { padding-left: 10px; }
+  .att-tbl .c-aname b, .att-tbl .c-aname small { display: block; overflow: hidden; text-overflow: ellipsis; }
+  .att-tbl .c-aname small { color: var(--muted); font-size: 11.5px; }
+  .att-tbl td.att-c { text-align: center; }
+  .att-tbl td.att-c span { display: block; font: 600 12px/1.2 var(--font-data); }
+  .att-tbl td.att-c small { display: block; color: var(--muted); font: 11px var(--font-data); }
+  .att-tbl td.att-c.abs span { color: var(--warn); }
+  /* La factura con su documento al lado */
+  .sheet.review { width: min(1320px, calc(100vw - 236px - 24px)); display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(400px, 1fr); grid-template-rows: auto minmax(0, 1fr) auto; grid-template-areas: "doc head" "doc body" "doc foot"; }
+  .sheet.review .rev-doc { grid-area: doc; display: flex; flex-direction: column; align-items: center; gap: 12px; overflow-y: auto; min-height: 0; padding: 16px; background: #3b3f46; }
+  .sheet.review .rev-doc img, .sheet.review .rev-doc canvas { width: 100%; height: auto; background: #fff; box-shadow: 0 2px 12px rgba(0, 0, 0, .35); }
+  .sheet.review .rev-pdf { width: 100%; display: flex; flex-direction: column; gap: 12px; }
+  .sheet.review .rev-doc .viewer-msg { color: #e5e7eb; }
+  .sheet.review .sheet-h { grid-area: head; } .sheet.review .sheet-b { grid-area: body; min-height: 0; } .sheet.review .sheet-f { grid-area: foot; }
+  .sheet.review .preview { display: none; }
+  .tbl .w-rm { width: 52px; } .tbl td.c-rm { padding: 4px 6px; text-align: center; }
+}
 .att-row { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 10px 10px 9px; display: flex; flex-direction: column; gap: 8px; }
 .att-who { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 .att-who b { font-size: 15.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

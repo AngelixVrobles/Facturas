@@ -56,4 +56,5 @@ Cada prueba dice `OK` o `FALLA` en cada revisión, y al final `correr.js` dice c
 | `conduces-apartado.js` | La pestaña Conduces, los conduces que se adjuntan solos cuando suman lo mismo que la factura, marcar varios en la factura y la dirección del panel de la nube. |
 | `respaldo-papelera-nube.js` | La papelera (Deshacer, recuperar, se vacía a los 30 días), el respaldo automático en la nube y restaurarlo, el indicador de la nube, el aviso cuando Supabase la pausa y el recordatorio mensual del respaldo. |
 | `pantallas.js` | En el teléfono, las 5 pestañas con «Más», «Para hacer» corto y las etiquetas secundarias; en la computadora, los filtros en una barra, la tabla a la vista y marcar varias facturas para pago, digitadora o Excel. |
+| `revision-planilla.js` | En la computadora: la factura con su documento al lado (PDF y foto), el pase de lista como la planilla de papel y las facturas del pago en tabla; en el teléfono no cambia. |
 | `digitadora.js` | Envíos a la digitadora: lo que falta por mandar, el aviso de la tarde para mandar las de hoy, la lista por día, el PDF con la fecha y la lista en papel, confirmar, «No se la mandé», deshacer y el Excel. |
