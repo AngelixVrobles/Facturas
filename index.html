@@ -394,14 +394,75 @@ details.edit .fields { padding: 12px 14px 14px; }
 .ab-add .btn { grid-column: 1 / -1; }
 .err-list { display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow-y: auto; word-break: break-word; }
 /* En la computadora: más ancho, las listas en dos columnas y las hojas como ventana centrada. */
+.tabs .nav-brand, .tabs .nav-only { display: none; }
 @media (min-width: 960px) {
-  .wrap, .tabs-in { max-width: 1120px; }
-  #f-list .list, #o-list .list, #p-list.list, .att-list, #pd-body .list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; align-items: start; }
-  #c-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 16px; align-items: start; }
-  #c-list > .c-hint, #c-list > .more, #c-list > .empty { grid-column: 1 / -1; }
+  /* Menú a la izquierda en vez de la barra de abajo. */
+  body { padding-left: 236px; }
+  .wrap { max-width: 1200px; padding-left: 28px; padding-right: 28px; }
+  .tabs { top: 0; bottom: 0; left: 0; right: auto; width: 236px; border-top: 0; border-right: 1px solid var(--line); padding: 18px 12px; }
+  .tabs-in { max-width: none; height: 100%; display: flex; flex-direction: column; gap: 2px; }
+  .tabs .nav-brand { display: block; padding: 6px 12px 18px; }
+  .tabs button { flex-direction: row; justify-content: flex-start; gap: 12px; padding: 10px 12px; border-radius: 10px; font: 650 14.5px/1.2 var(--font-body); }
+  .tabs button svg { width: 21px; height: 21px; flex: none; }
+  .tabs button:hover { background: var(--surface-2); color: var(--ink); }
+  .tabs button[aria-current="page"] { background: var(--accent-soft); color: var(--accent); }
+  .tabs .nav-only { display: flex; margin-top: auto; }
+  #settings-btn, .top .eyebrow { display: none; }
+  .main { padding-bottom: 56px; }
+  /* El botón de agregar va arriba, en la cabecera. */
+  .top-in { padding-right: 230px; min-height: 68px; }
+  .fab { top: 16px; bottom: auto; right: max(28px, calc((100vw - 236px - 1200px) / 2 + 28px)); padding: 11px 18px 11px 14px; border-radius: 11px; font-size: 14.5px; box-shadow: var(--shadow); }
+  /* Filtros más compactos. */
+  .view > .seg { max-width: 680px; }
+  .search-box { max-width: 560px; }
+  #todo { max-width: 920px; }
+  #p-list.list, .att-list, #pd-body .list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; align-items: start; }
   .list .more { grid-column: 1 / -1; justify-self: center; }
-  .sheet { bottom: 24px; max-width: 720px; max-height: calc(100% - 48px); border-radius: 18px; }
+  /* La hoja de una factura (o de cualquier cosa) se abre como panel a la derecha. */
+  .sheet { top: 0; bottom: 0; right: 0; left: auto; margin: 0; width: min(660px, 52vw); max-width: none; max-height: none; border-radius: 0; box-shadow: -14px 0 36px rgba(0, 0, 0, .16); animation: slidein .22s cubic-bezier(.2, .8, .2, 1); padding-bottom: 0; }
+  .scrim { background: color-mix(in srgb, var(--scrim) 45%, transparent); }
+  /* Facturas: los filtros a la izquierda y «Para hacer» a la derecha; la tabla, debajo, a todo lo ancho. */
+  #v-facturas:not([hidden]) { display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, 400px); column-gap: 20px; row-gap: 10px; align-items: start;
+    grid-template-areas: "seg todo" "chips todo" "ochips todo" "dates todo" "search todo" "queue queue" "sum sum" "list list"; }
+  #v-facturas > #todo { grid-area: todo; max-width: none; }
+  #v-facturas > #f-seg { grid-area: seg; }
+  #v-facturas > #f-chips { grid-area: chips; }
+  #v-facturas > #f-ochips { grid-area: ochips; }
+  #v-facturas > #f-dates { grid-area: dates; }
+  #v-facturas > .search-box { grid-area: search; }
+  #v-facturas > #queue { grid-area: queue; }
+  #v-facturas > #f-sum { grid-area: sum; }
+  #v-facturas > #f-list { grid-area: list; }
+  #v-facturas .todo-row { font-size: 14px; }
+  /* «Nueva orden de compra» arriba, como el botón de agregar. */
+  #o-new { position: fixed; z-index: 25; top: 16px; right: max(28px, calc((100vw - 236px - 1200px) / 2 + 28px)); width: auto; padding: 11px 18px; border-radius: 11px; box-shadow: var(--shadow); }
 }
+@keyframes slidein { from { transform: translateX(40px); opacity: 0; } }
+/* Tablas (solo en la computadora). */
+.tbl { width: 100%; border-collapse: separate; border-spacing: 0; table-layout: fixed; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; font-size: 14px; }
+.tbl th { text-align: left; padding: 0; background: var(--surface-2); border-bottom: 1px solid var(--line); font: 650 12.5px/1.2 var(--font-body); color: var(--muted); }
+.tbl th .th-txt, .tbl th .th-sort { display: block; padding: 9px 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tbl th .th-sort { width: 100%; border: 0; background: none; color: inherit; font: inherit; text-align: inherit; cursor: pointer; }
+.tbl th .th-sort:hover, .tbl th .th-sort.on { color: var(--ink); }
+.tbl th .th-dir { margin-left: 4px; font-size: 10px; }
+.tbl th.r, .tbl td.r { text-align: right; }
+.tbl td { padding: 7px 10px; border-top: 1px solid var(--line); vertical-align: middle; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tbl tbody tr:first-child td { border-top: 0; }
+.tbl tbody tr { cursor: pointer; }
+.tbl tbody tr:hover td { background: color-mix(in srgb, var(--accent) 6%, var(--surface)); }
+.tbl .mono { font-family: var(--font-data); }
+.tbl .c-main { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.tbl .c-th { flex: none; }
+.tbl .c-th .thumb { width: 30px; height: 38px; border-radius: 4px; }
+.tbl .c-th .thumb .ph { font-size: 7.5px; }
+.tbl .c-th .thumb .stamp { display: none; }
+.tbl .c-tags { white-space: normal; }
+.tbl .c-tags .pill { margin: 2px 4px 2px 0; }
+.tbl .row-btn { border: 0; background: none; padding: 0; color: var(--ink); font: 650 14px/1.3 var(--font-body); text-align: left; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.tbl .row-btn.mono { font-family: var(--font-data); }
+.tbl .row-btn.muted { color: var(--muted); }
+.tbl .row-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+.tbl .w-main { width: 28%; } .tbl .w-cmain { width: 17%; } .tbl .w-ord { width: 12%; } .tbl .w-ncf { width: 13%; } .tbl .w-date { width: 11%; } .tbl .w-st { width: 11%; } .tbl .w-amt { width: 13%; } .tbl .w-trips { width: 8%; } .tbl .w-proj { width: 14%; }
 .budget .b-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
 .budget .b-top b { font: 650 18px var(--font-data); }
 .budget small { color: var(--muted); font-size: 13px; }
@@ -602,12 +663,14 @@ input[type="date"]::-webkit-calendar-picker-indicator { margin: 0 0 0 4px; paddi
 
 <nav class="tabs" aria-label="Secciones">
   <div class="tabs-in">
+    <div class="nav-brand"><span class="eyebrow">Facturas de proyectos</span></div>
     <button type="button" data-act="tab" data-tab="facturas"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h12v18l-2-1.3-2 1.3-2-1.3-2 1.3-2-1.3-2 1.3z"/><path d="M9 8h6M9 12h6M9 16h3"/></svg><span>Facturas</span></button>
     <button type="button" data-act="tab" data-tab="conduces"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6.5h11v9h-11z"/><path d="M13.5 9.5h4l3 3.2v2.8h-7"/><circle cx="6.5" cy="17.2" r="1.8"/><circle cx="17" cy="17.2" r="1.8"/></svg><span>Conduces</span></button>
     <button type="button" data-act="tab" data-tab="ordenes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4.5V3h6v1.5M8.5 10h7M8.5 14h7M8.5 18h4"/></svg><span>Órdenes</span></button>
     <button type="button" data-act="tab" data-tab="pagos"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6.5 9.5v5M17.5 9.5v5"/></svg><span>Pagos</span></button>
     <button type="button" data-act="tab" data-tab="asistencia"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="17" rx="2"/><path d="M8 2.5v3M16 2.5v3M4 9.5h16M8.5 14.5l2.2 2.2 4.8-4.8"/></svg><span>Asistencia</span></button>
     <button type="button" data-act="tab" data-tab="proyectos"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2h8.5A1.5 1.5 0 0 1 21 9.5v8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z"/></svg><span>Proyectos</span></button>
+    <button type="button" class="nav-only" data-act="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg><span>Ajustes</span></button>
   </div>
 </nav>
 

@@ -51,7 +51,7 @@ Cada prueba dice `OK` o `FALLA` en cada revisión, y al final `correr.js` dice c
 | `pase-de-lista.js` | Obreros, marcas de entrada, pase sorpresa y salida, reglas de la empresa (tardanza y sábado, medio día), resumen, Excel y PDF de la planilla. |
 | `paginas-y-grapa.js` | Factura y orden engrapadas en un PDF, agregar página, «Es otra página» y separar páginas. |
 | `proveedores-presupuesto.js` | Ficha de proveedores, vencimientos, banco en el pago, precio estimado y presupuesto por obra. |
-| `fotos-computadora-errores.js` | Recortar y enderezar fotos, vista de computadora, registro de errores y la protección de la página. |
+| `fotos-computadora-errores.js` | Recortar y enderezar fotos, vista de computadora (menú a la izquierda, tablas que se ordenan y panel a la derecha), registro de errores y la protección de la página. |
 | `abonos.js` | Abonos: balance en la factura, y el pago, el PDF y el Excel con lo que falta por pagar. |
 | `conduces-apartado.js` | La pestaña Conduces, los conduces que se adjuntan solos cuando suman lo mismo que la factura, marcar varios en la factura y la dirección del panel de la nube. |
 | `digitadora.js` | Envíos a la digitadora: lo que falta por mandar, el aviso de la tarde para mandar las de hoy, la lista por día, el PDF con la fecha y la lista en papel, confirmar, «No se la mandé», deshacer y el Excel. |

@@ -59,7 +59,7 @@ No necesita servidor, base de datos ni cuenta: se publica gratis en GitHub Pages
 - **Fechas:** en *Facturas* se elige un mes o un rango de fechas (por la fecha de la factura); los contadores, el total, el Excel y el pago que se arma desde ahí siguen ese período. Con muchas facturas, cada grupo muestra 60 y **Ver más**.
 - **Más ayudas en la factura:** la obra se toma del texto del PDF aunque no haya clave ("Obra: Caperuza 2"); si falta el ITBIS, sugiere el 18 % incluido y se guarda con un toque; el concepto sale de los artículos de la orden; **No lleva orden** quita el aviso a las que no la necesitan.
 - **Lectura sin internet:** si una factura no se pudo leer por falta de conexión, se lee sola cuando vuelve el internet. Si pones la clave de API después de cargar facturas, **Leer todas** las lee de una vez.
-- **En la computadora** se ve más ancha: las facturas, las órdenes y los proyectos van en dos columnas y las ventanas se abren centradas.
+- **En la computadora** cambia la forma: las secciones y Ajustes van en un menú a la izquierda, y el botón de agregar va arriba. Las facturas, los conduces y las órdenes salen en tablas (proveedor, NCF, fecha, estado, etiquetas y monto) que se ordenan tocando el encabezado. En *Facturas*, los filtros quedan a la izquierda y *Para hacer* a la derecha, y lo que se abre sale como panel a la derecha, al lado de la lista. En el teléfono todo sigue igual.
 - **Si algo falla**, *Ajustes → Registro de errores* dice qué pasó y cuándo; se puede compartir para revisarlo. La página solo carga sus propios archivos y solo se conecta con la lectura automática y la nube del equipo, para proteger la clave guardada en el teléfono.
 - **Funciona sin internet**, salvo la lectura automática de facturas de papel y de pedidos.
 

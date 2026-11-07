@@ -126,7 +126,7 @@ const imgInfo = (page, id) => page.evaluate(async (fid) => {
   const rot = await imgInfo(page, inv.fileId);
   check(rot.w === 1600 && rot.h === 1200, `girada: ${rot.w} × ${rot.h}`);
 
-  // 3) En la computadora: dos columnas y la hoja como ventana centrada.
+  // 3) En la computadora: menú a la izquierda, las facturas en una tabla que se ordena y la hoja como panel a la derecha.
   await page.evaluate(async () => {
     for (let k = 0; k < 5; k++) await RT.db.collection('invoices').doc().set({ projectId: null, supplier: 'Proveedor ' + k, rnc: '', number: 'B01000000' + (10 + k), date: '2026-11-04', amount: 100 * (k + 1), itbis: 0, currency: 'DOP', concept: '', ref: '', buyerRnc: '', qrUrl: '', fiscal: '', notInvoice: false, noOrder: true, fileId: null, fileType: 'image/jpeg', thumbId: null, pages: 1, fileName: 'x.jpg', xmlId: null, ai: 'off', createdAt: '2026-11-04T10:00:00.000Z' });
   });
@@ -140,16 +140,30 @@ const imgInfo = (page, id) => page.evaluate(async (fid) => {
     for (let k = 0; k < 6; k++) await RT.db.collection('invoices').doc().set({ projectId: p.id, supplier: 'Ferretería ' + k, rnc: '', number: 'B01000000' + (20 + k), date: '2026-11-04', amount: 1180 * (k + 1), itbis: 180 * (k + 1), currency: 'DOP', concept: '', ref: '', buyerRnc: '', qrUrl: '', fiscal: '', notInvoice: false, noOrder: true, fileId: null, fileType: 'image/jpeg', thumbId: null, pages: 1, fileName: 'x.jpg', xmlId: null, ai: 'off', createdAt: '2026-11-04T10:00:00.000Z' });
   });
   await dp.waitForSelector('#f-list [data-act="open-inv"]');
-  const cols = await dp.$eval('#f-list .list', (e) => getComputedStyle(e).gridTemplateColumns.split(' ').length);
-  check(cols === 2, 'en la computadora las facturas van en dos columnas');
   await dp.click('[data-act="backup-later"]').catch(() => {});
+  const nav = await dp.$eval('.tabs', (e) => { const r = e.getBoundingClientRect(); return { x: r.left, w: r.width, h: r.height }; });
+  const fab = await dp.$eval('#fab', (e) => e.getBoundingClientRect().top);
+  check(nav.x === 0 && nav.w > 180 && nav.w < 300 && nav.h >= 850 && fab < 80 && !!(await dp.$('.tabs .nav-only[data-act="settings"]:visible')), 'en la computadora: menú a la izquierda (con Ajustes) y «Agregar facturas» arriba');
+  const rowsN = await dp.$$eval('#f-list table.inv-tbl tbody tr', (r) => r.length);
+  const heads = await dp.$$eval('#f-list table.inv-tbl thead th', (t) => t.map((x) => x.textContent.trim()));
+  check(rowsN === 6 && heads.join('|') === 'Proveedor|NCF|Fecha|Estado|Etiquetas|Monto', 'las facturas van en una tabla: proveedor, NCF, fecha, estado, etiquetas y monto');
+  const firstRow = () => dp.$eval('#f-list table.inv-tbl tbody tr .row-btn', (b) => b.textContent.trim());
+  await dp.click('[data-act="sort"][data-scope="inv"][data-k="amount"]');
+  const hi = await firstRow();
+  await dp.click('[data-act="sort"][data-scope="inv"][data-k="amount"]');
+  const lo = await firstRow();
+  check(hi === 'Ferretería 5' && lo === 'Ferretería 0', `tocando «Monto» se ordena de mayor a menor y otra vez de menor a mayor (${hi} / ${lo})`);
   await dp.screenshot({ path: path.join(OUT, 'computadora.png') });
-  await dp.click('#f-list [data-act="open-inv"] >> nth=0');
+  await dp.click('#f-list table.inv-tbl tbody tr >> nth=0');
   await dp.waitForSelector('#inv-form');
   await dp.waitForTimeout(400);
-  const sb = await dp.$eval('.sheet', (e) => { const r = e.getBoundingClientRect(); return { bottom: window.innerHeight - r.bottom, w: r.width }; });
-  check(sb.bottom >= 20 && sb.w <= 720, 'la hoja se abre como ventana centrada');
+  const sb = await dp.$eval('.sheet', (e) => { const r = e.getBoundingClientRect(); return { right: window.innerWidth - r.right, top: r.top, h: r.height, w: r.width }; });
+  check(sb.right === 0 && sb.top === 0 && sb.h === 860 && sb.w <= 700, 'la hoja se abre como panel a la derecha, a todo lo alto');
   await dp.screenshot({ path: path.join(OUT, 'computadora-hoja.png') });
+  await dp.click('.sheet-h [data-act="sheet-close"]');
+  await dp.click('.tabs [data-tab="ordenes"]');
+  const oNew = await dp.$eval('#o-new', (e) => { const r = e.getBoundingClientRect(); return { top: r.top, w: r.width }; });
+  check(oNew.top < 80 && oNew.w < 400, '«Nueva orden de compra» va arriba, como botón');
 
   console.log('problemas:', problems.length ? problems : 'ninguno');
   await browser.close();

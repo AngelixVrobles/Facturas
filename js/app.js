@@ -10,7 +10,7 @@ const LIB = {
   qrgen: 'js/qr.js',
 };
 const PDF_CREATOR = 'Facturas de Proyectos';
-const APP_VERSION = '1.13.0';
+const APP_VERSION = '1.14.0';
 const SVG = (d) => `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ICON = {
   plus: SVG('<path d="M12 5v14M5 12h14"/>'),
@@ -96,7 +96,7 @@ const DEFAULT_ORDER_NOTE = 'Toda factura recibida por compras deberá estar acom
 const S = {
   tab: 'facturas', filter: 'pendientes', projectFilter: 'all', search: '', paymentId: null,
   projects: [], invoices: [], payments: [], orders: [], conduces: [], workers: [], asistencia: [], suppliers: [], envios: [], settings: {}, attRules: {}, digi: {}, envioPending: null, got: { projects: false, invoices: false, payments: false, orders: false, conduces: false, workers: false, asistencia: false, suppliers: false, envios: false },
-  attProject: '', attSheet: '', attDay: 0, orderFilter: 'todas', orderSearch: '', orderProject: 'all', condFilter: 'esperando', condSearch: '', condProject: 'all', focus: null, invOrder: 'all', dateFilter: '', dateFrom: '', dateTo: '', showAll: new Set(),
+  attProject: '', attSheet: '', attDay: 0, orderFilter: 'todas', orderSearch: '', orderProject: 'all', condFilter: 'esperando', condSearch: '', condProject: 'all', sort: { inv: null, cond: null, ord: null }, focus: null, invOrder: 'all', dateFilter: '', dateFrom: '', dateTo: '', showAll: new Set(),
   dbState: 'loading', aiState: 'ok', queue: [], sheet: null, payDel: false, busyPdf: false, pdfMsg: '',
   updateReg: null, updating: false, ready: null, restoreFile: null,
 };
@@ -769,11 +769,9 @@ function thumbHTML(i) {
   const inner = tid ? `<img src="${esc(assetUrl(tid))}" alt="" loading="lazy" decoding="async">` : `<span class="ph">${label}</span>`;
   return `<span class="thumb">${inner}${i.status === 'pagada' ? '<span class="stamp pagado">Pagada</span>' : ''}</span>`;
 }
-function cardHTML(i, D, opts = {}) {
-  const reading = i.ai === 'pending';
-  const name = i.supplier || (reading ? 'Leyendo factura…' : 'Factura sin datos');
-  const meta = [i.number ? 'NCF ' + RD.normNcf(i.number) : '', fmtDate(i.date)].filter(Boolean).join(' · ') || i.fileName || '';
-  const tags = [];
+// Las etiquetas de una factura (proyecto, estado, orden, conduces, digitadora, avisos…).
+function invTags(i, D, opts = {}) {
+  const tags = [], reading = i.ai === 'pending';
   if (!opts.hideProject && i.project) tags.push(`<span class="proj"><i class="dot" style="--c:${i.project.color}"></i><span>${esc(i.project.name)}</span></span>`);
   if (!opts.hideStatus) tags.push(`<span class="pill ${i.status}">${INV_LABEL[i.status]}</span>`);
   if (i.fiscal === 'qr' || i.fiscal === 'xml') tags.push(`<span class="pill official">${i.fiscal === 'xml' ? 'XML' : 'QR'} DGII</span>`);
@@ -795,7 +793,62 @@ function cardHTML(i, D, opts = {}) {
   const di = dueInfo(i);
   if (di && (di.overdue || di.days <= 7)) tags.push(`<span class="pill ${di.overdue ? 'warn' : 'pendiente'}">${dueText(di)}</span>`);
   for (const r of reviewFlags(i, D)) tags.push(`<span class="pill warn">${esc(r)}</span>`);
+  return tags;
+}
+function cardHTML(i, D, opts = {}) {
+  const reading = i.ai === 'pending';
+  const name = i.supplier || (reading ? 'Leyendo factura…' : 'Factura sin datos');
+  const meta = [i.number ? 'NCF ' + RD.normNcf(i.number) : '', fmtDate(i.date)].filter(Boolean).join(' · ') || i.fileName || '';
+  const tags = invTags(i, D, opts);
   return `<button type="button" class="inv" data-act="open-inv" data-id="${esc(i.id)}">${thumbHTML(i)}<span class="inv-main"><span class="inv-top"><span class="supplier${i.supplier ? '' : ' muted'}">${esc(name)}</span><span class="amount">${esc(money(i.amount, i.currency))}</span></span><span class="inv-meta">${esc(meta)}</span><span class="tags">${tags.join('')}</span></span></button>`;
+}
+
+/* ---------- en la computadora: tablas que se ordenan tocando el encabezado ---------- */
+const wideMQ = window.matchMedia ? window.matchMedia('(min-width: 960px)') : null;
+const wide = () => !!(wideMQ && wideMQ.matches);
+function sortRows(scope, items, val) {
+  const s = S.sort[scope];
+  if (!s) return items;
+  return [...items].sort((a, b) => {
+    const x = val(a, s.k), y = val(b, s.k);
+    const c = typeof x === 'number' && typeof y === 'number' ? x - y : String(x ?? '').localeCompare(String(y ?? ''), 'es', { numeric: true });
+    return c * s.dir;
+  });
+}
+function thHTML(scope, k, label, cls = '') {
+  if (!k) return `<th class="${cls}"><span class="th-txt">${label}</span></th>`;
+  const s = S.sort[scope], on = !!s && s.k === k;
+  return `<th class="${cls}" aria-sort="${on ? (s.dir > 0 ? 'ascending' : 'descending') : 'none'}"><button type="button" class="th-sort${on ? ' on' : ''}" data-act="sort" data-scope="${scope}" data-k="${k}">${label}<span class="th-dir" aria-hidden="true">${on ? (s.dir > 0 ? '▲' : '▼') : ''}</span></button></th>`;
+}
+// Primer toque: de mayor a menor en montos y fechas, de la A a la Z en lo demás; segundo, al revés; tercero, como venía.
+function toggleSort(scope, k) {
+  const cur = S.sort[scope], first = ['amount', 'total', 'est', 'date'].includes(k) ? -1 : 1;
+  S.sort[scope] = !cur || cur.k !== k ? { k, dir: first } : cur.dir === first ? { k, dir: -first } : null;
+}
+const invVal = (i, k) => (k === 'amount' ? (isNum(i.amount) ? i.amount : -Infinity) : k === 'date' ? i.date || '' : k === 'number' ? RD.normNcf(i.number) || '' : k === 'status' ? INV_LABEL[i.status] || '' : norm(i.supplier || ''));
+function invTableHTML(items, D) {
+  const rows = sortRows('inv', items, invVal).map((i) => {
+    const name = i.supplier || (i.ai === 'pending' ? 'Leyendo factura…' : 'Factura sin datos');
+    return `<tr data-act="open-inv" data-id="${esc(i.id)}"><td class="c-main"><span class="c-th">${thumbHTML(i)}</span><button type="button" class="row-btn${i.supplier ? '' : ' muted'}" data-act="open-inv" data-id="${esc(i.id)}">${esc(name)}</button></td><td class="mono">${esc(i.number ? RD.normNcf(i.number) : '—')}</td><td>${esc(fmtDate(i.date) || '—')}</td><td><span class="pill ${i.status}">${INV_LABEL[i.status]}</span></td><td class="c-tags">${invTags(i, D, { hideProject: true, hideStatus: true }).join('')}</td><td class="r mono">${esc(money(i.amount, i.currency))}</td></tr>`;
+  }).join('');
+  return `<table class="tbl inv-tbl"><colgroup><col class="w-main"><col class="w-ncf"><col class="w-date"><col class="w-st"><col><col class="w-amt"></colgroup><thead><tr>${thHTML('inv', 'supplier', 'Proveedor')}${thHTML('inv', 'number', 'NCF')}${thHTML('inv', 'date', 'Fecha')}${thHTML('inv', 'status', 'Estado')}${thHTML('inv', '', 'Etiquetas')}${thHTML('inv', 'amount', 'Monto', 'r')}</tr></thead><tbody>${rows}</tbody></table>`;
+}
+function condTableHTML(items, D, invById) {
+  const invOf = (c) => { const inv = c.invoiceId ? invById.get(c.invoiceId) : null; return inv ? (inv.number ? RD.normNcf(inv.number) : inv.supplier || 'sin NCF') : ''; };
+  const val = (c, k) => (k === 'total' ? (isNum(c.total) ? c.total : -Infinity) : k === 'date' ? c.date || '' : k === 'factura' ? invOf(c) : k === 'material' ? norm([c.material, c.qty].filter(Boolean).join(' ')) : String(c.number || ''));
+  const rows = sortRows('cond', items, val).map((c) => {
+    const p = c.projectId ? D.projById.get(c.projectId) : null, inv = invOf(c);
+    return `<tr data-act="open-cond" data-id="${esc(c.id)}"><td class="c-main"><span class="c-th">${condThumbHTML(c)}</span><button type="button" class="row-btn" data-act="open-cond" data-id="${esc(c.id)}">${esc(c.number || 'Sin número')}</button>${c.dup ? ' <span class="pill warn">¿Repetido?</span>' : ''}</td><td>${esc(fmtDate(c.date) || '—')}</td><td>${esc([c.material, c.qty].filter(Boolean).join(' ') || '—')}</td><td class="r mono">${isNum(c.trips) ? esc(String(c.trips)) : '—'}</td><td>${esc(p ? p.name : '—')}</td><td>${inv ? `<span class="mono">${esc(inv)}</span>` : '<span class="pill pendiente">Sin factura</span>'}</td><td class="r mono">${c.ai === 'pending' ? '<span class="pill reading">Leyendo…</span>' : isNum(c.total) ? esc(money(c.total, c.currency)) : '—'}</td></tr>`;
+  }).join('');
+  return `<table class="tbl cond-tbl"><colgroup><col class="w-cmain"><col class="w-date"><col><col class="w-trips"><col class="w-proj"><col class="w-ncf"><col class="w-amt"></colgroup><thead><tr>${thHTML('cond', 'number', 'Conduce')}${thHTML('cond', 'date', 'Fecha')}${thHTML('cond', 'material', 'Material')}${thHTML('cond', '', 'Viajes', 'r')}${thHTML('cond', '', 'Proyecto')}${thHTML('cond', 'factura', 'Factura')}${thHTML('cond', 'total', 'Total', 'r')}</tr></thead><tbody>${rows}</tbody></table>`;
+}
+function orderTableHTML(items, D) {
+  const val = (o, k) => (k === 'est' ? orderEst(o) || -Infinity : k === 'date' ? o.date || '' : k === 'supplier' ? norm(o.supplier || '') : k === 'status' ? ORDER_LABEL[o.status] || '' : orderNo(o));
+  const rows = sortRows('ord', items, val).map((o) => {
+    const invs = D.invByOrder.get(o.id) || [], est = orderEst(o);
+    return `<tr data-act="open-order" data-id="${esc(o.id)}"><td class="c-main"><button type="button" class="row-btn mono" data-act="open-order" data-id="${esc(o.id)}">${esc(orderNo(o))}</button></td><td>${esc(fmtDate(o.date) || '—')}</td><td>${esc(o.supplier || '—')}</td><td><span class="pill o-${o.status}">${ORDER_LABEL[o.status]}</span></td><td class="r mono">${(o.items || []).length}</td><td class="r mono">${est ? esc(money(est)) : '—'}</td><td>${invs.length ? esc(plural(invs.length, 'factura', 'facturas')) : '—'}</td></tr>`;
+  }).join('');
+  return `<table class="tbl ord-tbl"><colgroup><col class="w-ord"><col class="w-date"><col><col class="w-st"><col class="w-trips"><col class="w-amt"><col class="w-ncf"></colgroup><thead><tr>${thHTML('ord', 'number', 'Orden')}${thHTML('ord', 'date', 'Fecha')}${thHTML('ord', 'supplier', 'Proveedor')}${thHTML('ord', 'status', 'Estado')}${thHTML('ord', '', 'Artículos', 'r')}${thHTML('ord', 'est', 'Estimado', 'r')}${thHTML('ord', '', 'Facturas')}</tr></thead><tbody>${rows}</tbody></table>`;
 }
 
 function renderFacturas(D) {
@@ -856,8 +909,8 @@ function renderFacturas(D) {
     el.innerHTML = `<div class="empty"><p>${q ? 'Nada coincide con tu búsqueda.' : ['No hay facturas', what, oc, proj, when].filter(Boolean).join(' ') + '.'}</p></div>`;
     return;
   }
-  const LIM = 60;
-  const cards = (items, key) => (items.length <= LIM || S.showAll.has(key) ? items : items.slice(0, LIM)).map((i) => cardHTML(i, D, { hideProject: true })).join('')
+  const LIM = wide() ? 300 : 60;
+  const cards = (items, key) => ((sh) => (wide() ? invTableHTML(sh, D) : sh.map((i) => cardHTML(i, D, { hideProject: true })).join('')))(items.length <= LIM || S.showAll.has(key) ? items : items.slice(0, LIM))
     + (items.length > LIM && !S.showAll.has(key) ? `<button type="button" class="btn sm more" data-act="more" data-k="${esc(key)}">Ver ${items.length - LIM} más</button>` : '');
   if (S.projectFilter === 'all') {
     el.innerHTML = groupByProject(list, D).map((g) => `<section class="group"><h2 class="group-h">${g.color ? `<i class="dot" style="--c:${g.color}"></i>` : '<i class="dot ring"></i>'}<span class="gname">${esc(g.name)}</span><span class="gmeta">${g.items.length} · ${esc(totalStr(g.items, 'toPay'))}</span></h2><div class="list">${cards(g.items, g.id)}</div></section>`).join('');
@@ -1022,14 +1075,14 @@ function renderOrdenes(D) {
   let list = base.filter((o) => S.orderFilter === 'todas' || groupOf(o) === S.orderFilter);
   if (q) list = list.filter((o) => norm([orderNo(o), o.supplier, o.requestedBy, o.project && o.project.name, (o.items || []).map((x) => x.desc).join(' ')].join(' ')).includes(q));
   if (!list.length) { el.innerHTML = `<div class="empty"><p>${q ? 'Nada coincide con tu búsqueda.' : S.orderProject !== 'all' ? 'No hay órdenes de este proyecto en esta lista.' : 'No hay órdenes en esta lista.'}</p></div>`; return; }
-  if (S.orderProject !== 'all') { el.innerHTML = `<div class="list">${list.map((o) => orderCardHTML(o, D, { hideProject: true })).join('')}</div>`; return; }
+  if (S.orderProject !== 'all') { el.innerHTML = wide() ? orderTableHTML(list, D) : `<div class="list">${list.map((o) => orderCardHTML(o, D, { hideProject: true })).join('')}</div>`; return; }
   // Divididas por proyecto, en el mismo orden que en Facturas; dentro de cada uno, la más nueva primero.
   const groups = D.projects.map((p) => ({ name: p.name, color: p.color, items: list.filter((o) => o.projectId === p.id) })).filter((g) => g.items.length);
   const none = list.filter((o) => !o.project);
   if (none.length) groups.push({ name: 'Sin proyecto', color: null, items: none });
   el.innerHTML = groups.map((g) => {
     const toSign = g.items.filter((o) => o.status === 'borrador' || o.status === 'enviada').length;
-    return `<section class="group"><h2 class="group-h">${g.color ? `<i class="dot" style="--c:${g.color}"></i>` : '<i class="dot ring"></i>'}<span class="gname">${esc(g.name)}</span><span class="gmeta">${esc([plural(g.items.length, 'orden', 'órdenes'), toSign && S.orderFilter !== 'porfirmar' ? `${toSign} por firmar` : ''].filter(Boolean).join(' · '))}</span></h2><div class="list">${g.items.map((o) => orderCardHTML(o, D, { hideProject: true })).join('')}</div></section>`;
+    return `<section class="group"><h2 class="group-h">${g.color ? `<i class="dot" style="--c:${g.color}"></i>` : '<i class="dot ring"></i>'}<span class="gname">${esc(g.name)}</span><span class="gmeta">${esc([plural(g.items.length, 'orden', 'órdenes'), toSign && S.orderFilter !== 'porfirmar' ? `${toSign} por firmar` : ''].filter(Boolean).join(' · '))}</span></h2>${wide() ? orderTableHTML(g.items, D) : `<div class="list">${g.items.map((o) => orderCardHTML(o, D, { hideProject: true })).join('')}</div>`}</section>`;
   }).join('');
 }
 
@@ -1080,7 +1133,7 @@ function renderConduces(D) {
     return [p ? p.name : '', inv ? 'Factura ' + (inv.number ? RD.normNcf(inv.number) : inv.supplier || 'sin NCF') : S.condFilter === 'todos' ? 'esperando factura' : ''].filter(Boolean).join(' · ');
   };
   el.innerHTML = (S.condFilter === 'esperando' ? '<p class="hint c-hint">Cuando llegue la factura, se le adjuntan solos si la factura menciona sus números o si suman lo mismo que la factura. Si no, ábrela y marca los que son.</p>' : '')
-    + [...groups.values()].map((g) => `<section class="group"><h2 class="group-h"><span class="gname">${esc(g.name)}</span><span class="gmeta">${g.items.length} · ${esc(totalStr(g.items, 'total'))}</span></h2><div class="cond-list">${g.items.map((c) => condRowHTML(c, false, more(c))).join('')}</div></section>`).join('')
+    + [...groups.values()].map((g) => `<section class="group"><h2 class="group-h"><span class="gname">${esc(g.name)}</span><span class="gmeta">${g.items.length} · ${esc(totalStr(g.items, 'total'))}</span></h2>${wide() ? condTableHTML(g.items, D, invById) : `<div class="cond-list">${g.items.map((c) => condRowHTML(c, false, more(c))).join('')}</div>`}</section>`).join('')
     + (all > list.length ? `<button type="button" class="btn sm more" data-act="more" data-k="${esc(key)}">Ver ${all - list.length} más</button>` : '');
 }
 
@@ -4444,6 +4497,7 @@ function onClick(e) {
     case 'att-blank': attExport('blank'); break;
     case 'cond-list': closeSheet(); S.tab = 'conduces'; S.condFilter = 'esperando'; S.paymentId = null; renderAll(); window.scrollTo(0, 0); break;
     case 'cfilter': S.condFilter = t.dataset.f; renderAll(); break;
+    case 'sort': toggleSort(t.dataset.scope, t.dataset.k); renderAll(); break;
     case 'cprojf': S.condProject = t.dataset.p; renderAll(); break;
     case 'cond-link-many': { const ids = $$('#cpick input[data-cpick="c"]').filter((b) => b.checked).map((b) => b.value); if (ids.length) { t.disabled = true; linkConduces(ids, t.dataset.inv); } break; }
     case 'cond-add': condTarget = t.dataset.inv || null; $('#cond-input').click(); break;
@@ -4710,6 +4764,7 @@ function bind() {
   }, true);
   window.addEventListener('online', () => { if (S.aiState !== 'ok') scheduleRender(); retryOffline(); });
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushAtt(); else scheduleRender(); });
+  if (wideMQ && wideMQ.addEventListener) wideMQ.addEventListener('change', () => scheduleRender());
   setInterval(() => { if (document.visibilityState === 'visible') renderTodo(derive()); }, 300000);
   window.addEventListener('pagehide', () => { flushAtt(); });
 }
