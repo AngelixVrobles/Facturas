@@ -318,9 +318,10 @@
   async function api(path, opts = {}, again = true) {
     await ensureSession(false);
     let r;
-    try { r = await fetch(baseUrl() + path, { ...opts, headers: { apikey: nube.key, Authorization: 'Bearer ' + nube.access, ...(opts.headers || {}) } }); } catch (e) { throw { code: 'offline', message: 'Sin conexión' }; }
+    try { r = await fetch(baseUrl() + path, { ...opts, headers: { apikey: nube.key, Authorization: 'Bearer ' + nube.access, ...(opts.headers || {}) } }); } catch (e) { throw { code: navigator.onLine === false ? 'offline' : 'unreachable', message: 'Sin conexión' }; }
     if ((r.status === 401 || r.status === 403) && again) { await ensureSession(true); return api(path, opts, false); }
-    if (!r.ok) { const t = await r.text().catch(() => ''); throw { code: r.status === 401 || r.status === 403 ? 'auth' : 'server', status: r.status, message: t.slice(0, 300) }; }
+    // 540: Supabase pausó el proyecto (el plan gratis lo hace tras una semana sin uso); 402: tiene restricciones.
+    if (!r.ok) { const t = await r.text().catch(() => ''); throw { code: r.status === 401 || r.status === 403 ? 'auth' : r.status === 540 ? 'paused' : r.status === 402 ? 'limited' : 'server', status: r.status, message: t.slice(0, 300) }; }
     return r;
   }
 
@@ -448,7 +449,13 @@
       if (!nube) return syncStatus();
       nubeState.status = 'error';
       nubeState.code = (e && e.code) || 'server';
-      nubeState.error = { offline: 'Sin internet: se pone al día sola cuando vuelva.', auth: 'Hay que volver a entrar con el correo y la contraseña.' }[nubeState.code] || 'No se pudo sincronizar; se vuelve a intentar sola.';
+      nubeState.error = {
+        offline: 'Sin internet: se pone al día sola cuando vuelva.',
+        auth: 'Hay que volver a entrar con el correo y la contraseña.',
+        paused: 'Supabase pausó la nube porque pasó una semana sin usarse. Entra a supabase.com, abre el proyecto y toca «Restore». Mientras tanto, todo se guarda aquí y se sube cuando vuelva.',
+        limited: 'La nube tiene una restricción (puede ser que se llenó el espacio del plan gratis). Revísalo en supabase.com. Mientras tanto, todo se guarda aquí.',
+        unreachable: 'No se pudo llegar a la nube. Si tienes internet, puede que Supabase la haya pausado: entra a supabase.com, abre el proyecto y toca «Restore».',
+      }[nubeState.code] || 'No se pudo sincronizar; se vuelve a intentar sola.';
       if (nubeState.code !== 'offline') console.warn('nube', e);
     } finally {
       nubeState.progress = '';
@@ -514,6 +521,28 @@
     Object.assign(nubeState, { status: 'off', at: 0, error: '', code: '', progress: '' });
     nubeEmit();
   }
+  // Respaldo automático en la nube: los datos (sin los archivos, que ya están en la nube) en uno de 8 lugares,
+  // uno por semana; así siempre quedan las últimas 8 semanas sin tener que borrar nada.
+  const BK_SLOTS = 8;
+  const bkSlot = (t = Date.now()) => 'semana-' + ((Math.floor(t / (7 * 864e5)) % BK_SLOTS) + 1);
+  async function backupNow(opts = {}) {
+    if (!nube) throw { code: 'off' };
+    await loadAll();
+    const docs = [...cache.entries()].filter(([p]) => p !== 'settings/respaldos').map(([path, data]) => ({ path, data }));
+    const at = new Date().toISOString();
+    const slot = opts.slot || bkSlot();
+    await api('/storage/v1/object/archivos/respaldos/' + slot + '.json', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-upsert': 'true' }, body: JSON.stringify({ app: 'facturas', v: 1, exportedAt: at, docs }) });
+    return { slot, at, docs: docs.length };
+  }
+  async function listBackups() {
+    const r = await api('/storage/v1/object/list/archivos', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ prefix: 'respaldos/', limit: 50, offset: 0, sortBy: { column: 'name', order: 'asc' } }) });
+    const rows = await r.json();
+    return (Array.isArray(rows) ? rows : []).filter((x) => /^(semana-\d+|antes-de-restaurar)\.json$/.test(x.name)).map((x) => ({ name: x.name, at: x.updated_at || x.created_at || '', size: (x.metadata && x.metadata.size) || 0 }));
+  }
+  async function getBackup(name) {
+    const r = await api('/storage/v1/object/authenticated/archivos/respaldos/' + encodeURIComponent(name));
+    return r.json();
+  }
   // Código para conectar otro teléfono (URL y clave pública; sin la contraseña).
   const shareCode = () => (nube ? 'FACTURAS-NUBE:' + btoa(JSON.stringify({ url: nube.url, key: nube.key })) : '');
   function parseShareCode(text) {
@@ -525,7 +554,7 @@
   window.addEventListener('online', () => scheduleSync(500));
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') scheduleSync(400); });
   if (nube) scheduleSync(1200);
-  const sync = { status: syncStatus, onChange(f) { nubeSubs.add(f); return () => nubeSubs.delete(f); }, connect, relogin, disconnect, syncNow, shareCode, parseShareCode };
+  const sync = { status: syncStatus, onChange(f) { nubeSubs.add(f); return () => nubeSubs.delete(f); }, connect, relogin, disconnect, syncNow, shareCode, parseShareCode, backupNow, listBackups, getBackup };
 
   /* ---------- Respaldo completo ---------- */
   async function exportAll() {
@@ -555,6 +584,32 @@
     if (nube) { await markEverything(); scheduleSync(500); } // con la nube activa, lo restaurado también se sube
   }
 
+  // Restaurar solo los datos (los archivos se quedan). Lo que no está en el respaldo se borra, también en la nube.
+  async function importDocs(docs, keep = []) {
+    await loadAll();
+    const before = new Set(cache.keys());
+    const kept = keep.filter((p) => cache.has(p)).map((p) => ({ path: p, data: clone(cache.get(p)) }));
+    const d = await openIdb();
+    await new Promise((res, rej) => {
+      const t = d.transaction('docs', 'readwrite');
+      const ds = t.objectStore('docs');
+      ds.clear();
+      for (const x of docs) if (!keep.includes(x.path)) ds.put(x.data, x.path);
+      for (const x of kept) ds.put(x.data, x.path);
+      t.oncomplete = () => res();
+      t.onerror = () => rej(storeErr(t.error));
+      t.onabort = () => rej(storeErr(t.error));
+    });
+    loaded = null;
+    await loadAll();
+    notifyAll();
+    if (nube) {
+      for (const path of new Set([...before, ...cache.keys()])) if (!keep.includes(path)) dirty.set(path, ++seq + '-' + Date.now());
+      saveDirty();
+      scheduleSync(500);
+    }
+  }
+
   async function persist() {
     try {
       if (!navigator.storage || !navigator.storage.persist) return null;
@@ -570,5 +625,5 @@
     return { db, assets, user, sample: ai }[name] || null;
   }
 
-  window.RT = { db, assets, ai, sync, exportAll, importAll, persist, openIdb, use };
+  window.RT = { db, assets, ai, sync, exportAll, importAll, importDocs, persist, openIdb, use };
 })();

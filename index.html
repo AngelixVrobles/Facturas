@@ -304,7 +304,22 @@ details.edit .fields { padding: 12px 14px 14px; }
 .viewer-b img, .viewer-b canvas { width: 100%; max-width: 900px; height: auto; display: block; background: var(--paper); border-radius: 4px; }
 .viewer-msg { color: var(--viewer-ink); opacity: .8; padding: 30px; }
 
-.toast { position: fixed; left: 50%; bottom: calc(144px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); z-index: 70; background: var(--ink); color: var(--bg); padding: 11px 16px; border-radius: 11px; font: 650 14px/1.3 var(--font-body); box-shadow: var(--shadow); max-width: calc(100% - 32px); width: max-content; }
+.toast { position: fixed; left: 50%; bottom: calc(144px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); z-index: 70; background: var(--ink); color: var(--bg); padding: 11px 16px; border-radius: 11px; font: 650 14px/1.3 var(--font-body); box-shadow: var(--shadow); max-width: calc(100% - 32px); width: max-content; display: flex; align-items: center; gap: 14px; }
+.toast[hidden] { display: none; }
+.toast-act { border: 0; background: none; color: inherit; font: 750 14px/1 var(--font-body); text-decoration: underline; text-underline-offset: 3px; padding: 4px 0; cursor: pointer; }
+.sync-chip { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); border-radius: 999px; padding: 6px 11px; font: 650 12.5px/1 var(--font-body); white-space: nowrap; flex: none; cursor: pointer; }
+.sync-chip[hidden] { display: none; }
+.sync-chip:not([hidden]) + .end { margin-left: 6px; }
+.sync-chip svg { width: 17px; height: 17px; flex: none; color: var(--paid); }
+.sync-chip.busy svg { color: var(--accent); animation: pulse 1s ease-in-out infinite; }
+.sync-chip.pend svg { color: var(--pend); }
+.sync-chip.off svg { color: var(--muted); }
+.sync-chip.bad { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); }
+.sync-chip.bad svg { color: var(--warn); }
+/* Con una hoja abierta, los avisos van arriba para no tapar sus botones. */
+body.locked .toast { top: calc(14px + env(safe-area-inset-top, 0px)); bottom: auto; }
+.top .eyebrow { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.trash-row small { display: block; color: var(--muted); font-size: 12.5px; margin-top: 2px; }
 .file-input { position: fixed; left: -9999px; width: 1px; height: 1px; opacity: 0; }
 
 @media (min-width: 700px) {
@@ -587,6 +602,7 @@ input[type="date"]::-webkit-calendar-picker-indicator { margin: 0 0 0 4px; paddi
       <span class="eyebrow">Facturas de proyectos</span>
       <h1 id="title">Facturas</h1>
     </div>
+    <button id="sync-chip" class="sync-chip" type="button" data-act="sync-chip" hidden></button>
     <button id="settings-btn" class="icon-btn plain end" type="button" data-act="settings" aria-label="Ajustes" title="Ajustes" hidden><svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
   </div>
 </header>

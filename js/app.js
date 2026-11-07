@@ -10,7 +10,7 @@ const LIB = {
   qrgen: 'js/qr.js',
 };
 const PDF_CREATOR = 'Facturas de Proyectos';
-const APP_VERSION = '1.14.0';
+const APP_VERSION = '1.15.0';
 const SVG = (d) => `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ICON = {
   plus: SVG('<path d="M12 5v14M5 12h14"/>'),
@@ -95,7 +95,7 @@ const DEFAULT_ORDER_NOTE = 'Toda factura recibida por compras deberá estar acom
 
 const S = {
   tab: 'facturas', filter: 'pendientes', projectFilter: 'all', search: '', paymentId: null,
-  projects: [], invoices: [], payments: [], orders: [], conduces: [], workers: [], asistencia: [], suppliers: [], envios: [], settings: {}, attRules: {}, digi: {}, envioPending: null, got: { projects: false, invoices: false, payments: false, orders: false, conduces: false, workers: false, asistencia: false, suppliers: false, envios: false },
+  projects: [], invoices: [], payments: [], orders: [], conduces: [], workers: [], asistencia: [], suppliers: [], envios: [], papelera: [], settings: {}, attRules: {}, digi: {}, bk: {}, envioPending: null, got: { projects: false, invoices: false, payments: false, orders: false, conduces: false, workers: false, asistencia: false, suppliers: false, envios: false, papelera: false },
   attProject: '', attSheet: '', attDay: 0, orderFilter: 'todas', orderSearch: '', orderProject: 'all', condFilter: 'esperando', condSearch: '', condProject: 'all', sort: { inv: null, cond: null, ord: null }, focus: null, invOrder: 'all', dateFilter: '', dateFrom: '', dateTo: '', showAll: new Set(),
   dbState: 'loading', aiState: 'ok', queue: [], sheet: null, payDel: false, busyPdf: false, pdfMsg: '',
   updateReg: null, updating: false, ready: null, restoreFile: null,
@@ -710,6 +710,15 @@ async function write(fn, okMsg) { try { await dbw(fn); if (okMsg) toast(okMsg); 
 
 let toastT = 0;
 function toast(msg) { const el = $('#toast'); el.textContent = msg; el.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => { el.hidden = true; }, 3000); }
+// Aviso con un botón (por ejemplo «Deshacer»); dura un poco más.
+function toastAct(msg, label, fn) {
+  const el = $('#toast');
+  el.innerHTML = `<span>${esc(msg)}</span><button type="button" class="toast-act">${esc(label)}</button>`;
+  el.hidden = false;
+  el.querySelector('.toast-act').onclick = () => { el.hidden = true; fn(); };
+  clearTimeout(toastT);
+  toastT = setTimeout(() => { el.hidden = true; }, 7000);
+}
 
 /* ---------- pantallas ---------- */
 let rq = 0;
@@ -739,6 +748,7 @@ function renderAll() {
   fab.dataset.act = condTab ? 'cond-add' : 'add';
   $('#fab-label').textContent = condTab ? 'Agregar conduces' : 'Agregar facturas';
   $('#settings-btn').hidden = S.dbState === 'absent';
+  renderSyncChip();
   refreshInvoiceSheet(D);
   refreshOrderSheet(D);
   refreshCondSheet(D);
@@ -751,12 +761,14 @@ function renderBanner(D) {
   if (S.updateReg) parts.push('<div class="note example"><span class="grow"><b>Hay una versión nueva.</b> Se instala sola la próxima vez que abras la app, o actualízala ahora.</span><span class="acts"><button type="button" class="btn sm" data-act="update-app">Actualizar</button></span></div>');
   if (isIOS() && !isStandalone() && !lsGet('facturas.installHintOff')) parts.push('<div class="note example"><span class="grow"><b>Instálala antes de empezar:</b> toca Compartir y luego <b>Agregar a pantalla de inicio</b>. En iPhone, lo que guardes en Safari no pasa a la app instalada.</span><span class="acts"><button type="button" class="btn sm" data-act="install-off">Entendido</button></span></div>');
   { const ns = RT.sync.status(); if (ns.on && ns.code === 'auth') parts.push('<div class="note warn"><span class="grow"><b>La nube pide que vuelvas a entrar</b> para seguir compartiendo los datos con los otros teléfonos.</span><span class="acts"><button type="button" class="btn sm" data-act="settings">Entrar</button></span></div>'); }
+  { const ns = RT.sync.status(); if (ns.on && ns.status === 'error' && ['paused', 'unreachable', 'limited'].includes(ns.code)) parts.push(`<div class="note warn"><span class="grow"><b>${ns.code === 'paused' ? 'La nube está en pausa.' : ns.code === 'limited' ? 'La nube tiene una restricción.' : 'No se pudo llegar a la nube.'}</b> ${esc(ns.error)}</span><span class="acts"><button type="button" class="btn sm" data-act="nube-sync">Probar otra vez</button></span></div>`); }
   if (S.aiState && S.aiState !== 'ok') parts.push(`<div class="note warn"><span class="grow"><b>Las facturas no se están leyendo solas.</b> ${esc(AI_ERR[S.aiState === 'badkey' ? 'bad_key' : S.aiState] || AI_ERR.bad_key)}</span><span class="acts"><button type="button" class="btn sm" data-act="settings">Revisar</button></span></div>`);
   const last = Number(lsGet('facturas.lastBackup')) || 0;
   const snooze = Number(lsGet('facturas.backupSnooze')) || 0;
-  const synced = (() => { const ns = RT.sync.status(); return ns.on && ns.at && Date.now() - ns.at < 7 * 864e5; })(); // con la nube al día, el recordatorio no hace falta
-  if (S.dbState === 'ready' && S.invoices.length && !synced && Date.now() - last > 7 * 864e5 && Date.now() > snooze) {
-    parts.push(`<div class="note warn"><span class="grow"><b>${last ? 'Haz un respaldo:' : 'Todavía no tienes respaldo.'}</b> Tus facturas solo están en este teléfono. Guarda una copia en iCloud Drive o en tu computadora.</span><span class="acts"><button type="button" class="btn sm" data-act="backup">Respaldar ahora</button><button type="button" class="btn sm ghost" data-act="backup-later">Mañana</button></span></div>`);
+  // Con la nube también: la nube copia lo que se borra o se cambia por error, así que un archivo de vez en cuando (cada mes).
+  const cloudOn = RT.sync.status().on;
+  if (S.dbState === 'ready' && S.invoices.length && Date.now() - last > (cloudOn ? 30 : 7) * 864e5 && Date.now() > snooze) {
+    parts.push(`<div class="note warn"><span class="grow"><b>${last ? 'Haz un respaldo:' : 'Todavía no tienes respaldo en un archivo.'}</b> ${cloudOn ? 'La nube copia también lo que se borra o se cambia por error. Una vez al mes, guarda un respaldo en tu computadora o en Drive.' : 'Tus facturas solo están en este teléfono. Guarda una copia en iCloud Drive o en tu computadora.'}</span><span class="acts"><button type="button" class="btn sm" data-act="backup">Respaldar ahora</button><button type="button" class="btn sm ghost" data-act="backup-later">Mañana</button></span></div>`);
   }
   const el = $('#banner');
   el.innerHTML = parts.join('');
@@ -1035,7 +1047,7 @@ function renderPayDetail(D, pay) {
   }
   $('#pd-edit').hidden = !edit;
   $('#pd-foot').innerHTML = !edit || st === 'pagado' ? '' : S.payDel
-    ? `<div class="confirm"><p>¿Eliminar este pago? Sus facturas regresan a <b>Pendientes</b>; no se borra ninguna.</p><div class="actions"><button type="button" class="btn danger solid" data-act="pay-del-yes">Eliminar pago</button><button type="button" class="btn" data-act="pay-del-no">Cancelar</button></div></div>`
+    ? `<div class="confirm"><p>¿Eliminar este pago? Sus facturas regresan a <b>Pendientes</b>; no se borra ninguna. El pago queda en la papelera 30 días.</p><div class="actions"><button type="button" class="btn danger solid" data-act="pay-del-yes">Eliminar pago</button><button type="button" class="btn" data-act="pay-del-no">Cancelar</button></div></div>`
     : `<button type="button" class="btn danger sm" data-act="pay-del">${ICON.trash} Eliminar pago</button>`;
 }
 
@@ -1252,7 +1264,7 @@ function openInvoice(id, keepScroll) {
       ${invCondBoxHTML(i, D, edit)}
       ${abonosHTML(i, edit)}
       ${delBtn}
-      <div id="inv-del-box" hidden><div class="confirm"><p>¿Eliminar esta factura? También se borran sus archivos y se quita del pago donde esté.${(i.conduces || []).length ? ' Sus conduces quedan guardados, esperando factura.' : ''}</p><div class="actions"><button type="button" class="btn danger solid" data-act="inv-del-yes" data-id="${esc(i.id)}">Eliminar factura</button><button type="button" class="btn" data-act="inv-del-no">Cancelar</button></div></div></div>
+      <div id="inv-del-box" hidden><div class="confirm"><p>¿Eliminar esta factura? Se va a la papelera (ahí se puede recuperar por 30 días) y se quita del pago donde esté.${(i.conduces || []).length ? ' Sus conduces quedan guardados, esperando factura.' : ''}</p><div class="actions"><button type="button" class="btn danger solid" data-act="inv-del-yes" data-id="${esc(i.id)}">Eliminar factura</button><button type="button" class="btn" data-act="inv-del-no">Cancelar</button></div></div></div>
     </div>
     ${edit ? '<div class="sheet-f"><button type="submit" class="btn primary block" id="inv-save">Guardar</button></div>' : ''}
   </form>`;
@@ -1387,7 +1399,7 @@ function openConduce(id, keepScroll) {
         <div class="field"><label for="c-trips">Viajes</label><input id="c-trips" class="mono" inputmode="numeric" maxlength="4" value="${esc(isNum(c.trips) ? String(c.trips) : '')}" ${dis}></div>
         <div class="field"><label for="c-total">Total (${esc(CUR_PREFIX[cur] || cur)})</label><input id="c-total" class="mono" inputmode="decimal" maxlength="20" placeholder="0.00" value="${esc(amountInput(c.total))}" ${dis}></div>
       </div>
-      ${edit ? `<div><button type="button" class="btn danger sm" data-act="cond-del">${ICON.trash} Eliminar conduce</button></div><div id="cond-del-box" hidden><div class="confirm"><p>¿Eliminar este conduce? También se borra su foto o PDF.</p><div class="actions"><button type="button" class="btn danger solid" data-act="cond-del-yes" data-id="${esc(c.id)}">Eliminar conduce</button><button type="button" class="btn" data-act="cond-del-no">Cancelar</button></div></div></div>` : ''}
+      ${edit ? `<div><button type="button" class="btn danger sm" data-act="cond-del">${ICON.trash} Eliminar conduce</button></div><div id="cond-del-box" hidden><div class="confirm"><p>¿Eliminar este conduce? Se va a la papelera, con su foto o PDF, y ahí se puede recuperar por 30 días.</p><div class="actions"><button type="button" class="btn danger solid" data-act="cond-del-yes" data-id="${esc(c.id)}">Eliminar conduce</button><button type="button" class="btn" data-act="cond-del-no">Cancelar</button></div></div></div>` : ''}
     </div>
     ${edit ? '<div class="sheet-f"><button type="submit" class="btn primary block" id="cond-save">Guardar</button></div>' : ''}
   </form><datalist id="dl-csups">${uniqList([...S.conduces.map((x) => x.supplier), ...S.invoices.map((x) => x.supplier)]).slice(0, 300).map((v) => `<option value="${esc(v)}"></option>`).join('')}</datalist>`;
@@ -1488,6 +1500,8 @@ async function openSettings() {
       <p class="hint">${RT.sync.status().on ? "Tus datos están en este teléfono y en la nube del equipo. Igual conviene un respaldo de vez en cuando:" : "Tus facturas solo están en este teléfono."} Descarga un respaldo cada semana y guárdalo en iCloud Drive o en tu computadora. ${last ? 'Último respaldo: ' + esc(fmtDate(new Date(last).toISOString().slice(0, 10))) + '.' : 'Todavía no has hecho ninguno.'}</p>
       <div class="actions"><button type="button" class="btn" data-act="backup">${ICON.down} Descargar respaldo</button><button type="button" class="btn" data-act="restore">Restaurar un respaldo</button></div>
       <div id="restore-box" hidden></div>
+      ${RT.sync.status().on ? `<div class="msg"><span><b>Respaldo automático en la nube:</b> cada semana se guarda uno y quedan los últimos 8. ${S.bk && S.bk.last ? 'El último es del ' + esc(fmtDate(String(S.bk.last).slice(0, 10))) + '.' : 'El primero se hace solo en cuanto la nube esté al día.'} <button type="button" class="link" data-act="cloud-bk">Ver los respaldos</button></span></div>` : ''}
+      <div class="actions"><button type="button" class="btn" data-act="trash-open">${ICON.trash} Papelera${S.papelera.length ? ' (' + S.papelera.length + ')' : ''}</button></div>
       <h3 class="h2">Compartir con otros teléfonos (prueba)</h3>
       <div id="nube-box" data-k="${nubeKey(RT.sync.status())}">${nubeBoxHTML()}</div>
       <p class="usage" id="st-usage">Calculando espacio…</p>
@@ -2134,14 +2148,18 @@ async function deleteInvoice(id) {
   const i = derive().invoices.find((x) => x.id === id);
   if (!i) return;
   if (i.status === 'pagada') { toast('Esta factura ya está pagada; no se puede eliminar.'); return; }
+  const raw = S.invoices.find((x) => x.id === id);
+  const condIds = S.conduces.filter((x) => x.invoiceId === id).map((c) => c.id);
   const ok = await write(async () => {
     if (i.pay) await db.doc('payments/' + i.pay.id).update({ invoiceIds: (i.pay.invoiceIds || []).filter((x) => x !== id) });
-    for (const c of S.conduces.filter((x) => x.invoiceId === id)) await db.doc('conduces/' + c.id).update({ invoiceId: null, auto: false });
+    for (const cid of condIds) await db.doc('conduces/' + cid).update({ invoiceId: null, auto: false });
+    await toTrash('invoice', raw, [i.supplier || 'Sin proveedor', i.number ? 'NCF ' + RD.normNcf(i.number) : '', isNum(i.amount) ? money(i.amount, i.currency) : ''].filter(Boolean).join(' · '), { condIds, payId: i.pay ? i.pay.id : null });
     await db.doc('invoices/' + id).delete();
-  }, 'Factura eliminada');
+  });
   if (!ok) return;
   closeSheet();
-  for (const a of new Set([i.fileId, i.thumbId, i.xmlId, i.origFileId, ...(i.extraPages || []).flatMap((x) => [x.fileId, x.thumbId])])) if (a) { try { await assets.delete(a); } catch (e) { console.warn(e); } }
+  // Los archivos se quedan mientras esté en la papelera.
+  toastAct('Factura movida a la papelera', 'Deshacer', () => undoTrash('invoice', id));
 }
 /* ---------- conduces: guardar, leer y enlazar ---------- */
 let condTarget = null;
@@ -2358,9 +2376,9 @@ async function saveConduce(form) {
 async function deleteConduce(id) {
   const c = S.conduces.find((x) => x.id === id);
   if (!c) return;
-  if (!(await write(() => db.doc('conduces/' + id).delete(), 'Conduce eliminado'))) return;
+  if (!(await write(async () => { await toTrash('conduce', c, [condTitle(c), c.supplier, isNum(c.total) ? money(c.total, c.currency) : ''].filter(Boolean).join(' · ')); await db.doc('conduces/' + id).delete(); }))) return;
   closeSheet();
-  for (const a of new Set([c.fileId, c.thumbId])) if (a) { try { await assets.delete(a); } catch (e) { console.warn(e); } }
+  toastAct('Conduce movido a la papelera', 'Deshacer', () => undoTrash('conduce', id));
 }
 // Después de leer o guardar algo: los conduces que esperan factura se enlazan solos si la encuentran.
 let linkT = 0;
@@ -3457,6 +3475,134 @@ async function envioPdfAgain(id) {
   catch (er) { console.error(er); toast('No se pudo preparar el PDF.'); }
 }
 
+/* ---------- papelera: lo que se borra se queda 30 días y se puede recuperar ---------- */
+const TRASH_DAYS = 30;
+const TRASH_KIND = { invoice: ['invoices', 'Factura', 'Factura recuperada'], conduce: ['conduces', 'Conduce', 'Conduce recuperado'], order: ['orders', 'Orden de compra', 'Orden recuperada'], payment: ['payments', 'Pago', 'Pago recuperado'] };
+const rawDoc = (o) => { const { id, ...rest } = o; return rest; };
+function toTrash(kind, doc, label, extra = {}) {
+  return db.collection('papelera').doc().set({ kind, srcId: doc.id, data: rawDoc(doc), label: String(label || '').slice(0, 160), extra, deletedAt: new Date().toISOString() });
+}
+const trashFiles = (e) => { const d = e.data || {}; return [d.fileId, d.thumbId, d.xmlId, d.origFileId, d.signedFileId, d.signedThumbId, ...(d.extraPages || []).flatMap((x) => [x.fileId, x.thumbId])].filter(Boolean); };
+const trashLeft = (e) => Math.max(0, TRASH_DAYS - Math.floor((Date.now() - (Date.parse(e.deletedAt || '') || 0)) / 864e5));
+async function restoreTrash(entryId) {
+  const e = S.papelera.find((x) => x.id === entryId);
+  if (!e || !TRASH_KIND[e.kind]) return false;
+  const [coll, , done] = TRASH_KIND[e.kind];
+  const data = { ...e.data };
+  if (e.kind === 'conduce' && data.invoiceId && !S.invoices.some((i) => i.id === data.invoiceId)) data.invoiceId = null;
+  if (e.kind === 'payment') { const taken = new Set(S.payments.flatMap((p) => p.invoiceIds || [])); data.invoiceIds = (data.invoiceIds || []).filter((id) => S.invoices.some((i) => i.id === id) && !taken.has(id)); }
+  const ok = await write(async () => {
+    await db.doc(coll + '/' + e.srcId).set(data);
+    if (e.kind === 'invoice') for (const cid of (e.extra && e.extra.condIds) || []) { const c = S.conduces.find((x) => x.id === cid); if (c && !c.invoiceId) await db.doc('conduces/' + cid).update({ invoiceId: e.srcId, auto: false }); }
+    await db.doc('papelera/' + e.id).delete();
+  }, done + (e.kind === 'invoice' && e.extra && e.extra.payId ? ' (vuelve como pendiente)' : ''));
+  if (ok) { scheduleRender(); setTimeout(() => { if (S.sheet && S.sheet.type === 'trash') openTrash(); }, 200); }
+  return ok;
+}
+// Deshacer justo después de borrar: la entrada más nueva de ese documento.
+function undoTrash(kind, srcId) {
+  const e = S.papelera.filter((x) => x.kind === kind && x.srcId === srcId).sort((a, b) => String(b.deletedAt).localeCompare(String(a.deletedAt)))[0];
+  if (e) restoreTrash(e.id);
+}
+async function purgeTrash(all) {
+  if (!canEdit()) return;
+  const lim = Date.now() - TRASH_DAYS * 864e5;
+  for (const e of S.papelera.filter((x) => all || (Date.parse(x.deletedAt || '') || 0) < lim)) {
+    await dbw(() => db.doc('papelera/' + e.id).delete()).catch((er) => console.warn(er));
+    for (const a of trashFiles(e)) { try { await assets.delete(a); } catch (er) { /* ya no está */ } }
+  }
+}
+function openTrash() {
+  const list = [...S.papelera].sort((a, b) => String(b.deletedAt).localeCompare(String(a.deletedAt)));
+  const edit = canEdit();
+  const rows = list.map((e) => `<div class="o-inv trash-row"><span class="grow"><b>${esc((TRASH_KIND[e.kind] || ['', 'Documento'])[1])}</b> · ${esc(e.label || '')}<small>Borrado ${esc(relTime(Date.parse(e.deletedAt)))} · se elimina para siempre en ${plural(trashLeft(e), 'día', 'días')}</small></span>${edit ? `<button type="button" class="btn sm" data-act="trash-restore" data-id="${esc(e.id)}">Recuperar</button>` : ''}</div>`).join('');
+  openSheet(`${sheetHead('Papelera')}<div class="sheet-b">
+    <p class="hint">Lo que borras (facturas, conduces, órdenes y pagos) se queda aquí ${TRASH_DAYS} días con sus archivos, y se puede recuperar. Después se elimina para siempre.</p>
+    ${rows ? `<div class="list">${rows}</div>` : '<div class="empty"><p>La papelera está vacía.</p></div>'}
+  </div>${edit && list.length ? `<div class="sheet-f"><span class="grow">${plural(list.length, 'cosa', 'cosas')} en la papelera</span><button type="button" class="btn danger sm" data-act="trash-empty">Vaciar la papelera</button></div>` : ''}`, { type: 'trash', id: 'trash' });
+}
+
+/* ---------- respaldo automático en la nube ---------- */
+let cloudBkBusy = false;
+async function maybeCloudBackup(s) {
+  if (!s || !s.on || s.status !== 'ok' || cloudBkBusy || !canEdit() || !S.invoices.length) return;
+  const last = Date.parse((S.bk && S.bk.last) || '') || 0;
+  if (Date.now() - last < 7 * 864e5) return;
+  cloudBkBusy = true;
+  try { const r = await RT.sync.backupNow(); await dbw(() => db.doc('settings/respaldos').set({ last: r.at, slot: r.slot, docs: r.docs })); }
+  catch (e) { console.warn('respaldo en la nube', e); }
+  finally { setTimeout(() => { cloudBkBusy = false; }, 60000); }
+}
+const bkName = (b) => (b.name === 'antes-de-restaurar.json' ? 'Antes de la última restauración' : 'Semana del ' + fmtDate(String(b.at).slice(0, 10)));
+async function openCloudBackups() {
+  openSheet(`${sheetHead('Respaldos en la nube')}<div class="sheet-b"><p class="loading">Buscando los respaldos…</p></div>`, { type: 'cloudbk', id: 'cloudbk' });
+  let list = [];
+  try { list = await RT.sync.listBackups(); } catch (e) { console.warn(e); }
+  if (!S.sheet || S.sheet.type !== 'cloudbk') return;
+  list.sort((a, b) => String(b.at).localeCompare(String(a.at)));
+  const edit = canEdit();
+  const rows = list.map((b) => `<div class="o-inv trash-row"><span class="grow"><b>${esc(bkName(b))}</b><small>${esc(fmtDate(String(b.at).slice(0, 10)))} ${esc(String(b.at).slice(11, 16))}${b.size ? ' · ' + esc(fmtBytes(b.size)) : ''}</small></span>${edit ? `<button type="button" class="btn sm" data-act="cloud-bk-restore" data-name="${esc(b.name)}">Restaurar</button>` : ''}</div>`).join('');
+  openSheet(`${sheetHead('Respaldos en la nube')}<div class="sheet-b">
+    <p class="hint">Cada semana la app guarda solos tus datos en la nube y quedan los últimos 8. Si algo se borra o se cambia por error, aquí se vuelve a como estaba ese día, en todos los aparatos conectados. Las fotos y los PDF no se tocan.</p>
+    ${rows ? `<div class="list">${rows}</div>` : '<div class="empty"><p>Todavía no hay respaldos en la nube. El primero se hace solo, o tócale «Hacer uno ahora».</p></div>'}
+    <div id="cbk-confirm" hidden></div>
+  </div>${edit ? '<div class="sheet-f"><button type="button" class="btn" data-act="cloud-bk-now">Hacer uno ahora</button></div>' : ''}`, { type: 'cloudbk', id: 'cloudbk' });
+}
+let cloudRestore = null;
+async function askCloudRestore(name, btn) {
+  btn.disabled = true;
+  btn.textContent = 'Abriendo…';
+  try {
+    const bk = await RT.sync.getBackup(name);
+    const docs = Array.isArray(bk && bk.docs) ? bk.docs : null;
+    if (!docs) throw new Error('vacío');
+    const n = (c) => docs.filter((d) => String(d.path).startsWith(c + '/')).length;
+    cloudRestore = { name, docs };
+    const box = $('#cbk-confirm');
+    box.hidden = false;
+    box.innerHTML = `<div class="confirm"><p>Este respaldo es del ${esc(fmtDate(String(bk.exportedAt || '').slice(0, 10)))} y tiene ${plural(n('invoices'), 'factura', 'facturas')}, ${plural(n('orders'), 'orden', 'órdenes')} y ${plural(n('payments'), 'pago', 'pagos')}. Al restaurarlo, <b>todo vuelve a como estaba ese día</b>, en este y en los otros aparatos conectados. Antes se guarda una copia de cómo está ahora, por si acaso.</p><div class="actions"><button type="button" class="btn danger" data-act="cloud-bk-yes">Sí, restaurar</button><button type="button" class="btn" data-act="cloud-bk-no">No</button></div></div>`;
+    box.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  } catch (e) {
+    console.warn(e);
+    toast('No se pudo abrir ese respaldo. Revisa el internet.');
+  }
+  btn.disabled = false;
+  btn.textContent = 'Restaurar';
+}
+async function doCloudRestore(btn) {
+  if (!cloudRestore) return;
+  btn.disabled = true;
+  btn.textContent = 'Restaurando…';
+  try {
+    await RT.sync.backupNow({ slot: 'antes-de-restaurar' });
+    await RT.importDocs(cloudRestore.docs, ['settings/respaldos']);
+    cloudRestore = null;
+    closeSheet();
+    toast('Listo: los datos volvieron a como estaban en ese respaldo');
+  } catch (e) {
+    console.error(e);
+    toast('No se pudo restaurar. Revisa el internet e intenta de nuevo.');
+    btn.disabled = false;
+    btn.textContent = 'Sí, restaurar';
+  }
+}
+
+/* ---------- indicador de la nube (arriba) ---------- */
+function renderSyncChip() {
+  const el = $('#sync-chip');
+  if (!el) return;
+  const s = RT.sync.status();
+  if (!s.on) { el.hidden = true; return; }
+  const pend = (s.pendingDocs || 0) + (s.pendingFiles || 0);
+  const ERR = { offline: ['off', 'Sin internet'], auth: ['bad', 'Entrar de nuevo'], paused: ['bad', 'En pausa'], unreachable: ['bad', 'Sin conexión'], limited: ['bad', 'Con límite'] };
+  const [cls, txt] = s.status === 'syncing' ? ['busy', 'Sincronizando'] : s.status === 'error' ? ERR[s.code] || ['bad', 'Error'] : pend ? ['pend', `${pend} por subir`] : ['ok', 'Al día'];
+  el.hidden = false;
+  el.className = 'sync-chip ' + cls;
+  el.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 18.5h10.2a4.3 4.3 0 0 0 .6-8.56A6.2 6.2 0 0 0 5.9 9.6 4.5 4.5 0 0 0 7 18.5z"/></svg><span>${esc(txt)}</span>`;
+  el.title = s.status === 'error' ? s.error : s.at ? `Nube: ${txt.toLowerCase()} (${relTime(s.at)})` : txt;
+  el.setAttribute('aria-label', 'Nube: ' + txt);
+}
+
 async function createPayment(name, date, ids) {
   const ref = db.collection('payments').doc();
   const ok = await write(() => ref.set({ name: String(name || '').trim().slice(0, 80) || 'Pago ' + fmtDate(todayISO()), date: ymd(date) ? date : todayISO(), status: 'armando', invoiceIds: ids, createdAt: new Date().toISOString() }), 'Pago creado');
@@ -3483,7 +3629,12 @@ async function removeFromPayment(payId, invId) {
   if (pay) await write(() => db.doc('payments/' + payId).update({ invoiceIds: (pay.invoiceIds || []).filter((x) => x !== invId) }), 'Factura quitada del pago');
 }
 async function deletePayment(payId) {
-  if (await write(() => db.doc('payments/' + payId).delete(), 'Pago eliminado')) { S.paymentId = null; S.payDel = false; renderAll(); }
+  const p = S.payments.find((x) => x.id === payId);
+  if (!p) return;
+  if (await write(async () => { await toTrash('payment', p, [p.name || 'Pago', plural((p.invoiceIds || []).length, 'factura', 'facturas')].join(' · ')); await db.doc('payments/' + payId).delete(); })) {
+    S.paymentId = null; S.payDel = false; renderAll();
+    toastAct('Pago movido a la papelera', 'Deshacer', () => undoTrash('payment', payId));
+  }
 }
 
 /* ---------- órdenes de compra ---------- */
@@ -3671,9 +3822,9 @@ async function deleteOrder(id) {
   const o = S.orders.find((x) => x.id === id);
   if (!o) return;
   if (S.invoices.some((i) => i.orderId === id)) { toast('Tiene facturas enlazadas; mejor anúlala.'); return; }
-  if (!(await write(() => db.doc('orders/' + id).delete(), 'Orden eliminada'))) return;
+  if (!(await write(async () => { await toTrash('order', o, [orderNo(o), o.supplier].filter(Boolean).join(' · ')); await db.doc('orders/' + id).delete(); }))) return;
   closeSheet();
-  for (const a of [o.signedFileId, o.signedThumbId]) if (a) { try { await assets.delete(a); } catch (e) { /* ya no existe */ } }
+  toastAct('Orden movida a la papelera', 'Deshacer', () => undoTrash('order', id));
 }
 async function saveSignedCopy(o, blob, ftype, thumb) {
   const up = await assets.upload(blob, { type: ftype });
@@ -4565,7 +4716,7 @@ function onClick(e) {
     case 'order-view-signed': { const o = S.orders.find((x) => x.id === id); if (o && o.signedFileId) showFile({ title: orderNo(o) + ' firmada', fileId: o.signedFileId, fileType: o.signedFileType }); break; }
     case 'order-annul': orderConfirm('¿Anular esta orden? Queda en el registro como anulada.', 'order-annul-yes', 'Anular orden'); break;
     case 'order-annul-yes': write(() => db.doc('orders/' + S.sheet.id).update({ status: 'anulada' }), 'Orden anulada').then((ok) => { if (ok) closeSheet(); }); break;
-    case 'order-del': orderConfirm('¿Eliminar esta orden? No se puede deshacer.', 'order-del-yes', 'Eliminar orden'); break;
+    case 'order-del': orderConfirm('¿Eliminar esta orden? Se va a la papelera y ahí se puede recuperar por 30 días.', 'order-del-yes', 'Eliminar orden'); break;
     case 'order-del-yes': deleteOrder(S.sheet && S.sheet.id); break;
     case 'order-confirm-no': $('#o-confirm').hidden = true; break;
     case 'order-fill': fillOrderFromMessage(t, null); break;
@@ -4577,6 +4728,17 @@ function onClick(e) {
     case 'nube-connect': nubeConnect(t); break;
     case 'nube-relogin': nubeRelogin(t); break;
     case 'nube-sync': RT.sync.syncNow(); break;
+    case 'sync-chip': closeSheet(); openSettings(); RT.sync.syncNow(); setTimeout(() => { const b = $('#nube-box'); if (b) b.scrollIntoView({ block: 'center' }); }, 350); break;
+    case 'trash-open': closeSheet(); openTrash(); break;
+    case 'trash-restore': t.disabled = true; restoreTrash(id); break;
+    case 'trash-empty':
+      if (t.dataset.armed !== '1') { t.dataset.armed = '1'; t.textContent = '¿Vaciar? Toca otra vez'; setTimeout(() => { if (t.isConnected) { t.dataset.armed = ''; t.textContent = 'Vaciar la papelera'; } }, 4000); break; }
+      t.disabled = true; purgeTrash(true).then(() => { toast('Papelera vacía'); closeSheet(); }); break;
+    case 'cloud-bk': closeSheet(); openCloudBackups(); break;
+    case 'cloud-bk-now': t.disabled = true; t.textContent = 'Guardando…'; RT.sync.backupNow().then((r) => dbw(() => db.doc('settings/respaldos').set({ last: r.at, slot: r.slot, docs: r.docs }))).then(() => { toast('Respaldo guardado en la nube'); openCloudBackups(); }).catch((e) => { console.warn(e); toast('No se pudo guardar el respaldo. Revisa el internet.'); t.disabled = false; t.textContent = 'Hacer uno ahora'; }); break;
+    case 'cloud-bk-restore': askCloudRestore(t.dataset.name, t); break;
+    case 'cloud-bk-yes': doCloudRestore(t); break;
+    case 'cloud-bk-no': cloudRestore = null; $('#cbk-confirm').hidden = true; break;
     case 'nube-share': nubeShare(); break;
     case 'nube-off': { const b = $('#nb-confirm'); if (b) { b.hidden = false; b.innerHTML = '<div class="confirm"><p>¿Desconectar este teléfono de la nube? Sus datos se quedan aquí, pero ya no se ponen al día con los otros teléfonos.</p><div class="actions"><button type="button" class="btn danger solid" data-act="nube-off-yes">Desconectar</button><button type="button" class="btn" data-act="nube-off-no">Cancelar</button></div></div>'; } break; }
     case 'nube-off-yes': RT.sync.disconnect(); toast('Este teléfono ya no se sincroniza. Sus datos se quedan aquí.'); break;
@@ -4807,9 +4969,10 @@ function registerSW() {
 function subscribe() {
   db.doc('settings/general').onSnapshot((snap) => { S.settings = (snap.exists && snap.data()) || {}; scheduleRender(); }, (err) => console.warn(err));
   db.doc('settings/asistencia').onSnapshot((snap) => { S.attRules = (snap.exists && snap.data()) || {}; scheduleRender(); }, (err) => console.warn(err));
+  db.doc('settings/respaldos').onSnapshot((snap) => { S.bk = (snap.exists && snap.data()) || {}; scheduleRender(); }, (err) => console.warn(err));
   db.doc('settings/digitacion').onSnapshot((snap) => { S.digi = (snap.exists && snap.data()) || {}; scheduleRender(); }, (err) => console.warn(err));
-  const done = () => { if (S.got.projects && S.got.invoices && S.got.payments && S.got.orders && S.got.conduces && S.got.workers && S.got.asistencia && S.got.suppliers && S.got.envios && S.dbState === 'loading') { S.dbState = 'ready'; setTimeout(retryOffline, 1500); setTimeout(() => { fixCreditSigns().catch((e) => console.warn(e)); fixAttRules().catch((e) => console.warn(e)); scheduleLink(); }, 2500); } };
-  for (const name of ['projects', 'invoices', 'payments', 'orders', 'conduces', 'workers', 'asistencia', 'suppliers', 'envios']) {
+  const done = () => { if (S.got.projects && S.got.invoices && S.got.payments && S.got.orders && S.got.conduces && S.got.workers && S.got.asistencia && S.got.suppliers && S.got.envios && S.got.papelera && S.dbState === 'loading') { S.dbState = 'ready'; setTimeout(retryOffline, 1500); setTimeout(() => { fixCreditSigns().catch((e) => console.warn(e)); fixAttRules().catch((e) => console.warn(e)); scheduleLink(); purgeTrash(false).catch((e) => console.warn(e)); }, 2500); } };
+  for (const name of ['projects', 'invoices', 'payments', 'orders', 'conduces', 'workers', 'asistencia', 'suppliers', 'envios', 'papelera']) {
     db.collection(name).onSnapshot((snap) => {
       S[name] = snap.docs.map((d) => ({ ...d.data(), id: d.id }));
       S.got[name] = true;
@@ -4820,7 +4983,7 @@ function subscribe() {
 }
 function boot() {
   bind();
-  RT.sync.onChange((s) => { refreshNubeBox(s); scheduleRender(); });
+  RT.sync.onChange((s) => { refreshNubeBox(s); scheduleRender(); maybeCloudBackup(s); });
   renderAll();
   RT.use('db').then((d) => {
     db = d;

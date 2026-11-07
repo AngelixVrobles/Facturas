@@ -83,7 +83,9 @@ En Android: Chrome → menú → **Instalar app**.
 ## Dónde quedan los datos
 
 - En el propio teléfono, en el almacenamiento del navegador (IndexedDB). Si conectas los teléfonos a la nube del equipo (ver *Compartir los datos entre teléfonos*), también se guarda una copia ahí.
-- **Respaldo:** Ajustes → **Descargar respaldo** genera un `.zip` con los datos y los archivos (facturas, órdenes y sus copias firmadas). Guárdalo en iCloud Drive o en la computadora. Se recupera con **Restaurar un respaldo**, que reemplaza todo. La app recuerda hacerlo cada 7 días.
+- **Respaldo:** Ajustes → **Descargar respaldo** genera un `.zip` con los datos y los archivos (facturas, órdenes y sus copias firmadas). Guárdalo en iCloud Drive o en la computadora. Se recupera con **Restaurar un respaldo**, que reemplaza todo. La app recuerda hacerlo cada 7 días; con la nube, cada mes, porque la nube copia también lo que se borra o se cambia por error.
+- **Respaldo automático en la nube:** con la nube conectada, la app guarda sola tus datos en la nube cada semana y quedan los últimos 8. En *Ajustes → Ver los respaldos* se escoge uno y todo vuelve a como estaba ese día, en todos los aparatos conectados (las fotos y los PDF no se tocan, y antes se guarda cómo estaba, por si acaso).
+- **Papelera:** lo que se borra (facturas, conduces, órdenes y pagos) se va a la papelera con sus archivos por 30 días. Justo después de borrar sale **Deshacer**; y en *Ajustes → Papelera* se recupera. Una factura recuperada vuelve con sus conduces. Pasados los 30 días se elimina sola, para siempre.
 - Si se borra la app o los datos de Safari, o se pierde el teléfono, sin respaldo se pierde la información.
 - Solo salen del teléfono las fotos de facturas de papel y los pedidos (mensaje o foto) que se mandan a la API para leerlos (si configuras la clave), y los archivos que tú compartas.
 
@@ -108,7 +110,8 @@ En los teléfonos:
 
 Cómo se comporta:
 
-- Sin internet, los cambios quedan pendientes y se suben solos cuando vuelve la conexión. Ajustes muestra si está al día o cuántos cambios faltan por subir.
+- Sin internet, los cambios quedan pendientes y se suben solos cuando vuelve la conexión. Arriba, un indicador con una nube dice si está *Al día*, sincronizando, cuántos cambios faltan por subir, *Sin internet* o si hay un problema; tocándolo se abre la nube en Ajustes.
+- Si Supabase pausa el proyecto (en el plan gratis lo hace después de una semana sin uso), la app lo dice y explica qué hacer: entrar a supabase.com, abrir el proyecto y tocar **Restore**. Mientras tanto todo se guarda en el teléfono y se sube cuando vuelve.
 - Si dos teléfonos cambian lo mismo antes de ponerse al día, queda el último cambio que llegó a la nube.
 - Si la sesión vence, la app la renueva sola. Si ya no se puede, avisa arriba y pide la contraseña otra vez.
 - **Desconectar este teléfono** deja de sincronizarlo; sus datos se quedan en él.
