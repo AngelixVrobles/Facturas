@@ -30,9 +30,11 @@ No necesita servidor, base de datos ni cuenta: se publica gratis en GitHub Pages
   - **Repetir esta orden** crea una nueva con el mismo proveedor, obra y artículos. Al elegir la obra se llenan el lugar de entrega, quién pide y el departamento de la última orden de esa obra; los artículos de órdenes anteriores salen como sugerencia y traen su unidad.
   - **Pegar y llenar** toma el mensaje que copiaste de WhatsApp y llena la orden (con la clave de API). **Compartir la firmada** manda la copia firmada al proveedor.
   - Una orden sin facturas se puede eliminar; si ya tiene facturas, solo se anula y queda en el registro.
-- **Conduces:** cuando la factura viene con su conduce (la nota de entrega del material, por ejemplo de agregados), se guarda con ella:
+- **Conduces:** cuando la factura viene con su conduce (la nota de entrega del material, por ejemplo de agregados), se guarda con ella. Si los conduces llegan antes y la factura después, esperan en su pestaña hasta que llegue:
+  - **Pestaña Conduces:** los que esperan factura (*Sin factura*), los que ya la tienen y todos, por proveedor y con lo que suman, para compararlo con la factura cuando llegue. Se busca por número, proveedor, material u obra, y **Agregar conduces** agrega los que llegan solos (fotos o PDF).
   - En la factura, **Agregar conduce** (foto o PDF; varios a la vez). Con la clave de API se lee solo: número, fecha, material, cantidad, viajes y total.
   - Si se agregan con **+** junto con las facturas, la lectura reconoce que es un conduce y no lo cuenta como factura. Se adjunta solo a su factura cuando la factura menciona el número del conduce, cuando es del mismo proveedor y el monto coincide, o cuando se agregaron juntos; si no, queda en **Para hacer → conduces esperando su factura** y la factura del mismo proveedor lo sugiere.
+  - **Una factura que junta varios conduces:** si no dice sus números, se le adjuntan solos los conduces que esperan de ese proveedor, del más viejo al más nuevo, cuando suman lo mismo que la factura (con o sin ITBIS); los de después de la fecha de la factura no entran. Si no cuadran, la factura muestra los conduces que esperan con casillas: marcas los que son, dice cuánto suman al lado del monto de la factura, y **Adjuntar** los pega de una vez. A una factura que ya cuadra con sus conduces no se le pegan más solos.
   - Sin clave, la foto entra como factura sin datos y con **Es un conduce** se pasa a conduce.
   - Cada factura muestra su etiqueta *Conduce 39807* (o *2 conduces*) y la búsqueda encuentra por número de conduce. Si el mismo conduce (mismo proveedor y número) se agrega dos veces, la factura avisa *¿Conduce repetido?* para que no se pague doble. Si se elimina la factura, sus conduces se quedan, esperando factura.
   - **Cruce orden, conduce y factura:** la factura avisa si cobra más (sin ITBIS) de lo que suman sus conduces, si menciona un conduce que no está adjunto, o si los conduces de su orden traen más cantidad de un material que la que pidió la orden (en la misma unidad: m³, viajes, fundas…). La orden también lo avisa. Después de revisarlo, cada aviso se quita con **Está bien** o **No hace falta**.
@@ -100,7 +102,7 @@ La nube es una cuenta de [Supabase](https://supabase.com) a nombre de la empresa
 
 En los teléfonos:
 
-1. En tu teléfono: **Ajustes → Compartir con otros teléfonos**. Pega la URL, la clave pública, tu correo y tu contraseña, y toca **Conectar este teléfono**. La primera vez sube todo lo que ya tienes.
+1. En tu teléfono: **Ajustes → Compartir con otros teléfonos**. Pega la URL, la clave pública, tu correo y tu contraseña, y toca **Conectar este teléfono**. La primera vez sube todo lo que ya tienes. Si en vez de la URL del proyecto pegas la dirección del panel (`supabase.com/dashboard/project/…`), la app saca la URL sola.
 2. Toca **Datos para otro teléfono** y manda el código por WhatsApp al dueño. El código lleva la URL y la clave pública, no tu contraseña.
 3. En el teléfono del dueño: instala la app, ve a **Ajustes → Compartir con otros teléfonos**, pega el código y entra con su correo y su contraseña. Baja todo; las fotos llegan al abrirlas o poco después.
 

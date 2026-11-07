@@ -469,7 +469,17 @@
     syncing = p;
     return p;
   }
-  const normUrl = (u) => { const t = String(u || '').trim().replace(/\/+$/, ''); return !t ? '' : /^https?:\/\//i.test(t) ? t : 'https://' + t; };
+  // La URL del proyecto. Si se pega la del panel (supabase.com/dashboard/project/…), solo el código del proyecto
+  // o una dirección de la API (….supabase.co/rest/v1), se saca la del proyecto.
+  const normUrl = (u) => {
+    const t = String(u || '').trim().replace(/\/+$/, '');
+    const dash = /supabase\.com\/dashboard\/project\/([a-z0-9]+)/i.exec(t);
+    if (dash) return `https://${dash[1].toLowerCase()}.supabase.co`;
+    if (/^[a-z0-9]{20}$/.test(t)) return `https://${t}.supabase.co`;
+    const api = /^(https?:\/\/[a-z0-9-]+\.supabase\.(?:co|in))(?:\/.*)?$/i.exec(t);
+    if (api) return api[1].toLowerCase();
+    return !t ? '' : /^https?:\/\//i.test(t) ? t : 'https://' + t;
+  };
   async function connect({ url, key, email, password }) {
     const conf = { url: normUrl(url), key: String(key || '').trim(), email: String(email || '').trim().toLowerCase() };
     if (!conf.url || !conf.key || !conf.email || !password) throw { code: 'bad_input', message: 'Faltan datos' };

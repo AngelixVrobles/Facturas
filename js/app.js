@@ -10,7 +10,7 @@ const LIB = {
   qrgen: 'js/qr.js',
 };
 const PDF_CREATOR = 'Facturas de Proyectos';
-const APP_VERSION = '1.12.0';
+const APP_VERSION = '1.13.0';
 const SVG = (d) => `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ICON = {
   plus: SVG('<path d="M12 5v14M5 12h14"/>'),
@@ -96,7 +96,7 @@ const DEFAULT_ORDER_NOTE = 'Toda factura recibida por compras deberá estar acom
 const S = {
   tab: 'facturas', filter: 'pendientes', projectFilter: 'all', search: '', paymentId: null,
   projects: [], invoices: [], payments: [], orders: [], conduces: [], workers: [], asistencia: [], suppliers: [], envios: [], settings: {}, attRules: {}, digi: {}, envioPending: null, got: { projects: false, invoices: false, payments: false, orders: false, conduces: false, workers: false, asistencia: false, suppliers: false, envios: false },
-  attProject: '', attSheet: '', attDay: 0, orderFilter: 'todas', orderSearch: '', orderProject: 'all', focus: null, invOrder: 'all', dateFilter: '', dateFrom: '', dateTo: '', showAll: new Set(),
+  attProject: '', attSheet: '', attDay: 0, orderFilter: 'todas', orderSearch: '', orderProject: 'all', condFilter: 'esperando', condSearch: '', condProject: 'all', focus: null, invOrder: 'all', dateFilter: '', dateFrom: '', dateTo: '', showAll: new Set(),
   dbState: 'loading', aiState: 'ok', queue: [], sheet: null, payDel: false, busyPdf: false, pdfMsg: '',
   updateReg: null, updating: false, ready: null, restoreFile: null,
 };
@@ -341,9 +341,33 @@ function condSameSup(c, i, D) {
   const names = [i.supplier, ...((i.rnc && D.namesByRnc.get(i.rnc)) || [])].filter(Boolean);
   return !!c.supplier && names.some((n) => sameName(c.supplier, n));
 }
+// Una factura que junta varios conduces sin decir sus números: si los conduces que esperan de ese proveedor, del más
+// viejo al más nuevo, suman lo mismo que la factura (con o sin ITBIS), son esos. No entran los de después de la factura.
+function condSumSet(i, D, claimed = new Set()) {
+  if (i.status === 'pagada' || i.ai === 'pending' || i.notInvoice || (i.conduces || []).length || (i.conduceRefs || []).length || !isNum(i.amount) || i.amount <= 0) return null;
+  const wait = D.conduces.filter((c) => !c.invoiceId && !c.noAuto && c.ai !== 'pending' && !claimed.has(c.id) && isNum(c.total) && c.total > 0
+      && normCur(c.currency) === normCur(i.currency) && (!c.projectId || !i.projectId || c.projectId === i.projectId)
+      && !(ymd(c.date) && ymd(i.date) && c.date > i.date) && condSameSup(c, i, D))
+    .sort((a, b) => String(a.date || a.createdAt || '').localeCompare(String(b.date || b.createdAt || '')) || String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
+  if (wait.length < 2) return null;
+  const targets = [i.amount, isNum(i.itbis) && i.itbis > 0 ? round2(i.amount - i.itbis) : null].filter(isNum);
+  let sum = 0;
+  for (let k = 0; k < wait.length; k++) {
+    sum = round2(sum + wait[k].total);
+    if (k > 0 && targets.some((t) => Math.abs(t - sum) < 0.005)) return wait.slice(0, k + 1);
+  }
+  return null;
+}
 // A qué factura va un conduce que llegó solo: la que menciona su número; si no, la única del mismo proveedor con
 // el mismo monto; si no, la del mismo proveedor que se agregó junto con él (en los mismos 15 minutos).
-function conduceMatch(c, D) {
+// Una factura que ya cuadra: sus conduces suman lo mismo que ella (con o sin ITBIS).
+function condComplete(i) {
+  const cs = i.conduces || [];
+  if (!cs.length || !isNum(i.amount) || !cs.every((c) => isNum(c.total))) return false;
+  const sum = round2(cs.reduce((t, c) => t + c.total, 0));
+  return Math.abs(sum - i.amount) < 0.005 || (isNum(i.itbis) && i.itbis > 0 && Math.abs(sum - round2(i.amount - i.itbis)) < 0.005);
+}
+function conduceMatch(c, D, filled = new Set()) {
   const open = D.invoices.filter((i) => i.status !== 'pagada' && (!c.projectId || !i.projectId || i.projectId === c.projectId));
   const num = condNum(c.number);
   if (num) {
@@ -352,7 +376,7 @@ function conduceMatch(c, D) {
     if (sameS.length === 1) return { inv: sameS[0], why: 'numero' };
     if (byRef.length === 1) return { inv: byRef[0], why: 'numero' };
   }
-  const cands = open.filter((i) => condSameSup(c, i, D));
+  const cands = open.filter((i) => condSameSup(c, i, D) && !filled.has(i.id) && !condComplete(i));
   if (!cands.length) return null;
   const byAmt = cands.filter((i) => sameAmount(c, i));
   if (byAmt.length === 1) return { inv: byAmt[0], why: 'monto' };
@@ -698,17 +722,22 @@ const isIOS = () => /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.
 function renderAll() {
   const D = derive();
   $$('.tabs [data-tab]').forEach((b) => { if (b.dataset.tab === S.tab) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current'); });
-  for (const t of ['facturas', 'ordenes', 'pagos', 'asistencia', 'proyectos']) $('#v-' + t).hidden = S.tab !== t;
+  for (const t of ['facturas', 'conduces', 'ordenes', 'pagos', 'asistencia', 'proyectos']) $('#v-' + t).hidden = S.tab !== t;
   const pay = S.tab === 'pagos' && S.paymentId ? S.payments.find((p) => p.id === S.paymentId) : null;
   $('#back').hidden = !pay;
-  $('#title').textContent = pay ? (pay.name || 'Pago') : { facturas: 'Facturas', ordenes: 'Órdenes', pagos: 'Pagos', asistencia: 'Pase de lista', proyectos: 'Proyectos' }[S.tab];
+  $('#title').textContent = pay ? (pay.name || 'Pago') : { facturas: 'Facturas', conduces: 'Conduces', ordenes: 'Órdenes', pagos: 'Pagos', asistencia: 'Pase de lista', proyectos: 'Proyectos' }[S.tab];
   renderBanner(D);
   if (S.tab === 'facturas') renderFacturas(D);
   else if (S.tab === 'ordenes') renderOrdenes(D);
   else if (S.tab === 'pagos') renderPagos(D, pay);
   else if (S.tab === 'asistencia') renderAsistencia(D);
+  else if (S.tab === 'conduces') renderConduces(D);
   else renderProyectos(D);
-  $('#fab').hidden = !(S.tab === 'facturas' && canUpload());
+  // En Conduces, el botón de abajo agrega conduces.
+  const fab = $('#fab'), condTab = S.tab === 'conduces';
+  fab.hidden = !((S.tab === 'facturas' || condTab) && canUpload());
+  fab.dataset.act = condTab ? 'cond-add' : 'add';
+  $('#fab-label').textContent = condTab ? 'Agregar conduces' : 'Agregar facturas';
   $('#settings-btn').hidden = S.dbState === 'absent';
   refreshInvoiceSheet(D);
   refreshOrderSheet(D);
@@ -1004,6 +1033,57 @@ function renderOrdenes(D) {
   }).join('');
 }
 
+/* ---------- apartado de conduces ---------- */
+const COND_SEGS = [['esperando', 'Sin factura'], ['confactura', 'Con factura'], ['todos', 'Todos']];
+const condSupKey = (c) => (c.rnc && RD.normRnc(c.rnc) ? 'r:' + RD.normRnc(c.rnc) : 'n:' + norm(c.supplier || ''));
+const condWhen = (c) => String(c.date || '') + '|' + String(c.createdAt || '');
+function renderConduces(D) {
+  const el = $('#c-list');
+  if (S.condProject !== 'all' && S.condProject !== 'none' && !D.projById.has(S.condProject) && S.got.projects) S.condProject = 'all';
+  const inProj = (c) => S.condProject === 'all' || (S.condProject === 'none' ? !c.projectId : c.projectId === S.condProject);
+  const base = D.conduces.filter(inProj);
+  const counts = { esperando: base.filter((c) => !c.invoiceId).length, confactura: base.filter((c) => c.invoiceId).length, todos: base.length };
+  $('#c-seg').innerHTML = COND_SEGS.map(([k, label]) => `<button type="button" data-act="cfilter" data-f="${k}" aria-pressed="${S.condFilter === k}"><span>${label}</span><span class="n">${counts[k]}</span></button>`).join('');
+  const ch = $('#c-chips');
+  const withC = D.projects.filter((p) => D.conduces.some((c) => c.projectId === p.id) || S.condProject === p.id);
+  const noneN = D.conduces.filter((c) => !c.projectId).length;
+  if (D.conduces.length && withC.length + (noneN ? 1 : 0) > 1) {
+    ch.hidden = false;
+    const chips = [`<button type="button" class="chip" data-act="cprojf" data-p="all" aria-pressed="${S.condProject === 'all'}"><span>Todos los proyectos</span></button>`];
+    for (const p of withC) chips.push(`<button type="button" class="chip" data-act="cprojf" data-p="${esc(p.id)}" aria-pressed="${S.condProject === p.id}"><i class="dot" style="--c:${p.color}"></i><span>${esc(p.name)}</span></button>`);
+    if (noneN || S.condProject === 'none') chips.push(`<button type="button" class="chip" data-act="cprojf" data-p="none" aria-pressed="${S.condProject === 'none'}"><i class="dot ring"></i><span>Sin proyecto</span></button>`);
+    ch.innerHTML = chips.join('');
+  } else { ch.hidden = true; ch.innerHTML = ''; }
+  const sum = $('#c-sum');
+  if (!S.got.conduces) { el.innerHTML = S.dbState === 'absent' ? '' : '<p class="loading">Cargando conduces…</p>'; sum.innerHTML = ''; return; }
+  if (!D.conduces.length) {
+    sum.innerHTML = '';
+    el.innerHTML = `<div class="empty"><h2>Aquí van los conduces</h2><ol><li>Cuando te entreguen un conduce (la nota de entrega del material), toca <b>Agregar conduces</b> y tómale una foto. Con la clave de API se lee solo.</li><li>Queda esperando su factura. Cuando llegue la factura, se le adjunta solo si la factura menciona su número, si el monto coincide o si los conduces de ese proveedor suman lo mismo que la factura. Si no, en la factura los marcas y se adjuntan.</li></ol></div>`;
+    return;
+  }
+  const invById = new Map(D.invoices.map((i) => [i.id, i]));
+  const q = norm(S.condSearch || '');
+  let list = base.filter((c) => S.condFilter === 'todos' || (S.condFilter === 'esperando' ? !c.invoiceId : !!c.invoiceId));
+  if (q) list = list.filter((c) => { const inv = invById.get(c.invoiceId), p = D.projById.get(c.projectId); return norm([c.number, c.supplier, c.material, c.qty, p && p.name, inv && inv.supplier, inv && inv.number, fmtDate(c.date)].filter(Boolean).join(' ')).includes(q); });
+  list.sort((a, b) => condWhen(b).localeCompare(condWhen(a)));
+  sum.innerHTML = list.length ? `<span>${plural(list.length, 'conduce', 'conduces')} · <b class="mono">${esc(totalStr(list, 'total'))}</b></span>` : '';
+  if (!list.length) { el.innerHTML = `<div class="empty"><p>${q ? 'Nada coincide con tu búsqueda.' : S.condFilter === 'esperando' ? 'No hay conduces esperando factura.' : S.condFilter === 'confactura' ? 'Todavía no hay conduces con su factura.' : 'No hay conduces.'}</p></div>`; return; }
+  const key = 'conds-' + S.condFilter, LIM = 60;
+  const all = list.length;
+  if (all > LIM && !S.showAll.has(key)) list = list.slice(0, LIM);
+  // Por proveedor, con lo que suman: así se compara con la factura cuando llegue.
+  const groups = new Map();
+  for (const c of list) { const k = condSupKey(c); if (!groups.has(k)) groups.set(k, { name: c.supplier || 'Proveedor sin nombre', items: [] }); groups.get(k).items.push(c); }
+  const more = (c) => {
+    const p = S.condProject === 'all' && c.projectId ? D.projById.get(c.projectId) : null;
+    const inv = c.invoiceId ? invById.get(c.invoiceId) : null;
+    return [p ? p.name : '', inv ? 'Factura ' + (inv.number ? RD.normNcf(inv.number) : inv.supplier || 'sin NCF') : S.condFilter === 'todos' ? 'esperando factura' : ''].filter(Boolean).join(' · ');
+  };
+  el.innerHTML = (S.condFilter === 'esperando' ? '<p class="hint c-hint">Cuando llegue la factura, se le adjuntan solos si la factura menciona sus números o si suman lo mismo que la factura. Si no, ábrela y marca los que son.</p>' : '')
+    + [...groups.values()].map((g) => `<section class="group"><h2 class="group-h"><span class="gname">${esc(g.name)}</span><span class="gmeta">${g.items.length} · ${esc(totalStr(g.items, 'total'))}</span></h2><div class="cond-list">${g.items.map((c) => condRowHTML(c, false, more(c))).join('')}</div></section>`).join('')
+    + (all > list.length ? `<button type="button" class="btn sm more" data-act="more" data-k="${esc(key)}">Ver ${all - list.length} más</button>` : '');
+}
+
 function renderProyectos(D) {
   $('#proj-add').hidden = !canEdit();
   const sb = $('#sup-bar');
@@ -1140,26 +1220,63 @@ function liveHelp(t) {
 }
 
 /* ---------- hojas de los conduces ---------- */
-const AUTO_WHY = { numero: 'la factura menciona su número', monto: 'es del mismo proveedor y el monto coincide', lote: 'es del mismo proveedor y se agregaron juntos' };
+const AUTO_WHY = { numero: 'la factura menciona su número', monto: 'es del mismo proveedor y el monto coincide', lote: 'es del mismo proveedor y se agregaron juntos', suma: 'es del mismo proveedor y, con los otros conduces de la factura, suma lo mismo que ella' };
 function condThumbHTML(c) {
   const tid = c.thumbId || (String(c.fileType || '').startsWith('image/') ? c.fileId : null);
   return `<span class="thumb sm">${tid ? `<img src="${esc(assetUrl(tid))}" alt="" loading="lazy" decoding="async">` : `<span class="ph">${c.fileType === 'application/pdf' ? 'PDF' : 'FOTO'}</span>`}</span>`;
 }
-function condRowHTML(c, withSupplier) {
-  const sub = [withSupplier ? c.supplier || '' : '', condMeta(c)].filter(Boolean).join(' · ');
+function condRowHTML(c, withSupplier, more = '') {
+  const sub = [withSupplier ? c.supplier || '' : '', condMeta(c), more].filter(Boolean).join(' · ');
   const right = c.ai === 'pending' ? '<span class="pill reading">Leyendo…</span>' : isNum(c.total) ? `<span class="num">${esc(money(c.total, c.currency))}</span>` : '';
   return `<button type="button" class="cond-row" data-act="open-cond" data-id="${esc(c.id)}">${condThumbHTML(c)}<span class="cond-mid"><b>${esc(condTitle(c))}</b><small>${esc(sub || 'Sin datos todavía')}</small></span>${c.dup ? '<span class="pill warn">¿Repetido?</span>' : ''}${right}</button>`;
+}
+// Varios conduces esperando que pueden ser de esta factura: se marcan los que son y se adjuntan de una vez.
+function condPickHTML(i, sugg) {
+  const amt = isNum(i.amount) ? i.amount : '', sub = isNum(i.amount) && isNum(i.itbis) && i.itbis > 0 ? round2(i.amount - i.itbis) : '';
+  return `<div class="msg hint cpick" id="cpick" data-amt="${amt}" data-sub="${sub}" data-cur="${esc(normCur(i.currency))}">
+    <span>Hay ${sugg.length} conduces esperando factura que pueden ser de esta. Marca los que son y toca <b>Adjuntar</b>:</span>
+    ${sugg.length > 2 ? `<label class="check-row"><input type="checkbox" data-cpick="all"><span>Todos (${sugg.length})</span></label>` : ''}
+    <div class="cpick-list">${sugg.map((c) => `<label class="check-row"><input type="checkbox" data-cpick="c" value="${esc(c.id)}" data-total="${isNum(c.total) ? c.total : ''}"><span>${esc(condTitle(c))}${c.supplier ? ' · ' + esc(c.supplier) : ''}<small>${esc([condMeta(c), isNum(c.total) ? money(c.total, c.currency) : ''].filter(Boolean).join(' · '))}</small></span></label>`).join('')}</div>
+    <div class="cpick-foot"><span id="cpick-sum">${condPickSumText(0, 0, amt === '' ? null : amt, normCur(i.currency), false)}</span><button type="button" class="btn sm primary" data-act="cond-link-many" data-inv="${esc(i.id)}" disabled>Adjuntar</button></div>
+  </div>`;
+}
+function condPickSumText(n, sum, amt, cur, match) {
+  const fac = isNum(amt) ? ` · la factura: ${esc(money(amt, cur))}` : '';
+  return n ? `${plural(n, 'marcado', 'marcados')}: <b>${esc(money(sum, cur))}</b>${match ? ' · suman lo mismo que la factura' : fac}` : `Ninguno marcado${fac}`;
+}
+function syncCondPick() {
+  const box = $('#cpick');
+  if (!box) return;
+  const boxes = $$('#cpick input[data-cpick="c"]');
+  const on = boxes.filter((b) => b.checked);
+  const all = box.querySelector('input[data-cpick="all"]');
+  if (all) { all.checked = on.length === boxes.length; all.indeterminate = on.length > 0 && on.length < boxes.length; }
+  const sum = round2(on.reduce((t, b) => t + (Number(b.dataset.total) || 0), 0));
+  const amt = box.dataset.amt === '' ? null : Number(box.dataset.amt), sub = box.dataset.sub === '' ? null : Number(box.dataset.sub);
+  const match = on.length > 0 && [amt, sub].some((t) => isNum(t) && Math.abs(t - sum) < 0.005);
+  $('#cpick-sum').innerHTML = condPickSumText(on.length, sum, amt, box.dataset.cur, match);
+  const go = box.querySelector('[data-act="cond-link-many"]');
+  if (go) { go.disabled = !on.length; go.textContent = on.length > 1 ? `Adjuntar ${on.length}` : 'Adjuntar'; }
+}
+// Mensajes de los conduces que se adjuntaron solos; los que se adjuntaron por la suma van en uno solo.
+function condAutoMsgs(list) {
+  const auto = list.filter((c) => c.auto);
+  const bySum = auto.filter((c) => c.autoWhy === 'suma');
+  const out = auto.filter((c) => c.autoWhy !== 'suma').map((c) => `<div class="msg hint"><span>El ${esc(condTitle(c).toLowerCase())} se adjuntó solo: ${esc(AUTO_WHY[c.autoWhy] || 'es del mismo proveedor')}. Si no es de esta factura, ábrelo y cámbialo.</span></div>`);
+  if (bySum.length) out.push(`<div class="msg hint"><span>${bySum.length === 1 ? `El ${esc(condTitle(bySum[0]).toLowerCase())} se adjuntó solo` : `Los ${bySum.length} conduces se adjuntaron solos`}: son de este proveedor y suman lo mismo que la factura. Si alguno no es de esta factura, ábrelo y cámbialo.</span></div>`);
+  return out.join('');
 }
 function invCondBoxHTML(i, D, edit) {
   const list = i.conduces || [];
   if (!list.length && !edit) return '';
-  const sugg = edit ? condSuggestions(i, D).slice(0, 3) : [];
+  const sugg = edit ? condSuggestions(i, D) : [];
   const total = list.length > 1 && list.every((c) => isNum(c.total)) ? round2(list.reduce((t, c) => t + c.total, 0)) : null;
   return `<div class="card" id="inv-conds"><h2>Conduces</h2>
     ${list.length ? `<div class="cond-list">${list.map((c) => condRowHTML(c, false)).join('')}</div>` : '<p class="hint">Si la factura vino con conduces (la nota de entrega del material), agrégalos aquí. En el PDF del pago van detrás de la factura.</p>'}
     ${isNum(total) ? `<p class="usage">Los ${list.length} conduces suman ${esc(money(total, list[0].currency))}.</p>` : ''}
-    ${list.filter((c) => c.auto).map((c) => `<div class="msg hint"><span>El ${esc(condTitle(c).toLowerCase())} se adjuntó solo: ${esc(AUTO_WHY[c.autoWhy] || 'es del mismo proveedor')}. Si no es de esta factura, ábrelo y cámbialo.</span></div>`).join('')}
-    ${sugg.length ? `<div class="msg hint"><span>${sugg.length === 1 ? 'Hay un conduce esperando factura que puede ser de esta:' : 'Hay conduces esperando factura que pueden ser de esta:'}</span>${sugg.map((c) => `<button type="button" class="link" data-act="cond-link" data-id="${esc(c.id)}" data-inv="${esc(i.id)}">Adjuntar ${esc(c.number ? 'el ' + c.number : 'el conduce')}${isNum(c.total) ? ' (' + esc(money(c.total, c.currency)) + ')' : ''}</button>`).join(' ')}</div>` : ''}
+    ${condAutoMsgs(list)}
+    ${sugg.length > 1 ? condPickHTML(i, sugg) : ''}
+    ${sugg.length === 1 ? `<div class="msg hint"><span>Hay un conduce esperando factura que puede ser de esta:</span>${sugg.map((c) => `<button type="button" class="link" data-act="cond-link" data-id="${esc(c.id)}" data-inv="${esc(i.id)}">Adjuntar ${esc(c.number ? 'el ' + c.number : 'el conduce')}${isNum(c.total) ? ' (' + esc(money(c.total, c.currency)) + ')' : ''}</button>`).join(' ')}</div>` : ''}
     ${edit ? `<div><button type="button" class="btn sm" data-act="cond-add" data-inv="${esc(i.id)}">${ICON.plus} Agregar conduce</button></div>` : ''}
   </div>`;
 }
@@ -1225,23 +1342,9 @@ function openConduce(id, keepScroll) {
   openSheet(html, { type: 'cond', id: c.id, dirty: false, sig: condSig(c) });
   if (keepScroll && $('.sheet-b')) $('.sheet-b').scrollTop = prevScroll;
 }
-const condListSig = (D) => D.conduces.filter((c) => !c.invoiceId).map(condSig).join('|');
-function openCondList(keepScroll) {
-  const D = derive();
-  const list = D.conduces.filter((c) => !c.invoiceId).sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
-  const html = `${sheetHead('Conduces sin factura')}<div class="sheet-b">
-    <p class="hint">Estos conduces todavía no tienen su factura. Cuando llegue, se adjuntan solos si la factura menciona el número del conduce, si el monto coincide o si los agregas juntos. Si no, abre el conduce y elige su factura.</p>
-    ${list.length ? `<div class="cond-list">${list.map((c) => condRowHTML(c, true)).join('')}</div>` : '<div class="empty"><p>No hay conduces esperando factura.</p></div>'}
-    ${canUpload() ? `<div><button type="button" class="btn sm" data-act="cond-add">${ICON.plus} Agregar un conduce sin factura</button></div>` : ''}
-  </div>`;
-  const prevScroll = keepScroll && $('.sheet-b') ? $('.sheet-b').scrollTop : 0;
-  openSheet(html, { type: 'conds', id: 'conds', sig: condListSig(D) });
-  if (keepScroll && $('.sheet-b')) $('.sheet-b').scrollTop = prevScroll;
-}
 function refreshCondSheet(D) {
   const sh = S.sheet;
   if (!sh) return;
-  if (sh.type === 'conds') { if (condListSig(D) !== sh.sig) openCondList(true); return; }
   if (sh.type !== 'cond' || sh.dirty) return;
   const c = D.conduces.find((x) => x.id === sh.id);
   if (!c) { if (S.got.conduces) closeSheet(); return; }
@@ -2161,13 +2264,16 @@ async function invoiceToConduce(id) {
     toast(dbErr(e));
   }
 }
-async function linkConduce(condId, invId) {
-  const c = S.conduces.find((x) => x.id === condId), inv = S.invoices.find((x) => x.id === invId);
-  if (!c || !inv) return;
+const linkConduce = (condId, invId) => linkConduces([condId], invId);
+async function linkConduces(ids, invId) {
+  const inv = S.invoices.find((x) => x.id === invId);
+  const cs = ids.map((id) => S.conduces.find((x) => x.id === id)).filter(Boolean);
+  if (!inv || !cs.length) return;
   const ok = await write(async () => {
-    await db.doc('conduces/' + condId).update({ invoiceId: invId, auto: false, noAuto: false, projectId: c.projectId || inv.projectId || null });
-    if (!inv.projectId && c.projectId) await db.doc('invoices/' + invId).update({ projectId: c.projectId, projectHint: '' });
-  }, 'Conduce adjuntado a la factura');
+    for (const c of cs) await db.doc('conduces/' + c.id).update({ invoiceId: invId, auto: false, noAuto: false, projectId: c.projectId || inv.projectId || null });
+    const withP = cs.find((c) => c.projectId);
+    if (!inv.projectId && withP) await db.doc('invoices/' + invId).update({ projectId: withP.projectId, projectHint: '' });
+  }, cs.length > 1 ? `${cs.length} conduces adjuntados a la factura` : 'Conduce adjuntado a la factura');
   if (ok) refreshInvCondBox(invId);
 }
 async function saveConduce(form) {
@@ -2208,10 +2314,25 @@ let linkT = 0;
 function scheduleLink() { clearTimeout(linkT); linkT = setTimeout(() => { linkPendingConduces().catch((e) => console.warn('conduces', e)); }, 400); }
 async function linkPendingConduces() {
   if (!db || !S.got.conduces || !S.got.invoices || !canEdit()) return;
-  const D = derive();
+  const D = derive(), claimed = new Set(), filled = new Set();
+  // 1) Facturas que juntan varios conduces sin decir sus números: los que suman lo mismo que la factura.
+  for (const inv of D.invoices) {
+    const set = condSumSet(inv, D, claimed);
+    if (!set) continue;
+    filled.add(inv.id);
+    for (const c of set) {
+      claimed.add(c.id);
+      const upd = { invoiceId: inv.id, auto: true, autoWhy: 'suma' };
+      if (!c.projectId && inv.projectId) upd.projectId = inv.projectId;
+      await dbw(() => db.doc('conduces/' + c.id).update(upd));
+    }
+    const withP = set.find((c) => c.projectId);
+    if (!inv.projectId && withP) await dbw(() => db.doc('invoices/' + inv.id).update({ projectId: withP.projectId, projectHint: '' }));
+  }
+  // 2) Cada conduce que espera: la factura que menciona su número, la del mismo monto o la que se agregó junto con él.
   for (const c of D.conduces) {
-    if (c.invoiceId || c.noAuto || c.ai === 'pending') continue;
-    const m = conduceMatch(c, D);
+    if (c.invoiceId || c.noAuto || c.ai === 'pending' || claimed.has(c.id)) continue;
+    const m = conduceMatch(c, D, filled);
     if (!m) continue;
     const upd = { invoiceId: m.inv.id, auto: true, autoWhy: m.why };
     if (!c.projectId && m.inv.projectId) upd.projectId = m.inv.projectId;
@@ -4321,7 +4442,10 @@ function onClick(e) {
     case 'att-xlsx': attExport('xlsx'); break;
     case 'att-pdf': attExport('pdf'); break;
     case 'att-blank': attExport('blank'); break;
-    case 'cond-list': openCondList(); break;
+    case 'cond-list': closeSheet(); S.tab = 'conduces'; S.condFilter = 'esperando'; S.paymentId = null; renderAll(); window.scrollTo(0, 0); break;
+    case 'cfilter': S.condFilter = t.dataset.f; renderAll(); break;
+    case 'cprojf': S.condProject = t.dataset.p; renderAll(); break;
+    case 'cond-link-many': { const ids = $$('#cpick input[data-cpick="c"]').filter((b) => b.checked).map((b) => b.value); if (ids.length) { t.disabled = true; linkConduces(ids, t.dataset.inv); } break; }
     case 'cond-add': condTarget = t.dataset.inv || null; $('#cond-input').click(); break;
     case 'cond-view': { const c = S.conduces.find((x) => x.id === id); if (c) showFile({ title: condTitle(c), fileId: c.fileId, fileType: c.fileType }); break; }
     case 'cond-ai': rereadConduce(id, t); break;
@@ -4495,6 +4619,8 @@ function onChange(e) {
       for (const o of derive().orders) { const it = (o.items || []).find((x) => x.unit && norm(x.desc) === k); if (it) { u.value = it.unit; break; } }
     }
   }
+  if (t.dataset && t.dataset.cpick === 'all') { for (const b of $$('#cpick input[data-cpick="c"]')) b.checked = t.checked; syncCondPick(); }
+  else if (t.dataset && t.dataset.cpick === 'c') syncCondPick();
   if (t.id === 'digi-all') { for (const b of $$('#sheet-root input[data-digi="inv"]')) b.checked = t.checked; syncDigi(); }
   if (t.dataset && t.dataset.digi === 'group') { for (const b of $$(`#sheet-root input[data-digi="inv"][data-g="${t.dataset.g}"]`)) b.checked = t.checked; syncDigi(); }
   if (t.dataset && t.dataset.digi === 'inv') syncDigi();
@@ -4510,11 +4636,12 @@ function onInput(e) {
   const t = e.target;
   if (t.id === 'f-search') { S.search = t.value; renderAll(); return; }
   if (t.id === 'o-search') { S.orderSearch = t.value; renderAll(); return; }
+  if (t.id === 'c-search') { S.condSearch = t.value; renderAll(); return; }
   if (t.id === 'o-link-q') { const r = $('#o-link-results'); if (r) r.innerHTML = orderLinkResultsHTML(t.dataset.order, t.value); return; }
   if (S.sheet && S.sheet.type === 'order' && t.closest && t.closest('#order-form') && t.id !== 'o-msg') S.sheet.dirty = true;
   if (t.closest && t.closest('#o-items') && $('#o-est')) $('#o-est').textContent = estText(collectItems());
   if (t.id === 'f-rnc' || t.id === 'f-num') liveHelp(t);
-  if (S.sheet && S.sheet.type === 'inv' && t.closest && t.closest('#inv-form') && !String(t.id || '').startsWith('ab-')) S.sheet.dirty = true;
+  if (S.sheet && S.sheet.type === 'inv' && t.closest && t.closest('#inv-form') && !String(t.id || '').startsWith('ab-') && !(t.dataset && t.dataset.cpick)) S.sheet.dirty = true;
   if (S.sheet && S.sheet.type === 'cond' && t.closest && t.closest('#cond-form')) S.sheet.dirty = true;
 }
 function onSubmit(e) {
@@ -4626,7 +4753,7 @@ function subscribe() {
   db.doc('settings/general').onSnapshot((snap) => { S.settings = (snap.exists && snap.data()) || {}; scheduleRender(); }, (err) => console.warn(err));
   db.doc('settings/asistencia').onSnapshot((snap) => { S.attRules = (snap.exists && snap.data()) || {}; scheduleRender(); }, (err) => console.warn(err));
   db.doc('settings/digitacion').onSnapshot((snap) => { S.digi = (snap.exists && snap.data()) || {}; scheduleRender(); }, (err) => console.warn(err));
-  const done = () => { if (S.got.projects && S.got.invoices && S.got.payments && S.got.orders && S.got.conduces && S.got.workers && S.got.asistencia && S.got.suppliers && S.got.envios && S.dbState === 'loading') { S.dbState = 'ready'; setTimeout(retryOffline, 1500); setTimeout(() => { fixCreditSigns().catch((e) => console.warn(e)); fixAttRules().catch((e) => console.warn(e)); }, 2500); } };
+  const done = () => { if (S.got.projects && S.got.invoices && S.got.payments && S.got.orders && S.got.conduces && S.got.workers && S.got.asistencia && S.got.suppliers && S.got.envios && S.dbState === 'loading') { S.dbState = 'ready'; setTimeout(retryOffline, 1500); setTimeout(() => { fixCreditSigns().catch((e) => console.warn(e)); fixAttRules().catch((e) => console.warn(e)); scheduleLink(); }, 2500); } };
   for (const name of ['projects', 'invoices', 'payments', 'orders', 'conduces', 'workers', 'asistencia', 'suppliers', 'envios']) {
     db.collection(name).onSnapshot((snap) => {
       S[name] = snap.docs.map((d) => ({ ...d.data(), id: d.id }));

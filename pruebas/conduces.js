@@ -174,9 +174,9 @@ print(json.dumps(res, ensure_ascii=False, default=str))
   const todo = (await page.textContent('#todo')).replace(/\s+/g, ' ');
   check(/1 conduce esperando su factura/.test(todo), 'Para hacer: «1 conduce esperando su factura»');
   await page.click('#todo [data-act="cond-list"]');
-  await page.waitForSelector('.sheet .cond-row');
-  check((await page.$$('.sheet .cond-row')).length === 1, 'la lista de conduces sin factura lo muestra');
-  await page.click('.sheet .cond-row');
+  await page.waitForSelector('#c-list .cond-row');
+  check((await page.$$('#c-list .cond-row')).length === 1 && (await page.textContent('#title')) === 'Conduces', '«Ver» lleva a la pestaña Conduces, con el que espera factura');
+  await page.click('#c-list .cond-row');
   await page.waitForSelector('#cond-form');
   await page.selectOption('#c-inv', ochoa);
   await page.click('#cond-save');
@@ -258,12 +258,13 @@ print(json.dumps(res, ensure_ascii=False, default=str))
   await closeSheet(page);
 
   // Ver las pantallas de los conduces.
-  await page.click('[data-tab="facturas"]');
-  await page.click('#todo [data-act="cond-list"]');
-  await page.waitForSelector('.sheet .cond-row');
+  await page.click('[data-tab="conduces"]');
+  await page.click('[data-act="cfilter"][data-f="todos"]');
+  await page.waitForSelector('#c-list .cond-row');
   await settle(page, 600);
   await page.screenshot({ path: path.join(OUT, 'conduces-sin-factura.png') });
-  await closeSheet(page);
+  await page.click('[data-tab="facturas"]');
+  await page.waitForSelector('#f-list [data-act="open-inv"]');
   await openInv(page, 'B0100000777');
   await page.click('#inv-conds [data-act="open-cond"]');
   await page.waitForSelector('#cond-form');
