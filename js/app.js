@@ -10,7 +10,7 @@ const LIB = {
   qrgen: 'js/qr.js',
 };
 const PDF_CREATOR = 'Facturas de Proyectos';
-const APP_VERSION = '1.11.0';
+const APP_VERSION = '1.12.0';
 const SVG = (d) => `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ICON = {
   plus: SVG('<path d="M12 5v14M5 12h14"/>'),
@@ -861,8 +861,18 @@ function renderTodo(D) {
   if (noOrd.length) rows.push(row(noOrd.length, plural(noOrd.length, 'factura sin orden de compra', 'facturas sin orden de compra'), b('focus', 'Ver', ' data-f="sinorden"'), 'warn'));
   const condWait = D.conduces.filter((c) => !c.invoiceId && c.ai !== 'pending');
   if (condWait.length) rows.push(row(condWait.length, plural(condWait.length, 'conduce esperando su factura', 'conduces esperando su factura'), b('cond-list', 'Ver')));
-  const toDigi = pendingDigi(D);
-  if (toDigi.length) rows.push(row(toDigi.length, plural(toDigi.length, 'factura por mandar a la digitadora', 'facturas por mandar a la digitadora'), b('digi-open', 'Mandar')));
+  // Digitadora: se le mandan las de cada día al final del día.
+  const toDigi = pendingDigi(D), today = todayISO(), late = digiLate();
+  const digiToday = toDigi.filter((i) => addedDay(i) === today).length, digiOld = toDigi.length - digiToday;
+  const sentToday = D.envios.filter((e) => e.date === today).sort((x, y) => (Number(x.number) || 0) - (Number(y.number) || 0));
+  const nSent = sentToday.reduce((s, e) => s + (e.invoiceIds || []).length, 0);
+  const oldTxt = plural(digiOld, 'factura', 'facturas') + ' de días anteriores';
+  const digiRows = [];
+  if (toDigi.length && late && digiToday) digiRows.push(row(toDigi.length, `Manda las de hoy a la digitadora: ${plural(digiToday, 'factura', 'facturas')}${digiOld ? ' y ' + oldTxt : ''}`, b('digi-open', 'Mandar', '', ' primary'), 'now'));
+  else if (toDigi.length && late) digiRows.push(row(toDigi.length, `${oldTxt} sin mandar a la digitadora`, b('digi-open', 'Mandar', '', ' primary'), 'warn'));
+  else if (toDigi.length) digiRows.push(row(toDigi.length, plural(toDigi.length, 'factura por mandar a la digitadora', 'facturas por mandar a la digitadora') + (digiOld ? (digiToday ? ` · ${digiOld} de días anteriores` : ' · de días anteriores') : ''), b('digi-open', 'Mandar'), digiOld ? 'warn' : ''));
+  if (nSent) digiRows.push(row(nSent, `Hoy ya le mandaste ${plural(nSent, 'factura', 'facturas')} a la digitadora (${sentToday.length > 1 ? 'envíos ' + sentToday.map((e) => e.number).join(', ') : 'envío ' + sentToday[0].number})`, b('envio-view', 'Ver', ` data-id="${esc(sentToday[sentToday.length - 1].id)}"`), 'ok'));
+  if (late) rows.unshift(...digiRows); else rows.push(...digiRows);
   const overdue = live.filter((i) => FOCUS.vencidas(i)), soon = live.filter((i) => FOCUS.porvencer(i));
   if (overdue.length) rows.push(row(overdue.length, `${plural(overdue.length, 'factura vencida', 'facturas vencidas')} · <b class="mono">${esc(totalStr(overdue))}</b>`, b('focus', 'Ver', ' data-f="vencidas"'), 'warn'));
   if (soon.length) rows.push(row(soon.length, `${plural(soon.length, 'factura vence', 'facturas vencen')} esta semana · <b class="mono">${esc(totalStr(soon))}</b>`, b('focus', 'Ver', ' data-f="porvencer"')));
@@ -3085,13 +3095,27 @@ const ENVIO_LABEL = { archivo: 'en PDF', papel: 'en papel', manual: 'marcada a m
 const digiName = () => String((S.digi && S.digi.name) || '').trim();
 const pendingDigi = (D) => D.invoices.filter((i) => !i.envio && !i.notInvoice).sort(sortByDateDesc);
 function nextEnvioNumber() { return S.envios.reduce((m, e) => Math.max(m, Number(e.number) || 0), 0) + 1; }
+// Se le mandan las de cada día al final del día: cuenta el día en que la factura se agregó a la app (hora del teléfono).
+function addedDay(i) { const d = new Date(i.createdAt || ''); return isNaN(d) ? (ymd(i.date) ? i.date : '') : `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
+const dayGroupName = (iso) => (!iso ? 'Sin fecha' : iso === todayISO() ? 'De hoy' : iso === addDays(todayISO(), -1) ? 'De ayer' : 'Del ' + fmtDate(iso));
+const monthLong = new Intl.DateTimeFormat('es-DO', { month: 'long' });
+const longDate = (iso) => { const d = ymd(iso); if (!d) return ''; const t = `${DOW_LONG[d.getDay()]} ${d.getDate()} de ${monthLong.format(d)} de ${d.getFullYear()}`; return t.charAt(0).toUpperCase() + t.slice(1); };
+// En la tarde (el sábado, desde las 11) toca mandarle las del día.
+const digiLate = () => { const d = new Date(); return d.getHours() >= (d.getDay() === 6 ? 11 : 15); };
+// Por el día en que se agregaron, el más nuevo primero; dentro de cada día, por proyecto y proveedor.
+function digiByDay(list) {
+  const m = new Map();
+  for (const i of list) { const k = addedDay(i); if (!m.has(k)) m.set(k, []); m.get(k).push(i); }
+  const pn = (i) => (i.project ? i.project.name : '\uffff');
+  return [...m.entries()].sort((a, b) => b[0].localeCompare(a[0])).map(([day, items]) => ({ day, items: items.sort((a, b) => pn(a).localeCompare(pn(b), 'es') || String(a.supplier || '').localeCompare(String(b.supplier || ''), 'es')) }));
+}
 function openDigi() {
   const D = derive();
   const pend = pendingDigi(D);
   const edit = canEdit();
-  const groups = groupByProject(pend, D);
-  const row = (i, k) => `<label class="pick-row"><input type="checkbox" data-digi="inv" data-g="${k}" value="${esc(i.id)}" checked><span class="pr-name"><span>${esc(i.supplier || 'Factura sin datos')}</span><small>${esc([i.number ? 'NCF ' + RD.normNcf(i.number) : 'sin NCF', fmtDate(i.date)].filter(Boolean).join(' · '))}</small></span><span class="num">${esc(money(i.amount, i.currency))}</span></label>`;
-  const list = pend.length ? groups.map((g, k) => `<div class="pick-group"><label class="pick-row head"><input type="checkbox" data-digi="group" data-g="${k}" checked><span class="pr-name"><span>${esc(g.name)}</span><small>${plural(g.items.length, 'factura', 'facturas')}</small></span><span class="num">${esc(totalStr(g.items))}</span></label>${g.items.map((i) => row(i, k)).join('')}</div>`).join('') : '<div class="empty"><p>No hay facturas por mandar. Las nuevas salen aquí hasta que se las mandes.</p></div>';
+  const groups = digiByDay(pend);
+  const row = (i, k) => `<label class="pick-row"><input type="checkbox" data-digi="inv" data-g="${k}" value="${esc(i.id)}" checked><span class="pr-name"><span>${esc(i.supplier || 'Factura sin datos')}</span><small>${esc([i.number ? 'NCF ' + RD.normNcf(i.number) : 'sin NCF', i.project ? i.project.name : 'Sin proyecto'].join(' · '))}</small></span><span class="num">${esc(money(i.amount, i.currency))}</span></label>`;
+  const list = pend.length ? groups.map((g, k) => `<div class="pick-group"><label class="pick-row head"><input type="checkbox" data-digi="group" data-g="${k}" checked><span class="pr-name"><span>${esc(dayGroupName(g.day))}</span><small>${plural(g.items.length, 'factura', 'facturas')}${g.day && g.day < todayISO() ? ' · sin mandar' : ''}</small></span><span class="num">${esc(totalStr(g.items))}</span></label>${g.items.map((i) => row(i, k)).join('')}</div>`).join('') : '<div class="empty"><p>No hay facturas por mandar. Las nuevas salen aquí hasta que se las mandes.</p></div>';
   const envs = [...D.envios].sort((a, b) => (Number(b.number) || 0) - (Number(a.number) || 0)).slice(0, 12);
   const hist = envs.map((e) => `<div class="o-inv"><button type="button" class="link" data-act="envio-view" data-id="${esc(e.id)}">Envío ${esc(String(e.number || ''))} · ${esc(fmtDate(e.date))} · ${plural((e.invoiceIds || []).length, 'factura', 'facturas')} · ${esc(ENVIO_LABEL[e.method] || '')}${e.to ? ' · a ' + esc(e.to) : ''}</button>${edit ? `<button type="button" class="btn ghost sm" data-act="envio-undo" data-id="${esc(e.id)}">Deshacer</button>` : ''}</div>`).join('');
   openSheet(`${sheetHead('Mandar a la digitadora')}<div class="sheet-b">
@@ -3119,12 +3143,12 @@ function syncDigi() {
   for (const b of $$('[data-act="digi-pdf"], [data-act="digi-paper"], [data-act="digi-mark"]')) b.disabled = !on;
 }
 // PDF para la digitadora: la lista de las facturas (con firma de recibido) y, si va en PDF, cada factura detrás.
-async function buildDigiPdf(invs, number, withFiles, rep = {}) {
+async function buildDigiPdf(invs, { number, date = todayISO(), to = digiName(), withFiles }, rep = {}) {
   const { PDFDocument, StandardFonts, rgb } = await pdflib();
   const out = await PDFDocument.create();
   const font = await out.embedFont(StandardFonts.Helvetica);
   const bold = await out.embedFont(StandardFonts.HelveticaBold);
-  out.setTitle(pdfSafe(`Facturas para digitar - envío ${number}`));
+  out.setTitle(pdfSafe(`Facturas para digitar - ${fmtDate(date)} - envío ${number}`));
   out.setCreator(PDF_CREATOR);
   const st = S.settings || {};
   const W = 612, H = 792, M = 42;
@@ -3140,10 +3164,19 @@ async function buildDigiPdf(invs, number, withFiles, rep = {}) {
   if (st.company) { T(fit(st.company, bold, 11, W - 2 * M - 180), M, y - 8, 11, bold); if (st.companyRnc) T('RNC ' + RD.fmtRnc(st.companyRnc), M, y - 21, 9, font, C.grey); }
   R('FACTURAS PARA DIGITAR', W - M, y - 8, 9, bold, C.accent);
   y -= 56;
-  T(`Envío ${number}`, M, y, 22, bold); y -= 20;
-  T([`Fecha: ${fmtDate(todayISO())}`, digiName() ? 'Para: ' + digiName() : '', st.preparedBy ? 'Entrega: ' + st.preparedBy : '', plural(invs.length, 'factura', 'facturas')].filter(Boolean).join('   ·   '), M, y, 9, font, C.grey); y -= 30;
+  T(longDate(date), M, y, 20, bold); y -= 20;
+  T([`Envío ${number}`, to ? 'Para: ' + to : '', st.preparedBy ? 'Entrega: ' + st.preparedBy : '', plural(invs.length, 'factura', 'facturas')].filter(Boolean).join('   ·   '), M, y, 9, font, C.grey); y -= 30;
   head();
+  const days = new Set(invs.map(addedDay));
+  let lastDay = null;
   invs.forEach((i, n) => {
+    const day = addedDay(i);
+    if (days.size > 1 && day !== lastDay) {
+      if (y < M + 60) { newPage(); head(); }
+      lastDay = day;
+      T(`${day ? 'Recibidas el ' + fmtDate(day) : 'Sin fecha'} · ${plural(invs.filter((x) => addedDay(x) === day).length, 'factura', 'facturas')}`, M + 2, y, 8.5, bold, C.accent);
+      y -= 16;
+    }
     if (y < M + 40) { newPage(); head(); }
     const vals = [String(n + 1), i.project ? i.project.name : 'Sin proyecto', i.supplier || 'Sin nombre', RD.normRnc(i.rnc) || '-', RD.normNcf(i.number) || '-', fmtDmy(i.date) || '-', isNum(i.itbis) ? money(i.itbis, i.currency) : '-', money(i.amount, i.currency)];
     cols.forEach((c, k) => { const t = fit(vals[k], font, 8, c.w); if (c.xr) R(t, c.xr, y, 8); else T(t, c.x, y, 8); });
@@ -3194,10 +3227,10 @@ async function digiSend(method, btn) {
   btn.textContent = 'Preparando…';
   try {
     const rep = {};
-    const bytes = await buildDigiPdf(invs, number, method === 'archivo', rep);
+    const bytes = await buildDigiPdf(invs, { number, withFiles: method === 'archivo' }, rep);
     const miss = rep.missing ? [...rep.missing] : [];
     S.envioPending = { ids, method, number };
-    deliverFile(new Blob([bytes], { type: 'application/pdf' }), fileSafe(`Facturas para digitar - envío ${number} - ${plural(invs.length, 'factura', 'facturas')}`) + '.pdf');
+    deliverFile(new Blob([bytes], { type: 'application/pdf' }), fileSafe(`Facturas para digitar - ${fmtDate(todayISO())} - envío ${number} - ${plural(invs.length, 'factura', 'facturas')}`) + '.pdf');
     // Se marca cuando se confirma que se mandó, no antes: así no queda marcada una que no salió.
     const b = $('.sheet-b');
     if (b && miss.length) b.insertAdjacentHTML('beforeend', `<div class="msg warn">${ICON.alert}<span>No se pudo poner en el PDF el archivo de ${esc(miss.join(', '))}; va solo en la lista. Mándaselo aparte.</span></div>`);
@@ -3245,8 +3278,8 @@ async function envioPdfAgain(id) {
   const D = derive();
   const e = D.envios.find((x) => x.id === id);
   if (!e) return;
-  const invs = (e.invoiceIds || []).map((x) => D.invoices.find((i) => i.id === x)).filter(Boolean);
-  try { deliverFile(new Blob([await buildDigiPdf(invs, e.number, e.method !== 'papel')], { type: 'application/pdf' }), fileSafe(`Facturas para digitar - envío ${e.number}`) + '.pdf'); }
+  const invs = digiByDay((e.invoiceIds || []).map((x) => D.invoices.find((i) => i.id === x)).filter(Boolean)).flatMap((g) => g.items);
+  try { deliverFile(new Blob([await buildDigiPdf(invs, { number: e.number, date: e.date, to: e.to || '', withFiles: e.method !== 'papel' })], { type: 'application/pdf' }), fileSafe(`Facturas para digitar - ${fmtDate(e.date)} - envío ${e.number}`) + '.pdf'); }
   catch (er) { console.error(er); toast('No se pudo preparar el PDF.'); }
 }
 
@@ -4549,7 +4582,8 @@ function bind() {
     RT.assets.objectUrl(decodeURIComponent(m[1])).then((u) => { if (u) img.src = u; });
   }, true);
   window.addEventListener('online', () => { if (S.aiState !== 'ok') scheduleRender(); retryOffline(); });
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushAtt(); });
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushAtt(); else scheduleRender(); });
+  setInterval(() => { if (document.visibilityState === 'visible') renderTodo(derive()); }, 300000);
   window.addEventListener('pagehide', () => { flushAtt(); });
 }
 
