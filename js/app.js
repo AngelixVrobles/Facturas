@@ -10,7 +10,7 @@ const LIB = {
   qrgen: 'js/qr.js',
 };
 const PDF_CREATOR = 'Facturas de Proyectos';
-const APP_VERSION = '1.18.0';
+const APP_VERSION = '1.19.0';
 const SVG = (d) => `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ICON = {
   lock: SVG('<rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>'),
@@ -729,6 +729,38 @@ const canUpload = () => canEdit() && !!assets;
 const isStandalone = () => !!(navigator.standalone || (window.matchMedia && matchMedia('(display-mode: standalone)').matches));
 const isIOS = () => /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
+/* ---------- teclado (computadora) ---------- */
+// «/» busca, «N» agrega, flechas para moverse por la tabla, «Esc» cierra.
+function onKeys(e) {
+  if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
+  const t = e.target, typing = t && (t.isContentEditable || /^(TEXTAREA|SELECT)$/.test(t.tagName) || (t.tagName === 'INPUT' && !/^(checkbox|radio|button|submit|reset|file|range|color)$/.test(t.type)));
+  if (!$('#lock').hidden) return;
+  if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && t && t.classList && t.classList.contains('row-btn')) {
+    const all = $$('.view:not([hidden]) .tbl .row-btn').filter((x) => x.offsetParent !== null);
+    const k = all.indexOf(t) + (e.key === 'ArrowDown' ? 1 : -1);
+    if (all[k]) { e.preventDefault(); all[k].focus(); all[k].closest('tr').scrollIntoView({ block: 'nearest' }); }
+    return;
+  }
+  if (typing || S.sheet || !$('#viewer').hidden) return;
+  if (e.key === '/') {
+    const box = { facturas: '#f-search', conduces: '#c-search', ordenes: '#o-search' }[S.tab];
+    if (box && $(box)) { e.preventDefault(); $(box).focus(); }
+  } else if (e.key === 'n' || e.key === 'N') {
+    if (!canEdit()) return;
+    if (S.tab === 'facturas' && canUpload()) { e.preventDefault(); pickFiles(); }
+    else if (S.tab === 'conduces' && canUpload()) { e.preventDefault(); condTarget = null; $('#cond-input').click(); }
+    else if (S.tab === 'ordenes') { e.preventDefault(); $('#o-new').click(); }
+  }
+}
+const deviceWord = () => (wide() ? 'esta computadora' : 'este teléfono');
+
+/* ---------- espacio de la nube ---------- */
+// El plan gratis de Supabase trae alrededor de 1 GB para archivos; las fotos y PDF de aquí son los mismos de la nube.
+const CLOUD_FREE_BYTES = 1024 * 1048576;
+async function measureStorage() {
+  try { const { usage } = await assets.list(); S.fileBytes = usage.bytes || 0; scheduleRender(); } catch (e) { /* sin dato */ }
+}
+
 function renderAll() {
   const D = derive();
   $$('.tabs [data-tab]').forEach((b) => { if (b.dataset.tab === S.tab) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current'); });
@@ -763,15 +795,16 @@ function renderBanner(D) {
   else if (S.dbState === 'error') parts.push('<div class="note warn"><span class="grow">No se pudieron cargar tus datos. Cierra la app y vuelve a abrirla.</span></div>');
   if (S.updateReg) parts.push('<div class="note example"><span class="grow"><b>Hay una versión nueva.</b> Se instala sola la próxima vez que abras la app, o actualízala ahora.</span><span class="acts"><button type="button" class="btn sm" data-act="update-app">Actualizar</button></span></div>');
   if (isIOS() && !isStandalone() && !lsGet('facturas.installHintOff')) parts.push('<div class="note example"><span class="grow"><b>Instálala antes de empezar:</b> toca Compartir y luego <b>Agregar a pantalla de inicio</b>. En iPhone, lo que guardes en Safari no pasa a la app instalada.</span><span class="acts"><button type="button" class="btn sm" data-act="install-off">Entendido</button></span></div>');
-  { const ns = RT.sync.status(); if (ns.on && ns.code === 'auth') parts.push('<div class="note warn"><span class="grow"><b>La nube pide que vuelvas a entrar</b> para seguir compartiendo los datos con los otros teléfonos.</span><span class="acts"><button type="button" class="btn sm" data-act="settings">Entrar</button></span></div>'); }
+  { const ns = RT.sync.status(); if (ns.on && ns.code === 'auth') parts.push('<div class="note warn"><span class="grow"><b>La nube pide que vuelvas a entrar</b> para seguir compartiendo los datos con tus otros aparatos.</span><span class="acts"><button type="button" class="btn sm" data-act="settings">Entrar</button></span></div>'); }
   { const ns = RT.sync.status(); if (ns.on && ns.status === 'error' && ['paused', 'unreachable', 'limited'].includes(ns.code)) parts.push(`<div class="note warn"><span class="grow"><b>${ns.code === 'paused' ? 'La nube está en pausa.' : ns.code === 'limited' ? 'La nube tiene una restricción.' : 'No se pudo llegar a la nube.'}</b> ${esc(ns.error)}</span><span class="acts"><button type="button" class="btn sm" data-act="nube-sync">Probar otra vez</button></span></div>`); }
+  if (RT.sync.status().on && S.fileBytes > CLOUD_FREE_BYTES * 0.8) parts.push(`<div class="note warn"><span class="grow"><b>La nube se está llenando:</b> tus fotos y PDF ocupan ${esc(fmtBytes(S.fileBytes))} de alrededor de ${esc(fmtBytes(CLOUD_FREE_BYTES))} que trae el plan gratis de Supabase. Cuando se llene, las fotos nuevas no subirán; el plan Pro de Supabase trae mucho más espacio.</span></div>`);
   if (S.aiState && S.aiState !== 'ok') parts.push(`<div class="note warn"><span class="grow"><b>Las facturas no se están leyendo solas.</b> ${esc(AI_ERR[S.aiState === 'badkey' ? 'bad_key' : S.aiState] || AI_ERR.bad_key)}</span><span class="acts"><button type="button" class="btn sm" data-act="settings">Revisar</button></span></div>`);
   const last = Number(lsGet('facturas.lastBackup')) || 0;
   const snooze = Number(lsGet('facturas.backupSnooze')) || 0;
   // Con la nube también: la nube copia lo que se borra o se cambia por error, así que un archivo de vez en cuando (cada mes).
   const cloudOn = RT.sync.status().on;
   if (S.dbState === 'ready' && S.invoices.length && Date.now() - last > (cloudOn ? 30 : 7) * 864e5 && Date.now() > snooze) {
-    parts.push(`<div class="note warn"><span class="grow"><b>${last ? 'Haz un respaldo:' : 'Todavía no tienes respaldo en un archivo.'}</b> ${cloudOn ? 'La nube copia también lo que se borra o se cambia por error. Una vez al mes, guarda un respaldo en tu computadora o en Drive.' : 'Tus facturas solo están en este teléfono. Guarda una copia en iCloud Drive o en tu computadora.'}</span><span class="acts"><button type="button" class="btn sm" data-act="backup">Respaldar ahora</button><button type="button" class="btn sm ghost" data-act="backup-later">Mañana</button></span></div>`);
+    parts.push(`<div class="note warn"><span class="grow"><b>${last ? 'Haz un respaldo:' : 'Todavía no tienes respaldo en un archivo.'}</b> ${cloudOn ? 'La nube copia también lo que se borra o se cambia por error. Una vez al mes, guarda un respaldo en tu computadora o en Drive.' : `Tus facturas solo están en ${deviceWord()}. ${wide() ? 'Guarda una copia en Drive o en una memoria USB.' : 'Guarda una copia en iCloud Drive o en tu computadora.'}`}</span><span class="acts"><button type="button" class="btn sm" data-act="backup">Respaldar ahora</button><button type="button" class="btn sm ghost" data-act="backup-later">Mañana</button></span></div>`);
   }
   const el = $('#banner');
   el.innerHTML = parts.join('');
@@ -966,7 +999,7 @@ function renderFacturas(D) {
     el.innerHTML = `<div class="empty"><p>${q ? 'Nada coincide con tu búsqueda.' : ['No hay facturas', what, oc, proj, when].filter(Boolean).join(' ') + '.'}</p></div>`;
     return;
   }
-  const LIM = wide() ? 300 : 60;
+  const LIM = wide() ? 150 : 60;
   const vis = new Set(list.map((i) => i.id));
   for (const id of [...S.sel]) if (!vis.has(id)) S.sel.delete(id);
   const cards = (items, key) => ((sh) => (wide() ? invTableHTML(sh, D, key) : sh.map((i) => cardHTML(i, D, { hideProject: true })).join('')))(items.length <= LIM || S.showAll.has(key) ? items : items.slice(0, LIM))
@@ -1236,12 +1269,25 @@ function openSheet(html, data) {
   const root = $('#sheet-root');
   // Si es la misma hoja que se actualiza con datos nuevos, no se repite la animación de entrada.
   root.classList.toggle('still', !!(S.sheet && data && S.sheet.id && S.sheet.type === data.type && S.sheet.id === data.id));
-  root.innerHTML = `<div class="scrim" data-act="sheet-close"></div><div class="sheet" role="dialog" aria-modal="true">${html}</div>`;
+  const fresh = !root.classList.contains('still'), inside = root.contains(document.activeElement);
+  if (fresh && !S.sheet) lastFocus = document.activeElement;
+  root.innerHTML = `<div class="scrim" data-act="sheet-close"></div><div class="sheet" role="dialog" aria-modal="true" tabindex="-1">${html}</div>`;
   root.hidden = false;
   S.sheet = data;
   lockBody();
+  // En la computadora, el teclado sigue dentro del panel (al abrirlo, y si se redibuja mientras se usa).
+  if (wide() && (fresh || inside)) { const sh = root.querySelector('.sheet'); if (sh) sh.focus({ preventScroll: true }); }
 }
-function closeSheet() { const root = $('#sheet-root'); root.hidden = true; root.innerHTML = ''; S.sheet = null; S.ready = null; lockBody(); if (S.updateReg) setTimeout(tryAutoUpdate, 300); }
+let lastFocus = null;
+// Al cerrar el panel, el foco vuelve a lo que lo abrió (o a su igual, si la lista se redibujó mientras tanto).
+function restoreFocus() {
+  let el = lastFocus;
+  lastFocus = null;
+  if (!el || !wide()) return;
+  if (!el.isConnected && el.dataset && el.dataset.act) el = $(`[data-act="${CSS.escape(el.dataset.act)}"]${el.dataset.id ? `[data-id="${CSS.escape(el.dataset.id)}"]` : ''}`);
+  if (el && el.isConnected) { try { el.focus({ preventScroll: true }); } catch (e) { /* nada */ } }
+}
+function closeSheet() { const root = $('#sheet-root'); const had = !!S.sheet; root.hidden = true; root.innerHTML = ''; S.sheet = null; S.ready = null; lockBody(); if (had) restoreFocus(); else lastFocus = null; if (S.updateReg) setTimeout(tryAutoUpdate, 300); }
 function lockBody() { document.body.classList.toggle('locked', !!S.sheet || !$('#viewer').hidden); }
 const sheetHead = (title) => `<div class="sheet-h"><h2>${title}</h2><button type="button" class="icon-btn plain" data-act="sheet-close" aria-label="Cerrar">${ICON.close}</button></div>`;
 
@@ -1677,7 +1723,7 @@ async function openSettings() {
         <div class="field full"><label for="st-name">Elaboró (tu nombre)</label><input id="st-name" maxlength="80" value="${esc(st.preparedBy || '')}"></div>
       </div>
       <h3 class="h2">Lectura automática (opcional)</h3>
-      <p class="hint">Las facturas electrónicas se leen solas por su QR o su XML. Para que la app lea también las de papel y llene las órdenes desde el mensaje del pedido, pon una clave de API (se crea en platform.claude.com y se paga por uso; al crearla, asígnala a un espacio de trabajo y elige que no venza; los pasos están en la guía de la app). La clave se guarda solo en este teléfono: no va en los respaldos ni se comparte con los otros teléfonos.</p>
+      <p class="hint">Las facturas electrónicas se leen solas por su QR o su XML. Para que la app lea también las de papel y llene las órdenes desde el mensaje del pedido, pon una clave de API (se crea en platform.claude.com y se paga por uso; al crearla, asígnala a un espacio de trabajo y elige que no venza; los pasos están en la guía de la app). La clave se guarda solo en ${deviceWord()}: no va en los respaldos ni se comparte con los otros aparatos.</p>
       <div class="fields">
         <div class="field full"><label for="st-key">Clave de API</label><input id="st-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-…" value="${esc(ai.getKey())}"></div>
         <div class="field full"><label for="st-model">Modelo</label><select id="st-model">${models}</select></div>
@@ -1692,7 +1738,7 @@ async function openSettings() {
         <label class="field full check-row"><input type="checkbox" id="st-oc-qr"${st.orderQr !== false ? ' checked' : ''}><span>Poner un código QR en la orden. Así, al agregar con <b>+</b> la foto de la orden firmada, la app la reconoce y la adjunta sola a su orden.</span></label>
       </div>
       <h3 class="h2">Respaldo</h3>
-      <p class="hint">${RT.sync.status().on ? "Tus datos están en este teléfono y en la nube del equipo. Igual conviene un respaldo de vez en cuando:" : "Tus facturas solo están en este teléfono."} Descarga un respaldo cada semana y guárdalo en iCloud Drive o en tu computadora. ${last ? 'Último respaldo: ' + esc(fmtDate(new Date(last).toISOString().slice(0, 10))) + '.' : 'Todavía no has hecho ninguno.'}</p>
+      <p class="hint">${RT.sync.status().on ? `Tus datos están en ${deviceWord()} y en la nube del equipo. Igual conviene un respaldo en un archivo de vez en cuando:` : `Tus facturas solo están en ${deviceWord()}.`} Descarga un respaldo cada semana y guárdalo en iCloud Drive o en tu computadora. ${last ? 'Último respaldo: ' + esc(fmtDate(new Date(last).toISOString().slice(0, 10))) + '.' : 'Todavía no has hecho ninguno.'}</p>
       <div class="actions"><button type="button" class="btn" data-act="backup">${ICON.down} Descargar respaldo</button><button type="button" class="btn" data-act="restore">Restaurar un respaldo</button></div>
       <div id="restore-box" hidden></div>
       ${RT.sync.status().on ? `<div class="msg"><span><b>Respaldo automático en la nube:</b> cada semana se guarda uno y quedan los últimos 8. ${S.bk && S.bk.last ? 'El último es del ' + esc(fmtDate(String(S.bk.last).slice(0, 10))) + '.' : 'El primero se hace solo en cuanto la nube esté al día.'} <button type="button" class="link" data-act="cloud-bk">Ver los respaldos</button></span></div>` : ''}
@@ -1706,7 +1752,7 @@ async function openSettings() {
         <label class="field full check-row"><input type="checkbox" id="st-ap"${st.needApproval ? ' checked' : ''}><span>Los pagos necesitan la aprobación del dueño</span></label>
         <div class="field full"><label for="st-owner">Correo del dueño (el de su cuenta en la nube)</label><input id="st-owner" type="email" inputmode="email" autocapitalize="off" spellcheck="false" maxlength="120" value="${esc(st.ownerEmail || '')}"></div>
       </div>
-      <h3 class="h2">Compartir con otros teléfonos (prueba)</h3>
+      <h3 class="h2">Nube: teléfono y computadora</h3>
       <div id="nube-box" data-k="${nubeKey(RT.sync.status())}">${nubeBoxHTML()}</div>
       <p class="usage" id="st-usage">Calculando espacio…</p>
       ${(() => { const l = errList(); return l.length ? `<details class="edit" id="err-box"><summary>Registro de errores (${l.length})</summary><div class="err-list">${l.slice(-8).reverse().map((x) => `<p class="usage"><b>${esc(fmtDate(String(x.t).slice(0, 10)))} ${esc(String(x.t).slice(11, 16))}</b> ${esc(x.m)}${x.n > 1 ? ` (×${x.n})` : ''}</p>`).join('')}</div><div class="actions"><button type="button" class="btn sm" data-act="err-share">Compartir el registro</button><button type="button" class="btn sm ghost" data-act="err-clear">Borrar</button></div></details>` : ''; })()}
@@ -1714,15 +1760,22 @@ async function openSettings() {
     </div>
     <div class="sheet-f"><button type="submit" class="btn primary block">Guardar</button></div>
   </form>`, { type: 'settings' });
+  refreshUsage();
+}
+// Cuánto ocupan las fotos y los PDF: aquí y, con la nube, contra el espacio del plan gratis (son los mismos archivos).
+async function refreshUsage() {
+  if (!$('#st-usage') || !assets) return;
   try {
     const { usage: u } = await assets.list();
     const persisted = navigator.storage && navigator.storage.persisted ? await navigator.storage.persisted() : null;
+    S.fileBytes = u.bytes || 0;
+    const here = `${plural(u.files || 0, 'archivo', 'archivos')} · ${fmtBytes(u.bytes)}${isNum(u.maxBytes) ? ` (el navegador permite hasta ${fmtBytes(u.maxBytes)})` : ''}${persisted ? ' · protegido contra borrado automático' : ''}`;
     const el = $('#st-usage');
-    if (el) el.textContent = `${plural(u.files || 0, 'archivo', 'archivos')} · ${fmtBytes(u.bytes)}${isNum(u.maxBytes) ? ` (el navegador permite hasta ${fmtBytes(u.maxBytes)})` : ''}${persisted ? ' · protegido contra borrado automático' : ''}.`;
+    if (el) el.textContent = RT.sync.status().on ? `En la nube: ${fmtBytes(S.fileBytes)} de alrededor de ${fmtBytes(CLOUD_FREE_BYTES)} del plan gratis (${Math.min(100, Math.round((S.fileBytes / CLOUD_FREE_BYTES) * 100))} %). En ${deviceWord()}: ${here}.` : `${here}.`;
   } catch (e) { const el = $('#st-usage'); if (el) el.textContent = ''; }
 }
 
-/* ---------- compartir con otros teléfonos (nube del equipo) ---------- */
+/* ---------- compartir con los otros aparatos (nube del equipo) ---------- */
 const nubeKey = (s) => `${s.on}|${s.code === 'auth'}`;
 function relTime(ms) {
   if (!ms) return '';
@@ -1743,29 +1796,29 @@ function nubeLine(s) {
 function nubeBoxHTML() {
   const s = RT.sync.status();
   if (!s.on) {
-    return `<p class="hint">Conecta tu teléfono y el del dueño a la nube del equipo para que los dos vean lo mismo: lo que agregas aquí le aparece solo, y al revés. Cada teléfono sigue funcionando sin internet y se pone al día cuando hay conexión. La nube se crea una sola vez; los pasos están en la guía de la app.</p>
+    return `<p class="hint">Conecta tu teléfono, tu computadora y el teléfono del dueño a la nube del equipo para que todos vean lo mismo: lo que agregas en uno aparece solo en los demás. Cada aparato sigue funcionando sin internet y se pone al día cuando hay conexión. La nube se crea una sola vez; los pasos están en la guía de la app.</p>
       <div class="fields">
         <div class="field full"><label for="nb-code">Datos de conexión</label><textarea id="nb-code" rows="2" spellcheck="false" autocapitalize="off" placeholder="Pega el código FACTURAS-NUBE que te mandaron, o la URL del proyecto"></textarea></div>
         <div class="field full"><label for="nb-key">Clave pública del proyecto (solo si pegaste la URL)</label><input id="nb-key" spellcheck="false" autocapitalize="off" autocomplete="off"></div>
         <div class="field"><label for="nb-email">Correo</label><input id="nb-email" type="email" inputmode="email" autocapitalize="off" autocomplete="username" spellcheck="false"></div>
         <div class="field"><label for="nb-pass">Contraseña</label><input id="nb-pass" type="password" autocomplete="current-password"></div>
       </div>
-      <div class="actions"><button type="button" class="btn primary" data-act="nube-connect">Conectar este teléfono</button></div>
+      <div class="actions"><button type="button" class="btn primary" data-act="nube-connect">Conectar ${deviceWord()}</button></div>
       <p class="usage" id="nb-msg"></p>`;
   }
   const relog = s.code === 'auth' ? `<div class="fields"><div class="field full"><label for="nb-pass">Contraseña de ${esc(s.email)}</label><input id="nb-pass" type="password" autocomplete="current-password"></div></div><div class="actions"><button type="button" class="btn primary" data-act="nube-relogin">Volver a entrar</button></div>` : '';
   return `<p class="nube-line ${esc(s.status)}" id="nb-status">${nubeLine(s)}</p>
-    <p class="hint">Conectado como <b>${esc(s.email)}</b>. Lo que se agrega o cambia en un teléfono les aparece a los demás conectados.</p>
+    <p class="hint">Conectado como <b>${esc(s.email)}</b>. Lo que se agrega o cambia en un aparato les aparece a los demás conectados.</p>
     ${relog}
-    <div class="actions"><button type="button" class="btn" data-act="nube-sync">Sincronizar ahora</button><button type="button" class="btn" data-act="nube-share">${ICON.share} Datos para otro teléfono</button></div>
-    <div><button type="button" class="btn danger sm" data-act="nube-off">Desconectar este teléfono</button></div>
+    <div class="actions"><button type="button" class="btn" data-act="nube-sync">Sincronizar ahora</button><button type="button" class="btn" data-act="nube-share">${ICON.share} Datos para conectar otro aparato</button></div>
+    <div><button type="button" class="btn danger sm" data-act="nube-off">Desconectar ${deviceWord()}</button></div>
     <div id="nb-confirm" hidden></div>
     <p class="usage" id="nb-msg"></p>`;
 }
 function refreshNubeBox(s) {
   const box = $('#nube-box');
   if (!box) return;
-  if (box.dataset.k !== nubeKey(s)) { box.dataset.k = nubeKey(s); box.innerHTML = nubeBoxHTML(); return; }
+  if (box.dataset.k !== nubeKey(s)) { box.dataset.k = nubeKey(s); box.innerHTML = nubeBoxHTML(); refreshUsage(); return; }
   const line = $('#nb-status');
   if (line) { line.className = 'nube-line ' + s.status; line.innerHTML = nubeLine(s); }
 }
@@ -1798,9 +1851,9 @@ async function nubeShare() {
   const code = RT.sync.shareCode();
   let ok = false;
   try { await navigator.clipboard.writeText(code); ok = true; } catch (e) { ok = false; }
-  if (ok) toast('Copiado. Mándalo por WhatsApp al otro teléfono.');
+  if (ok) toast('Copiado. Mándatelo por WhatsApp o correo para abrirlo en el otro aparato.');
   const msg = $('#nb-msg');
-  if (msg) msg.innerHTML = `${ok ? 'Copiado.' : 'Copia este código.'} En el otro teléfono: instala la app, ve a Ajustes → Compartir con otros teléfonos, pega el código y entra con el correo y la contraseña de esa persona. El código no lleva tu contraseña.<span class="nube-code">${esc(code)}</span>`;
+  if (msg) msg.innerHTML = `${ok ? 'Copiado.' : 'Copia este código.'} En el otro aparato: abre la app, ve a Ajustes → Nube, pega el código y entra con el correo y la contraseña de esa persona. El código no lleva tu contraseña.<span class="nube-code">${esc(code)}</span>`;
 }
 
 /* ---------- archivo listo para compartir o guardar ---------- */
@@ -4794,7 +4847,7 @@ async function restoreBackup(file) {
     S.restoreFile = { docs: meta.docs, files, exportedAt: meta.exportedAt };
     if (box) {
       box.hidden = false;
-      box.innerHTML = `<div class="confirm"><p>Este respaldo es del ${esc(fmtDate(String(meta.exportedAt || '').slice(0, 10)) || 'día desconocido')} y tiene ${plural(invN, 'factura', 'facturas')}${ordN ? ' y ' + plural(ordN, 'orden de compra', 'órdenes de compra') : ''}. Al restaurarlo se <b>reemplaza todo</b> lo que hay ahora en la app.${RT.sync.status().on ? ' Como este teléfono está conectado a la nube, lo restaurado también se sube y les llega a los otros teléfonos.' : ''}</p><div class="actions"><button type="button" class="btn danger solid" data-act="restore-yes">Reemplazar y restaurar</button><button type="button" class="btn" data-act="restore-no">Cancelar</button></div></div>`;
+      box.innerHTML = `<div class="confirm"><p>Este respaldo es del ${esc(fmtDate(String(meta.exportedAt || '').slice(0, 10)) || 'día desconocido')} y tiene ${plural(invN, 'factura', 'facturas')}${ordN ? ' y ' + plural(ordN, 'orden de compra', 'órdenes de compra') : ''}. Al restaurarlo se <b>reemplaza todo</b> lo que hay ahora en la app.${RT.sync.status().on ? ` Como ${deviceWord()} está ${wide() ? 'conectada' : 'conectado'} a la nube, lo restaurado también se sube y les llega a los otros aparatos.` : ''}</p><div class="actions"><button type="button" class="btn danger solid" data-act="restore-yes">Reemplazar y restaurar</button><button type="button" class="btn" data-act="restore-no">Cancelar</button></div></div>`;
     }
   } catch (e) {
     console.error(e);
@@ -4971,7 +5024,7 @@ function onClick(e) {
     case 'cloud-bk-yes': doCloudRestore(t); break;
     case 'cloud-bk-no': cloudRestore = null; $('#cbk-confirm').hidden = true; break;
     case 'nube-share': nubeShare(); break;
-    case 'nube-off': { const b = $('#nb-confirm'); if (b) { b.hidden = false; b.innerHTML = '<div class="confirm"><p>¿Desconectar este teléfono de la nube? Sus datos se quedan aquí, pero ya no se ponen al día con los otros teléfonos.</p><div class="actions"><button type="button" class="btn danger solid" data-act="nube-off-yes">Desconectar</button><button type="button" class="btn" data-act="nube-off-no">Cancelar</button></div></div>'; } break; }
+    case 'nube-off': { const b = $('#nb-confirm'); if (b) { b.hidden = false; b.innerHTML = '<div class="confirm"><p>¿Desconectar ' + deviceWord() + ' de la nube? Sus datos se quedan aquí, pero ya no se ponen al día con los otros aparatos.</p><div class="actions"><button type="button" class="btn danger solid" data-act="nube-off-yes">Desconectar</button><button type="button" class="btn" data-act="nube-off-no">Cancelar</button></div></div>'; } break; }
     case 'nube-off-yes': RT.sync.disconnect(); toast('Este teléfono ya no se sincroniza. Sus datos se quedan aquí.'); break;
     case 'nube-off-no': { const b = $('#nb-confirm'); if (b) b.hidden = true; break; }
     case 'itbis18': {
@@ -5146,6 +5199,7 @@ function bind() {
   document.addEventListener('input', onInput);
   document.addEventListener('submit', onSubmit);
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { if (!$('#viewer').hidden) closeViewer(); else if (S.sheet) closeSheet(); } });
+  document.addEventListener('keydown', onKeys);
   $('#file-input').addEventListener('change', (e) => { const files = [...e.target.files]; e.target.value = ''; if (files.length) addFiles(files); });
   $('#restore-input').addEventListener('change', (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) restoreBackup(f); });
   $('#signed-input').addEventListener('change', (e) => { const f = e.target.files[0]; e.target.value = ''; if (f && S.sheet && S.sheet.type === 'order' && S.sheet.id) attachSigned(S.sheet.id, f); });
@@ -5211,7 +5265,7 @@ function subscribe() {
   db.doc('settings/asistencia').onSnapshot((snap) => { S.attRules = (snap.exists && snap.data()) || {}; scheduleRender(); }, (err) => console.warn(err));
   db.doc('settings/respaldos').onSnapshot((snap) => { S.bk = (snap.exists && snap.data()) || {}; scheduleRender(); }, (err) => console.warn(err));
   db.doc('settings/digitacion').onSnapshot((snap) => { S.digi = (snap.exists && snap.data()) || {}; scheduleRender(); }, (err) => console.warn(err));
-  const done = () => { if (S.got.projects && S.got.invoices && S.got.payments && S.got.orders && S.got.conduces && S.got.workers && S.got.asistencia && S.got.suppliers && S.got.envios && S.got.papelera && S.dbState === 'loading') { S.dbState = 'ready'; setTimeout(retryOffline, 1500); setTimeout(() => { fixCreditSigns().catch((e) => console.warn(e)); fixAttRules().catch((e) => console.warn(e)); scheduleLink(); purgeTrash(false).catch((e) => console.warn(e)); }, 2500); } };
+  const done = () => { if (S.got.projects && S.got.invoices && S.got.payments && S.got.orders && S.got.conduces && S.got.workers && S.got.asistencia && S.got.suppliers && S.got.envios && S.got.papelera && S.dbState === 'loading') { S.dbState = 'ready'; setTimeout(retryOffline, 1500); setTimeout(() => { fixCreditSigns().catch((e) => console.warn(e)); fixAttRules().catch((e) => console.warn(e)); scheduleLink(); purgeTrash(false).catch((e) => console.warn(e)); measureStorage(); }, 2500); } };
   for (const name of ['projects', 'invoices', 'payments', 'orders', 'conduces', 'workers', 'asistencia', 'suppliers', 'envios', 'papelera']) {
     db.collection(name).onSnapshot((snap) => {
       S[name] = snap.docs.map((d) => ({ ...d.data(), id: d.id }));

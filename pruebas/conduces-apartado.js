@@ -166,7 +166,7 @@ const at = (hhmm) => new Date(`2026-11-06T${hhmm}:00-04:00`);
   await page.fill('#nb-email', 'yo@sucre.do');
   await page.fill('#nb-pass', 'clave-mal');
   await page.click('[data-act="nube-connect"]');
-  await page.waitForFunction(() => (document.querySelector('#nb-msg')?.textContent || '').length > 5, null, { timeout: 10000 }).catch(() => {});
+  await page.waitForFunction(() => { const t = document.querySelector('#nb-msg')?.textContent || ''; return t.length > 5 && !/Conectando/.test(t); }, null, { timeout: 10000 }).catch(() => {});
   check(/^https:\/\/abcdefghijklmnopqrst\.supabase\.co\/auth\/v1\/token/.test(asked) && /no son correctos/.test(await txt(page, '#nb-msg')), 'con la dirección del panel, la app llama a la del proyecto (' + (asked || 'no llamó') + ')');
 
   console.log('problemas:', problems.length ? problems : 'ninguno');

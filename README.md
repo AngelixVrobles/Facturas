@@ -63,7 +63,7 @@ No necesita servidor, base de datos ni cuenta: se publica gratis en GitHub Pages
 - **Fechas:** en *Facturas* se elige un mes o un rango de fechas (por la fecha de la factura); los contadores, el total, el Excel y el pago que se arma desde ahí siguen ese período. Con muchas facturas, cada grupo muestra 60 y **Ver más**.
 - **Más ayudas en la factura:** la obra se toma del texto del PDF aunque no haya clave ("Obra: Caperuza 2"); si falta el ITBIS, sugiere el 18 % incluido y se guarda con un toque; el concepto sale de los artículos de la orden; **No lleva orden** quita el aviso a las que no la necesitan.
 - **Lectura sin internet:** si una factura no se pudo leer por falta de conexión, se lee sola cuando vuelve el internet. Si pones la clave de API después de cargar facturas, **Leer todas** las lee de una vez.
-- **En la computadora** cambia la forma: las secciones y Ajustes van en un menú a la izquierda, y el botón de agregar va arriba. Las facturas, los conduces y las órdenes salen en tablas (proveedor, NCF, fecha, estado, etiquetas y monto) que se ordenan tocando el encabezado. En *Facturas*, los filtros quedan a la izquierda y *Para hacer* a la derecha, y lo que se abre sale como panel a la derecha, al lado de la lista. En el teléfono todo sigue igual. Los filtros van en una barra arriba para que la tabla se vea sin bajar. Con las casillas de la tabla se marcan varias facturas (o todas las de un proyecto) y sale una barra para **Armar pago**, **Mandar a la digitadora** o sacar su **Excel**. Al abrir una factura con foto o PDF, el documento sale grande a la izquierda y los datos a la derecha, para revisarla sin abrir y cerrar. El pase de lista muestra la quincena como la planilla de papel (cada obrero con sus 14 días: entrada, pase y salida, y lo que cuenta cada día); tocando un día se marca abajo. Las facturas de un pago también van en tabla, con **Quitar**.
+- **En la computadora** cambia la forma: las secciones y Ajustes van en un menú a la izquierda, y el botón de agregar va arriba. Las facturas, los conduces y las órdenes salen en tablas (proveedor, NCF, fecha, estado, etiquetas y monto) que se ordenan tocando el encabezado. En *Facturas*, los filtros quedan a la izquierda y *Para hacer* a la derecha, y lo que se abre sale como panel a la derecha, al lado de la lista. En el teléfono todo sigue igual. Los filtros van en una barra arriba para que la tabla se vea sin bajar. Con las casillas de la tabla se marcan varias facturas (o todas las de un proyecto) y sale una barra para **Armar pago**, **Mandar a la digitadora** o sacar su **Excel**. Al abrir una factura con foto o PDF, el documento sale grande a la izquierda y los datos a la derecha, para revisarla sin abrir y cerrar. El pase de lista muestra la quincena como la planilla de papel (cada obrero con sus 14 días: entrada, pase y salida, y lo que cuenta cada día); tocando un día se marca abajo. Las facturas de un pago también van en tabla, con **Quitar**. Atajos de teclado: **/** busca, **N** agrega (facturas, conduces u orden, según la sección), las flechas **↑ ↓** pasan de una fila a otra de la tabla, **Enter** la abre y **Esc** cierra lo abierto. Con muchas facturas, cada grupo muestra 150 y **Ver más**.
 - **Si algo falla**, *Ajustes → Registro de errores* dice qué pasó y cuándo; se puede compartir para revisarlo. La página solo carga sus propios archivos y solo se conecta con la lectura automática y la nube del equipo, para proteger la clave guardada en el teléfono.
 - **Funciona sin internet**, salvo la lectura automática de facturas de papel y de pedidos.
 
@@ -86,16 +86,16 @@ En Android: Chrome → menú → **Instalar app**.
 
 ## Dónde quedan los datos
 
-- En el propio teléfono, en el almacenamiento del navegador (IndexedDB). Si conectas los teléfonos a la nube del equipo (ver *Compartir los datos entre teléfonos*), también se guarda una copia ahí.
+- En el propio teléfono, en el almacenamiento del navegador (IndexedDB). Si conectas los aparatos a la nube del equipo (ver *La nube: teléfono, computadora y el dueño*), también se guarda una copia ahí.
 - **Respaldo:** Ajustes → **Descargar respaldo** genera un `.zip` con los datos y los archivos (facturas, órdenes y sus copias firmadas). Guárdalo en iCloud Drive o en la computadora. Se recupera con **Restaurar un respaldo**, que reemplaza todo. La app recuerda hacerlo cada 7 días; con la nube, cada mes, porque la nube copia también lo que se borra o se cambia por error.
 - **Respaldo automático en la nube:** con la nube conectada, la app guarda sola tus datos en la nube cada semana y quedan los últimos 8. En *Ajustes → Ver los respaldos* se escoge uno y todo vuelve a como estaba ese día, en todos los aparatos conectados (las fotos y los PDF no se tocan, y antes se guarda cómo estaba, por si acaso).
 - **Papelera:** lo que se borra (facturas, conduces, órdenes y pagos) se va a la papelera con sus archivos por 30 días. Justo después de borrar sale **Deshacer**; y en *Ajustes → Papelera* se recupera. Una factura recuperada vuelve con sus conduces. Pasados los 30 días se elimina sola, para siempre.
 - Si se borra la app o los datos de Safari, o se pierde el teléfono, sin respaldo se pierde la información.
 - Solo salen del teléfono las fotos de facturas de papel y los pedidos (mensaje o foto) que se mandan a la API para leerlos (si configuras la clave), y los archivos que tú compartas.
 
-## Compartir los datos entre teléfonos (prueba)
+## La nube: teléfono, computadora y el dueño
 
-Con esto, lo que se agrega o cambia en un teléfono (facturas con sus fotos, órdenes, pagos, proyectos y los datos de la empresa) les aparece solo a los demás teléfonos conectados, por ejemplo al del dueño. Cada teléfono sigue guardando todo en sí mismo y funcionando sin internet; cuando hay conexión, sube lo suyo y baja lo de los demás (al abrir la app, cada 30 segundos mientras está abierta y después de cada cambio).
+Con esto, lo que se agrega o cambia en un aparato (facturas con sus fotos, órdenes, pagos, proyectos y los datos de la empresa) les aparece solo a los demás conectados: tu teléfono, tu computadora y el teléfono del dueño. Cada aparato sigue guardando todo en sí mismo y funcionando sin internet; cuando hay conexión, sube lo suyo y baja lo de los demás (al abrir la app, cada 30 segundos mientras está abierta y después de cada cambio).
 
 La nube es una cuenta de [Supabase](https://supabase.com) a nombre de la empresa. Se crea una sola vez:
 
@@ -106,22 +106,23 @@ La nube es una cuenta de [Supabase](https://supabase.com) a nombre de la empresa
    - En **Users → Add user → Create new user**, crea un usuario para ti y otro para el dueño, cada uno con su correo y su contraseña. Marca **Auto Confirm User**.
 4. Copia la **URL del proyecto** (`https://….supabase.co`) y la **clave pública** (*publishable* o *anon public*). Están en el botón **Connect** del proyecto o en *Project Settings → API Keys*. Esa clave puede ir en el teléfono: lo que protege los datos son los usuarios y los permisos del paso 2. La clave secreta (*secret* o *service_role*) no se pone nunca en la app.
 
-En los teléfonos:
+En los aparatos:
 
-1. En tu teléfono: **Ajustes → Compartir con otros teléfonos**. Pega la URL, la clave pública, tu correo y tu contraseña, y toca **Conectar este teléfono**. La primera vez sube todo lo que ya tienes. Si en vez de la URL del proyecto pegas la dirección del panel (`supabase.com/dashboard/project/…`), la app saca la URL sola.
-2. Toca **Datos para otro teléfono** y manda el código por WhatsApp al dueño. El código lleva la URL y la clave pública, no tu contraseña.
-3. En el teléfono del dueño: instala la app, ve a **Ajustes → Compartir con otros teléfonos**, pega el código y entra con su correo y su contraseña. Baja todo; las fotos llegan al abrirlas o poco después.
+1. En tu teléfono: **Ajustes → Nube: teléfono y computadora**. Pega la URL, la clave pública, tu correo y tu contraseña, y toca **Conectar este teléfono**. La primera vez sube todo lo que ya tienes. Si en vez de la URL del proyecto pegas la dirección del panel (`supabase.com/dashboard/project/…`), la app saca la URL sola.
+2. Toca **Datos para conectar otro aparato** y mándate el código (o mándaselo al dueño) por WhatsApp o correo. El código lleva la URL y la clave pública, no tu contraseña.
+3. En la computadora: abre la dirección de la app en Chrome o Edge, ve a **Ajustes → Nube**, pega el código, entra con tu correo y tu contraseña y toca **Conectar esta computadora**.
+4. En el teléfono del dueño: instala la app, ve a **Ajustes → Nube**, pega el código y entra con su correo y su contraseña. Baja todo; las fotos llegan al abrirlas o poco después.
 
 Cómo se comporta:
 
 - Sin internet, los cambios quedan pendientes y se suben solos cuando vuelve la conexión. Arriba, un indicador con una nube dice si está *Al día*, sincronizando, cuántos cambios faltan por subir, *Sin internet* o si hay un problema; tocándolo se abre la nube en Ajustes.
-- Si Supabase pausa el proyecto (en el plan gratis lo hace después de una semana sin uso), la app lo dice y explica qué hacer: entrar a supabase.com, abrir el proyecto y tocar **Restore**. Mientras tanto todo se guarda en el teléfono y se sube cuando vuelve.
-- Si dos teléfonos cambian lo mismo antes de ponerse al día, queda el último cambio que llegó a la nube.
+- Si Supabase pausa el proyecto (en el plan gratis lo hace después de una semana sin uso), la app lo dice y explica qué hacer: entrar a supabase.com, abrir el proyecto y tocar **Restore**. Mientras tanto todo se guarda en cada aparato y se sube cuando vuelve.
+- Si dos aparatos cambian lo mismo antes de ponerse al día, queda el último cambio que llegó a la nube.
 - Si la sesión vence, la app la renueva sola. Si ya no se puede, avisa arriba y pide la contraseña otra vez.
-- **Desconectar este teléfono** deja de sincronizarlo; sus datos se quedan en él.
+- **Desconectar este teléfono** (o *esta computadora*) deja de sincronizarlo; sus datos se quedan en él.
 - Conviene conectar el teléfono del dueño cuando todavía está vacío. Y que las órdenes las haga una sola persona, o con internet, para que los números no se repitan.
-- La clave de la lectura automática no se comparte: cada teléfono usa la suya, si la tiene.
-- Plan gratis de Supabase (según su página al momento de escribir esto; revísalo): base de datos de unos 500 MB y 1 GB para archivos, y el proyecto se pausa si pasa una semana sin usarse. Si se llena, hay planes de pago.
+- La clave de la lectura automática no se comparte: cada aparato usa la suya, si la tiene.
+- Plan gratis de Supabase (según su página al momento de escribir esto; revísalo): base de datos de unos 500 MB y 1 GB para archivos, y el proyecto se pausa si pasa una semana sin usarse. En *Ajustes*, debajo de la nube, se ve cuánto ocupan las fotos y los PDF; cuando pasan del 80 % de ese 1 GB, la app lo avisa arriba. Si se llena, las fotos nuevas no suben hasta pasar a un plan de pago (Pro).
 
 ## Lectura automática de facturas de papel y pedidos (opcional)
 
@@ -135,7 +136,7 @@ Para conectarla, en la consola de Claude ([platform.claude.com](https://platform
 
 Si la lectura se detiene después (por ejemplo, se acabó el saldo), la app lo avisa arriba; al arreglarlo, **Leer todas** lee las que quedaron pendientes.
 
-- Con la nube del equipo, basta con la clave en el teléfono que carga las facturas: los demás reciben los datos ya leídos. La clave no se comparte con los otros teléfonos.
+- Con la nube del equipo, basta con la clave en el teléfono que carga las facturas: los demás reciben los datos ya leídos. La clave no se comparte con los otros aparatos.
 - La clave se guarda solo en el teléfono y no va en los respaldos. Como la app llama a la API directo desde el teléfono, quien tenga el teléfono desbloqueado podría verla: si pierdes el equipo, desactívala o bórrala en la consola (*API keys*).
 - Costo aproximado por factura (una foto, a precios de lista de noviembre de 2026; varía con cada factura, revisa el uso real en la consola):
 
