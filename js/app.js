@@ -10,9 +10,10 @@ const LIB = {
   qrgen: 'js/qr.js',
 };
 const PDF_CREATOR = 'Facturas de Proyectos';
-const APP_VERSION = '1.17.0';
+const APP_VERSION = '1.18.0';
 const SVG = (d) => `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ICON = {
+  lock: SVG('<rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>'),
   plus: SVG('<path d="M12 5v14M5 12h14"/>'),
   close: SVG('<path d="M6 6l12 12M18 6L6 18"/>'),
   down: SVG('<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>'),
@@ -1019,7 +1020,11 @@ function renderTodo(D) {
   if (toSign.length) rows.push(row(toSign.length, plural(toSign.length, 'orden por firmar', 'órdenes por firmar'), b('go-orders', 'Ver', ' data-f="porfirmar"')));
   if (waiting.length) rows.push(row(waiting.length, plural(waiting.length, 'orden firmada esperando factura', 'órdenes firmadas esperando factura'), b('go-orders', 'Ver', ' data-f="sinfactura"')));
   if (ready.length) rows.push(row(ready.length, `${plural(ready.length, 'factura lista', 'facturas listas')} para pagar · <b class="mono">${esc(totalStr(ready, 'toPay'))}</b>`, b('pay-ready', 'Armar pago', '', ' primary'), 'ok'));
-  if (presented.length) rows.push(row(presented.length, plural(presented.length, 'pago presentado, esperando que lo paguen', 'pagos presentados, esperando que los paguen'), b('tab', 'Ver', ' data-tab="pagos"')));
+  if (approvalOn()) {
+    const waitAp = presented.filter((p) => !p.approvedAt), apOk = presented.filter((p) => p.approvedAt);
+    if (waitAp.length) rows.push(amOwner() ? row(waitAp.length, plural(waitAp.length, 'pago esperando tu aprobación', 'pagos esperando tu aprobación'), b('tab', 'Ver', ' data-tab="pagos"', ' primary'), 'now') : row(waitAp.length, plural(waitAp.length, 'pago esperando la aprobación del dueño', 'pagos esperando la aprobación del dueño'), b('tab', 'Ver', ' data-tab="pagos"')));
+    if (apOk.length) rows.push(row(apOk.length, plural(apOk.length, 'pago aprobado, falta pagarlo', 'pagos aprobados, falta pagarlos'), b('tab', 'Ver', ' data-tab="pagos"'), 'ok'));
+  } else if (presented.length) rows.push(row(presented.length, plural(presented.length, 'pago presentado, esperando que lo paguen', 'pagos presentados, esperando que los paguen'), b('tab', 'Ver', ' data-tab="pagos"')));
   el.hidden = !rows.length;
   // Lo urgente arriba; si son muchas, se ven las primeras y «Ver todo».
   const RANK = { now: 0, warn: 1, ok: 2 };
@@ -1071,7 +1076,14 @@ function renderPayDetail(D, pay) {
   const groups = groupByProject(invs, D);
   const statusBtns = [];
   if (edit && st === 'armando') statusBtns.push(`<button type="button" class="btn" data-act="pay-status" data-s="presentado" ${invs.length ? '' : 'disabled'}>${ICON.check} Marcar como presentado</button>`);
-  if (edit && st === 'presentado') statusBtns.push(`<button type="button" class="btn" data-act="pay-status" data-s="pagado">${ICON.check} Marcar como pagado</button>`);
+  const needAp = approvalOn() && st === 'presentado' && !pay.approvedAt;
+  if (edit && st === 'presentado') {
+    if (needAp && amOwner()) statusBtns.push(`<button type="button" class="btn primary" data-act="pay-approve">${ICON.check} Aprobar el pago</button><button type="button" class="btn" data-act="pay-return">Devolver con una nota</button>`);
+    else statusBtns.push(`<button type="button" class="btn" data-act="pay-status" data-s="pagado"${needAp ? ' disabled title="Falta la aprobación del dueño"' : ''}>${ICON.check} Marcar como pagado</button>`);
+  }
+  const apMsg = approvalOn() && st === 'presentado' ? (pay.approvedAt ? `<div class="msg ok">${ICON.check}<span>Aprobado por <b>${esc(pay.approvedBy || 'el dueño')}</b> el ${esc(fmtDate(String(pay.approvedAt).slice(0, 10)))}.</span></div>` : `<div class="msg warn">${ICON.alert}<span>${amOwner() ? 'Este pago espera <b>tu aprobación</b>.' : `Esperando la aprobación del dueño (${esc(S.settings.ownerEmail)}). Cuando lo apruebe desde su ${'teléfono'}, se puede marcar como pagado.`}</span></div>`) : '';
+  const retMsg = st === 'armando' && pay.returnNote ? `<div class="msg warn">${ICON.alert}<span>El dueño lo devolvió${pay.returnedAt ? ' el ' + esc(fmtDate(String(pay.returnedAt).slice(0, 10))) : ''}: «${esc(pay.returnNote)}»</span></div>` : '';
+  const retBox = '<div id="pay-ret-box" hidden><div class="confirm"><div class="field full"><label for="pay-ret-note">¿Qué hay que corregir?</label><textarea id="pay-ret-note" rows="2" maxlength="300"></textarea></div><div class="actions"><button type="button" class="btn danger solid" data-act="pay-return-yes">Devolver</button><button type="button" class="btn" data-act="pay-return-no">No</button></div></div></div>';
   const pdfBtn = `<button type="button" class="btn primary" data-act="pay-pdf" ${invs.length && !S.busyPdf ? '' : 'disabled'}>${ICON.down} ${S.busyPdf ? esc(S.pdfMsg || 'Preparando PDF…') : 'PDF para presentar'}</button>`;
   const xlsBtn = `<button type="button" class="btn" data-act="pay-xlsx" ${invs.length ? '' : 'disabled'}>${ICON.sheet} Excel</button>`;
   const undo = edit && st !== 'armando' ? `<button type="button" class="btn ghost sm" data-act="pay-status" data-s="${st === 'pagado' ? 'presentado' : 'armando'}">Regresar a “${st === 'pagado' ? 'Presentado' : 'Por presentar'}”</button>` : '';
@@ -1087,7 +1099,8 @@ function renderPayDetail(D, pay) {
     <div class="bigtotal"><span>Total del pago · ${plural(invs.length, 'factura', 'facturas')}</span><b>${esc(totalStr(invs, 'toPay'))}</b><span>ITBIS incluido: ${esc(totalStr(invs, 'itbis'))}</span>${dates ? `<span>${esc(dates)}</span>` : ''}</div>
     ${warnN ? `<div class="msg warn">${ICON.alert}<span>${plural(warnN, 'factura tiene', 'facturas tienen')} algo que revisar antes de presentar (por ejemplo, falta el NCF o es de consumo).</span></div>` : ''}
     ${noOrd || unsignedOrd ? `<div class="msg warn">${ICON.alert}<span>${[noOrd ? plural(noOrd, 'factura no tiene', 'facturas no tienen') + ' orden de compra' : '', unsignedOrd ? plural(unsignedOrd, 'orden no tiene', 'órdenes no tienen') + ' la copia firmada y sellada' : ''].filter(Boolean).join(' y ')}. En el PDF van marcadas.</span></div>` : ''}
-    <div class="actions">${pdfBtn}${xlsBtn}${statusBtns.join('')}</div>${undo ? `<div>${undo}</div>` : ''}
+    ${apMsg}${retMsg}
+    <div class="actions">${pdfBtn}${xlsBtn}${statusBtns.join('')}</div>${retBox}${undo ? `<div>${undo}</div>` : ''}
     ${groups.length ? `<div class="card"><h2>Por proyecto</h2><div class="table-wrap"><table class="sum"><thead><tr><th>Proyecto</th><th class="num">Facturas</th><th class="num">ITBIS</th><th class="num">Total</th></tr></thead><tbody>${groups.map((g) => `<tr><td><span class="pname">${dot(g)}${esc(g.name)}</span></td><td class="num">${g.items.length}</td><td class="num">${esc(totalStr(g.items, 'itbis'))}</td><td class="num">${esc(totalStr(g.items, 'toPay'))}</td></tr>`).join('')}</tbody><tfoot><tr><td>Total</td><td class="num">${invs.length}</td><td class="num">${esc(totalStr(invs, 'itbis'))}</td><td class="num">${esc(totalStr(invs, 'toPay'))}</td></tr></tfoot></table></div></div>` : ''}
     <div class="sumline"><span class="h2">Facturas en este pago</span>${edit && st === 'armando' ? `<button type="button" class="btn sm" data-act="pick-more">${ICON.plus} Agregar pendientes</button>` : ''}</div>
     ${invs.length ? listHTML : '<div class="empty"><p>Este pago todavía no tiene facturas.</p></div>'}`;
@@ -1264,6 +1277,103 @@ async function renderRevPdfs(node, files) {
     } catch (e) { console.warn(e); box.innerHTML = '<p class="viewer-msg">No se pudo abrir el PDF.</p>'; }
   }
 }
+/* ---------- historial de cada factura ---------- */
+// Quién cambió qué y cuándo. Se guarda en la misma factura (los últimos 40 cambios).
+const HIST_FIELDS = [['supplier', 'Proveedor'], ['rnc', 'RNC'], ['number', 'NCF'], ['date', 'Fecha'], ['amount', 'Monto'], ['itbis', 'ITBIS'], ['currency', 'Moneda'], ['projectId', 'Proyecto'], ['orderId', 'Orden'], ['concept', 'Concepto'], ['ref', 'Referencia']];
+const whoAmI = () => [RT.sync.status().email || (S.settings && S.settings.preparedBy) || '', wide() ? 'computadora' : 'teléfono'].filter(Boolean).join(' · ');
+function histEntry(what, ch) { return { at: new Date().toISOString(), by: whoAmI(), what, ...(ch && Object.keys(ch).length ? { ch } : {}) }; }
+const histAdd = (doc, e) => [...((doc && doc.hist) || []), e].slice(-40);
+function histDiff(before, after) {
+  const ch = {};
+  for (const [k] of HIST_FIELDS) {
+    if (!(k in after)) continue;
+    const a = before[k] ?? null, b = after[k] ?? null;
+    if (String(a ?? '') !== String(b ?? '')) ch[k] = [a, b];
+  }
+  return ch;
+}
+function histVal(k, v, D) {
+  if (v === null || v === undefined || v === '') return '(vacío)';
+  if (k === 'amount' || k === 'itbis') return isNum(v) ? money(v) : String(v);
+  if (k === 'date') return fmtDate(v) || String(v);
+  if (k === 'projectId') { const p = D.projById.get(v); return p ? p.name : 'otro proyecto'; }
+  if (k === 'orderId') { const o = D.orderById.get(v); return o ? orderNo(o) : 'otra orden'; }
+  if (k === 'number') return RD.normNcf(v);
+  return String(v);
+}
+function histHTML(i, D) {
+  const ev = [];
+  if (i.createdAt) ev.push({ at: i.createdAt, what: 'Agregada a la app' });
+  for (const e of i.hist || []) ev.push(e);
+  if (i.envio) ev.push({ at: i.envio.createdAt || i.envio.date, what: `Mandada a la digitadora (envío ${i.envio.number || ''})`, by: i.envio.to ? 'a ' + i.envio.to : '' });
+  if (i.pay) {
+    if (i.pay.createdAt) ev.push({ at: i.pay.createdAt, what: `En el pago «${i.pay.name || 'Pago'}»` });
+    if (i.pay.presentedAt) ev.push({ at: i.pay.presentedAt + 'T12:00:00', what: 'Pago presentado', day: true });
+    if (i.pay.approvedAt) ev.push({ at: i.pay.approvedAt, what: 'Pago aprobado por el dueño', by: i.pay.approvedBy || '' });
+    if (i.pay.paidAt) ev.push({ at: i.pay.paidAt + 'T12:00:00', what: 'Pagada', day: true });
+  }
+  for (const a of i.abonos || []) ev.push({ at: (a.date || '') + 'T12:00:00', what: `Abono de ${money(a.amount, i.currency)}${a.note ? ' (' + a.note + ')' : ''}`, day: true });
+  ev.sort((a, b) => String(b.at).localeCompare(String(a.at)));
+  const when = (e) => { const d = new Date(e.at); return isNaN(d) ? '' : e.day ? fmtDate(String(e.at).slice(0, 10)) : `${fmtDate(String(e.at).slice(0, 10))} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
+  const rows = ev.map((e) => `<li><span class="h-when">${esc(when(e))}</span><span class="h-what"><b>${esc(e.what)}</b>${e.by ? ` <small>${esc(e.by)}</small>` : ''}${e.ch ? `<small class="h-ch">${Object.entries(e.ch).map(([k, [a, b]]) => `${esc((HIST_FIELDS.find((f) => f[0] === k) || [k, k])[1])}: ${esc(histVal(k, a, D))} → ${esc(histVal(k, b, D))}`).join('<br>')}</small>` : ''}</span></li>`).join('');
+  return `<details class="edit hist" id="inv-hist"><summary>Historial (${ev.length})</summary><ul class="hist-list">${rows}</ul></details>`;
+}
+
+/* ---------- candado con PIN (en este aparato) ---------- */
+const PIN_KEY = 'facturas.pin', LOCK_AFTER = 5 * 60000;
+const pinConf = () => { try { const j = JSON.parse(lsGet(PIN_KEY) || 'null'); return j && j.salt && j.hash ? j : null; } catch (e) { return null; } };
+async function pinHash(salt, pin) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(salt + ':' + pin));
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+async function setPin(pin) {
+  const salt = [...crypto.getRandomValues(new Uint8Array(12))].map((b) => b.toString(16).padStart(2, '0')).join('');
+  lsSet(PIN_KEY, JSON.stringify({ salt, hash: await pinHash(salt, pin), at: new Date().toISOString() }));
+}
+let pinFails = 0, pinWaitUntil = 0, hiddenAt = 0;
+function showLock() {
+  if (!pinConf()) return;
+  const el = $('#lock');
+  el.hidden = false;
+  document.body.classList.add('pin-locked');
+  const cloud = RT.sync.status().on;
+  el.innerHTML = `<form class="lock-box" id="lock-form" autocomplete="off"><div class="lock-ic">${ICON.lock}</div><h2>Facturas de proyectos</h2><p>Escribe tu PIN para entrar.</p><input id="lock-pin" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="off" aria-label="PIN"><p class="lock-msg" id="lock-msg" role="alert"></p><button type="submit" class="btn primary block">Entrar</button><button type="button" class="link" data-act="pin-forgot">Olvidé el PIN</button><div id="lock-forgot" hidden>${cloud ? `<p class="hint">Entra con la contraseña de tu cuenta de la nube (${esc(RT.sync.status().email)}) y se quita el PIN.</p><input id="lock-pass" type="password" autocomplete="current-password" aria-label="Contraseña de la nube"><button type="button" class="btn block" data-act="pin-reset">Quitar el PIN con la contraseña</button>` : '<p class="hint">Sin la nube, para entrar sin el PIN hay que borrar los datos de esta app en el navegador (Configuración del sitio → Eliminar datos) y después restaurar un respaldo.</p>'}</div></form>`;
+  setTimeout(() => { const i = $('#lock-pin'); if (i) i.focus(); }, 50);
+}
+function hideLock() { const el = $('#lock'); el.hidden = true; el.innerHTML = ''; document.body.classList.remove('pin-locked'); }
+async function tryUnlock() {
+  const conf = pinConf();
+  const msg = $('#lock-msg');
+  if (!conf) { hideLock(); return; }
+  if (Date.now() < pinWaitUntil) { msg.textContent = `Demasiados intentos. Espera ${Math.ceil((pinWaitUntil - Date.now()) / 1000)} segundos.`; return; }
+  const pin = $('#lock-pin').value.trim();
+  if (pin && (await pinHash(conf.salt, pin)) === conf.hash) { pinFails = 0; hideLock(); return; }
+  pinFails++;
+  if (pinFails >= 5) { pinWaitUntil = Date.now() + 30000; pinFails = 0; }
+  msg.textContent = pinWaitUntil > Date.now() ? 'Demasiados intentos. Espera 30 segundos.' : 'PIN equivocado.';
+  $('#lock-pin').value = '';
+  $('#lock-form').classList.remove('shake'); void $('#lock-form').offsetWidth; $('#lock-form').classList.add('shake');
+}
+function openPinSheet() {
+  const has = !!pinConf();
+  openSheet(`<form id="pin-form" autocomplete="off">${sheetHead(has ? 'Cambiar el PIN' : 'Poner un PIN')}<div class="sheet-b">
+    <p class="hint">Al abrir la app (y después de 5 minutos sin usarla) se pide el PIN. Es solo para este ${wide() ? 'aparato' : 'teléfono'}: cada uno tiene el suyo. Evita que alguien con tu teléfono o tu computadora abiertos vea o cambie tus facturas.</p>
+    <div class="fields"><div class="field"><label for="pin-a">PIN nuevo (4 a 8 números)</label><input id="pin-a" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="new-password"></div><div class="field"><label for="pin-b">Repítelo</label><input id="pin-b" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="8" autocomplete="new-password"></div></div>
+    <p class="usage" id="pin-msg"></p>
+  </div><div class="sheet-f"><button type="submit" class="btn primary">${has ? 'Cambiar el PIN' : 'Poner el PIN'}</button>${has ? '<button type="button" class="btn danger" data-act="pin-off">Quitar el PIN</button>' : ''}</div></form>`, { type: 'pin' });
+}
+function initPinLock() {
+  if (pinConf()) showLock();
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') hiddenAt = Date.now();
+    else if (hiddenAt && Date.now() - hiddenAt > LOCK_AFTER && pinConf()) showLock();
+  });
+}
+
+/* ---------- aprobación del dueño ---------- */
+const approvalOn = () => { const g = S.settings || {}; return !!g.needApproval && !!String(g.ownerEmail || '').trim(); };
+const amOwner = () => { const me = String(RT.sync.status().email || '').toLowerCase(); return approvalOn() && !!me && me === String(S.settings.ownerEmail).trim().toLowerCase(); };
+
 function openInvoice(id, keepScroll) {
   const D = derive();
   const i = D.invoices.find((x) => x.id === id);
@@ -1322,6 +1432,7 @@ function openInvoice(id, keepScroll) {
   const t18 = edit && isNum(i.amount) && i.amount > 0 && !isNum(i.itbis) && (!ncf.ok || ['01', '02', '31', '32'].includes(ncf.code)) ? round2((i.amount * 18) / 118) : null;
   if (t18) msgs.push(`<div class="msg hint"><span>Si todo lleva ITBIS de 18 %, el ITBIS de esta factura es <b>${esc(money(t18, i.currency))}</b>.</span><button type="button" class="link" data-act="itbis18" data-id="${esc(i.id)}" data-v="${t18}">Usar ese ITBIS</button></div>`);
   const cur = normCur(i.currency);
+  const histBox = histHTML(i, D);
   const delBtn = edit && i.status !== 'pagada' ? `<div><button type="button" class="btn danger sm" data-act="inv-del">${ICON.trash} Eliminar factura</button></div>` : '';
   const html = `<form id="inv-form" data-id="${esc(i.id)}" autocomplete="off">${sheetHead('Factura')}
     <div class="sheet-b">
@@ -1345,6 +1456,7 @@ function openInvoice(id, keepScroll) {
       </div>
       ${invCondBoxHTML(i, D, edit)}
       ${abonosHTML(i, edit)}
+      ${histBox}
       ${delBtn}
       <div id="inv-del-box" hidden><div class="confirm"><p>¿Eliminar esta factura? Se va a la papelera (ahí se puede recuperar por 30 días) y se quita del pago donde esté.${(i.conduces || []).length ? ' Sus conduces quedan guardados, esperando factura.' : ''}</p><div class="actions"><button type="button" class="btn danger solid" data-act="inv-del-yes" data-id="${esc(i.id)}">Eliminar factura</button><button type="button" class="btn" data-act="inv-del-no">Cancelar</button></div></div></div>
     </div>
@@ -1585,6 +1697,15 @@ async function openSettings() {
       <div id="restore-box" hidden></div>
       ${RT.sync.status().on ? `<div class="msg"><span><b>Respaldo automático en la nube:</b> cada semana se guarda uno y quedan los últimos 8. ${S.bk && S.bk.last ? 'El último es del ' + esc(fmtDate(String(S.bk.last).slice(0, 10))) + '.' : 'El primero se hace solo en cuanto la nube esté al día.'} <button type="button" class="link" data-act="cloud-bk">Ver los respaldos</button></span></div>` : ''}
       <div class="actions"><button type="button" class="btn" data-act="trash-open">${ICON.trash} Papelera${S.papelera.length ? ' (' + S.papelera.length + ')' : ''}</button></div>
+      <h3 class="h2">Seguridad de este ${wide() ? 'aparato' : 'teléfono'}</h3>
+      <p class="hint">${pinConf() ? 'La app pide el PIN al abrirse y después de 5 minutos sin usarla.' : 'Puedes poner un PIN para que la app lo pida al abrirse.'}</p>
+      <div class="actions"><button type="button" class="btn" data-act="pin-open">${ICON.lock} ${pinConf() ? 'Cambiar o quitar el PIN' : 'Poner un PIN'}</button></div>
+      <h3 class="h2">Aprobación del dueño</h3>
+      <p class="hint">Si lo activas, un pago presentado no se puede marcar como pagado hasta que el dueño lo apruebe desde su teléfono, entrando a la nube con su cuenta. Queda anotado quién lo aprobó y cuándo. ${RT.sync.status().on ? '' : '<b>Necesita la nube conectada.</b>'}</p>
+      <div class="fields">
+        <label class="field full check-row"><input type="checkbox" id="st-ap"${st.needApproval ? ' checked' : ''}><span>Los pagos necesitan la aprobación del dueño</span></label>
+        <div class="field full"><label for="st-owner">Correo del dueño (el de su cuenta en la nube)</label><input id="st-owner" type="email" inputmode="email" autocapitalize="off" spellcheck="false" maxlength="120" value="${esc(st.ownerEmail || '')}"></div>
+      </div>
       <h3 class="h2">Compartir con otros teléfonos (prueba)</h3>
       <div id="nube-box" data-k="${nubeKey(RT.sync.status())}">${nubeBoxHTML()}</div>
       <p class="usage" id="st-usage">Calculando espacio…</p>
@@ -2094,6 +2215,7 @@ async function readWithAI(invId, input) {
       setTimeout(() => { if (autoClaims.get(so.id) === invId) autoClaims.delete(so.id); }, 5000);
     }
   }
+  { const ch = histDiff(cur, upd); upd.hist = histAdd(cur, histEntry('Datos leídos solos', ch)); }
   await dbw(() => ref.update(upd)).catch((e) => console.error(e));
   scheduleLink();
   return 'done';
@@ -2217,6 +2339,8 @@ async function saveInvoice(form) {
     upd.orderAuto = false;
     if (upd.projectId) upd.projectHint = '';
     if (inv.ai === 'pending' || inv.ai === 'failed') upd.ai = 'off';
+    const ch = histDiff(inv, upd);
+    if (Object.keys(ch).length) upd.hist = histAdd(inv, histEntry('Cambiada a mano', ch));
     await dbw(() => db.doc('invoices/' + id).update(upd));
     closeSheet();
     toast('Factura guardada');
@@ -3577,6 +3701,7 @@ async function restoreTrash(entryId) {
   if (!e || !TRASH_KIND[e.kind]) return false;
   const [coll, , done] = TRASH_KIND[e.kind];
   const data = { ...e.data };
+  if (e.kind === 'invoice') data.hist = histAdd(data, histEntry('Recuperada de la papelera'));
   if (e.kind === 'conduce' && data.invoiceId && !S.invoices.some((i) => i.id === data.invoiceId)) data.invoiceId = null;
   if (e.kind === 'payment') { const taken = new Set(S.payments.flatMap((p) => p.invoiceIds || [])); data.invoiceIds = (data.invoiceIds || []).filter((id) => S.invoices.some((i) => i.id === id) && !taken.has(id)); }
   const ok = await write(async () => {
@@ -3707,8 +3832,9 @@ async function setPayStatus(payId, s) {
   const pay = S.payments.find((p) => p.id === payId);
   if (!pay || !PAY_LABEL[s]) return;
   const upd = { status: s };
-  if (s === 'armando') { upd.presentedAt = ''; upd.paidAt = ''; }
-  if (s === 'presentado') { upd.paidAt = ''; if (pay.status === 'armando' || !pay.presentedAt) upd.presentedAt = todayISO(); }
+  if (s === 'armando') { upd.presentedAt = ''; upd.paidAt = ''; upd.approvedAt = ''; upd.approvedBy = ''; }
+  if (s === 'presentado') { upd.paidAt = ''; upd.returnNote = ''; if (pay.status === 'armando' || !pay.presentedAt) upd.presentedAt = todayISO(); }
+  if (s === 'pagado' && approvalOn() && !pay.approvedAt) { toast('Falta la aprobación del dueño.'); return; }
   if (s === 'pagado') upd.paidAt = todayISO();
   await write(() => db.doc('payments/' + payId).update(upd), { presentado: 'Marcado como presentado', pagado: 'Marcado como pagado', armando: 'Regresó a por presentar' }[s]);
 }
@@ -4711,6 +4837,14 @@ function onClick(e) {
     case 'ack': { const f = t.dataset.f; if (['condOverOk', 'condRefsOk', 'qtyOk', 'estOk'].includes(f)) write(() => db.doc('invoices/' + id).update({ [f]: true }), 'Listo'); break; }
     case 'pick-more': openPicker('add'); break;
     case 'pay-status': setPayStatus(S.paymentId, t.dataset.s); break;
+    case 'pay-approve': if (amOwner()) write(() => db.doc('payments/' + S.paymentId).update({ approvedAt: new Date().toISOString(), approvedBy: RT.sync.status().email }), 'Pago aprobado'); break;
+    case 'pay-return': { const b = $('#pay-ret-box'); if (b) { b.hidden = false; $('#pay-ret-note').focus(); } break; }
+    case 'pay-return-no': $('#pay-ret-box').hidden = true; break;
+    case 'pay-return-yes': { const note = $('#pay-ret-note').value.trim().slice(0, 300); if (!note) { toast('Escribe qué hay que corregir.'); break; } if (amOwner()) write(() => db.doc('payments/' + S.paymentId).update({ status: 'armando', presentedAt: '', approvedAt: '', approvedBy: '', returnNote: note, returnedAt: new Date().toISOString(), returnedBy: RT.sync.status().email }), 'Pago devuelto con la nota'); break; }
+    case 'pin-open': closeSheet(); openPinSheet(); break;
+    case 'pin-off': lsSet(PIN_KEY, ''); closeSheet(); toast('PIN quitado'); break;
+    case 'pin-forgot': { const f = $('#lock-forgot'); if (f) f.hidden = !f.hidden; break; }
+    case 'pin-reset': { const pw = $('#lock-pass').value; t.disabled = true; RT.sync.relogin(pw).then(() => { lsSet(PIN_KEY, ''); hideLock(); toast('PIN quitado. Puedes poner uno nuevo en Ajustes.'); }).catch(() => { $('#lock-msg').textContent = 'Esa no es la contraseña de la nube.'; t.disabled = false; }); break; }
     case 'pay-rm': removeFromPayment(S.paymentId, id); break;
     case 'pay-pdf': makePdf(S.paymentId); break;
     case 'pay-xlsx': exportPaymentExcel(S.paymentId); break;
@@ -4988,10 +5122,17 @@ function onSubmit(e) {
     const budget = bRaw ? parseAmount(bRaw) : null;
     if (bRaw && (budget == null || budget < 0)) { toast('Escribe el presupuesto solo con números.'); return; }
     write(() => db.doc('projects/' + f.dataset.id).update({ name: name.slice(0, 80), budget: budget == null ? null : round2(budget) }), 'Proyecto guardado').then((ok) => { if (ok) closeSheet(); });
+  } else if (f.id === 'lock-form') {
+    tryUnlock();
+  } else if (f.id === 'pin-form') {
+    const a = $('#pin-a').value.trim(), b = $('#pin-b').value.trim();
+    if (!/^\d{4,8}$/.test(a)) { $('#pin-msg').textContent = 'El PIN debe tener de 4 a 8 números.'; return; }
+    if (a !== b) { $('#pin-msg').textContent = 'Los dos PIN no son iguales.'; return; }
+    setPin(a).then(() => { closeSheet(); toast('PIN puesto: se pedirá al abrir la app'); });
   } else if (f.id === 'settings-form') {
     const rncv = RD.normRnc($('#st-rnc').value);
     if (rncv && rncv.length !== 9 && rncv.length !== 11) { toast('El RNC debe tener 9 dígitos (u 11 si es cédula).'); return; }
-    const data = { company: $('#st-company').value.trim().slice(0, 100), companyRnc: rncv, area: $('#st-area').value.trim().slice(0, 80), preparedBy: $('#st-name').value.trim().slice(0, 80), orderPrefix: $('#st-oc-prefix').value.trim().slice(0, 8), orderNext: Math.max(1, parseInt($('#st-oc-next').value, 10) || 1), orderNote: $('#st-oc-note').value.trim().slice(0, 500), orderQr: $('#st-oc-qr').checked, updatedAt: new Date().toISOString() };
+    const data = { needApproval: $('#st-ap').checked, ownerEmail: $('#st-owner').value.trim().toLowerCase().slice(0, 120), company: $('#st-company').value.trim().slice(0, 100), companyRnc: rncv, area: $('#st-area').value.trim().slice(0, 80), preparedBy: $('#st-name').value.trim().slice(0, 80), orderPrefix: $('#st-oc-prefix').value.trim().slice(0, 8), orderNext: Math.max(1, parseInt($('#st-oc-next').value, 10) || 1), orderNote: $('#st-oc-note').value.trim().slice(0, 500), orderQr: $('#st-oc-qr').checked, updatedAt: new Date().toISOString() };
     const key = $('#st-key').value.trim();
     if (key !== ai.getKey()) S.aiState = 'ok';
     ai.setKey(key);
@@ -5082,6 +5223,7 @@ function subscribe() {
 }
 function boot() {
   bind();
+  initPinLock();
   RT.sync.onChange((s) => { refreshNubeBox(s); scheduleRender(); maybeCloudBackup(s); });
   renderAll();
   RT.use('db').then((d) => {

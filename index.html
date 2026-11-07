@@ -410,6 +410,28 @@ body.locked .toast { top: calc(14px + env(safe-area-inset-top, 0px)); bottom: au
 .err-list { display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow-y: auto; word-break: break-word; }
 /* En la computadora: más ancho, las listas en dos columnas y las hojas como ventana centrada. */
 .tabs .nav-brand, .tabs .nav-only { display: none; }
+/* Candado con PIN */
+.lock { position: fixed; inset: 0; z-index: 90; background: var(--bg); display: grid; place-items: center; padding: 24px; }
+.lock[hidden] { display: none; }
+body.pin-locked > *:not(.lock) { visibility: hidden; }
+.lock-box { width: min(340px, 100%); display: flex; flex-direction: column; align-items: center; gap: 12px; text-align: center; }
+.lock-box h2 { margin: 0; font: 800 20px/1.2 var(--font-display); }
+.lock-box p { margin: 0; color: var(--muted); }
+.lock-ic { width: 56px; height: 56px; border-radius: 16px; background: var(--accent-soft); color: var(--accent); display: grid; place-items: center; }
+.lock-ic svg { width: 28px; height: 28px; }
+#lock-pin, #lock-pass { width: 100%; text-align: center; font: 600 24px/1 var(--font-data); letter-spacing: .3em; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--ink); }
+#lock-pass { font-size: 16px; letter-spacing: normal; }
+.lock-msg { min-height: 1.3em; color: var(--warn) !important; font-weight: 600; }
+#lock-forgot { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+#lock-forgot[hidden] { display: none; }
+.lock-box.shake { animation: shake .35s; }
+@keyframes shake { 25% { transform: translateX(-8px); } 75% { transform: translateX(8px); } }
+/* Historial de la factura */
+.hist-list { list-style: none; margin: 0; padding: 4px 14px 12px; display: flex; flex-direction: column; gap: 10px; }
+.hist-list li { display: grid; grid-template-columns: 118px minmax(0, 1fr); gap: 10px; font-size: 14px; }
+.hist-list .h-when { color: var(--muted); font: 12.5px var(--font-data); padding-top: 2px; }
+.hist-list small { color: var(--muted); }
+.hist-list .h-ch { display: block; margin-top: 2px; font-family: var(--font-data); font-size: 12px; }
 .f-filters { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 /* En el teléfono: 5 pestañas; Asistencia y Proyectos van en «Más». */
 .tabs .more-tab { display: none; }
@@ -762,6 +784,7 @@ input[type="date"]::-webkit-calendar-picker-indicator { margin: 0 0 0 4px; paddi
 <div id="sheet-root" class="sheet-root" hidden></div>
 <div id="viewer" class="viewer" hidden></div>
 <div id="sel-bar" class="sel-bar" hidden></div>
+<div id="lock" class="lock" hidden></div>
 <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
 <script src="js/rd.js"></script>
