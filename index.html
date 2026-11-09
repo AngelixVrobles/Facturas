@@ -571,6 +571,10 @@ body.pin-locked > *:not(.lock) { visibility: hidden; }
 .att-quick { display: flex; flex-direction: column; gap: 8px; }
 .att-quick .actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
 .att-quick .actions .btn { padding: 8px 6px; font-size: 13px; line-height: 1.2; white-space: normal; text-align: center; justify-content: center; }
+.seg.att-jornada { grid-template-columns: repeat(2, minmax(0, 1fr)); max-width: 340px; }
+.att-day.half span { color: var(--warn); font-weight: 750; }
+.att-day.half[aria-pressed="true"] span { color: var(--bg); }
+.att-half-mk { font-style: normal; font-weight: 750; color: var(--warn); }
 .att-ptime { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--muted); }
 .att-ptime input { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; background: var(--surface); color: var(--ink); font: 550 14px var(--font-data); }
 .att-list { display: flex; flex-direction: column; gap: 8px; }

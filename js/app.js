@@ -10,7 +10,7 @@ const LIB = {
   qrgen: 'js/qr.js',
 };
 const PDF_CREATOR = 'Facturas de Proyectos';
-const APP_VERSION = '1.19.0';
+const APP_VERSION = '1.20.0';
 const SVG = (d) => `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ICON = {
   lock: SVG('<rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>'),
@@ -411,13 +411,17 @@ function signAmounts(doc, base) {
   return doc;
 }
 // Las notas de crédito que se guardaron antes de esto (con el monto en positivo) se arreglan una vez.
-// Reglas guardadas antes de la 1.11 con la tardanza y el sábado como venían: se ponen las de la empresa (medio día cada una).
+// Reglas guardadas antes: hasta la 1.11 la tardanza no descontaba (ahora descuenta medio día) y de la 1.11 a la 1.19
+// el sábado valía medio día (ahora es día entero, hasta las 5; el medio día se escoge en cada día de la planilla).
 async function fixAttRules() {
   if (!canEdit()) return;
   const snap = await db.doc('settings/asistencia').get();
   const r = snap.exists ? snap.data() : null;
-  if (!r || r.rev || r.late !== 0 || r.saturday !== 1) return;
-  await db.doc('settings/asistencia').set({ ...r, late: 0.5, saturday: 0.5, rev: 2, updatedAt: new Date().toISOString() });
+  if (!r || (r.rev || 0) >= 3) return;
+  const up = { ...r, rev: 3, updatedAt: new Date().toISOString() };
+  if (!r.rev && r.late === 0) up.late = 0.5;
+  if (r.saturday === 0.5) up.saturday = 1;
+  await db.doc('settings/asistencia').set(up);
 }
 async function fixCreditSigns() {
   if (!canEdit()) return;
@@ -2684,7 +2688,7 @@ const ATT_E = [['ok', '✓'], ['t', 'T'], ['x', 'x']];
 const ATT_P = [['ok', '✓'], ['x', 'x']];
 const ATT_S = [['ok', '✓'], ['c', 'C'], ['cc', '1½'], ['x', 'x']];
 const ATT_SHOW = { ok: '✓', t: 'T', x: 'x', c: 'C', cc: '1½' };
-const ATT_RULES = { late: 0.5, surpriseMiss: 0, leftEarly: 0.5, corrido: 1, corridoFull: 1.5, saturday: 0.5, sunday: 1 };
+const ATT_RULES = { late: 0.5, surpriseMiss: 0, leftEarly: 0.5, corrido: 1, corridoFull: 1.5, saturday: 1, sunday: 1 };
 const ROLES = ['Ayudante', 'Terminador', 'Albañil', 'Maestro', 'Carpintero', 'Varillero', 'Plomero', 'Electricista', 'Pintor', 'Ceramista', 'Soldador', 'Operador', 'Chofer', 'Sereno'];
 const attRules = () => ({ ...ATT_RULES, ...(S.attRules || {}) });
 function addDays(iso, n) { const d = ymd(iso); if (!d) return iso; d.setDate(d.getDate() + n); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; }
@@ -2700,8 +2704,8 @@ function attPeriodLabel(sh) {
   const mon = (d) => d.toLocaleDateString('es-DO', { month: 'short' }).replace('.', '');
   return a.getMonth() === b.getMonth() ? `Del ${a.getDate()} al ${b.getDate()} de ${mon(b)} de ${b.getFullYear()}` : `Del ${a.getDate()} de ${mon(a)} al ${b.getDate()} de ${mon(b)} de ${b.getFullYear()}`;
 }
-// Lo que cuenta un día según las marcas y las reglas.
-function attDayValue(m, R, dow) {
+// Lo que cuenta un día según las marcas y las reglas. Si ese día se trabajó medio día, todo cuenta la mitad.
+function attDayValue(m, R, dow, half) {
   if (!m || !m.e) return null;
   if (m.e === 'x') return 0;
   let v = m.s === 'c' ? R.corrido : m.s === 'cc' ? R.corridoFull : m.s === 'x' ? R.leftEarly : 1;
@@ -2709,8 +2713,13 @@ function attDayValue(m, R, dow) {
   if (m.p === 'x') v -= R.surpriseMiss;
   if (dow === 6) v *= R.saturday;
   if (dow === 0) v *= R.sunday;
+  if (half) v *= 0.5;
   return Math.max(0, round2(v));
 }
+// Días de medio día de la planilla (por ejemplo, un feriado en que se trabaja hasta el mediodía).
+const attHalf = (sh, k) => !!(sh && sh.half && sh.half[k]);
+const attIdxOf = (sh, iso) => Math.round((ymd(iso) - ymd(sh.start)) / 864e5);
+const attHalfDays = (sh) => Array.from({ length: attLen(sh) }, (_, j) => j).filter((j) => attHalf(sh, j));
 // Cambios que se están guardando (se ven al instante, se guardan un momento después).
 let attPend = null, attTimer = 0, attJustMade = '';
 const attMarks = (sh) => (attPend && attPend.id === sh.id ? attPend.marks : sh.marks || {});
@@ -2722,7 +2731,7 @@ function attTotals(sh, wid, R) {
   for (let k = 0; k < attLen(sh); k++) {
     const m = ms[k];
     if (!m || !m.e) continue;
-    t.days = round2(t.days + attDayValue(m, R, attDow(sh, k)));
+    t.days = round2(t.days + attDayValue(m, R, attDow(sh, k), attHalf(sh, k)));
     if (m.e !== 'x') t.worked++;
     if (m.e === 't') t.late++;
     if (m.e === 'x') t.absent++;
@@ -2796,13 +2805,13 @@ function renderAsistencia(D) {
   const dayBtns = Array.from({ length: attLen(sh) }, (_, j) => {
     const d = ymd(attDate(sh, j));
     const done = rows.length && rows.every((w) => marks[w.id] && marks[w.id][j] && marks[w.id][j].e);
-    return `<button type="button" class="att-day${attDate(sh, j) === todayISO() ? ' today' : ''}${done ? ' done' : ''}" data-act="att-day" data-k="${j}" aria-pressed="${j === k}"><span>${DOW[d.getDay()]}</span><b>${d.getDate()}</b></button>`;
+    return `<button type="button" class="att-day${attDate(sh, j) === todayISO() ? ' today' : ''}${done ? ' done' : ''}${attHalf(sh, j) ? ' half' : ''}" data-act="att-day" data-k="${j}" aria-pressed="${j === k}"${attHalf(sh, j) ? ' title="Medio día"' : ''}><span>${DOW[d.getDay()]}${attHalf(sh, j) ? ' ½' : ''}</span><b>${d.getDate()}</b></button>`;
   }).join('');
   const dayDate = ymd(attDate(sh, k));
   const ptime = surprise[k] || '';
   const list = rows.map((w) => {
     const m = (marks[w.id] || {})[k] || {};
-    const v = attDayValue(m, R, attDow(sh, k));
+    const v = attDayValue(m, R, attDow(sh, k), attHalf(sh, k));
     return `<div class="att-row"><div class="att-who"><b>${esc(w.name)}</b><small>${esc(w.role || '')}${w.active === false ? ' · ya no trabaja aquí' : ''}</small><span class="att-val${v === null ? ' empty' : ''}">${v === null ? '—' : fmtDays(v)}</span></div>
       <div class="att-marks"><div class="att-g" role="group" aria-label="Entrada"><span>E</span>${markBtns(w.id, 'e', ATT_E, m.e, dis)}</div><div class="att-g" role="group" aria-label="Pase sorpresa"><span>P</span>${markBtns(w.id, 'p', ATT_P, m.p, dis)}</div><div class="att-g" role="group" aria-label="Salida"><span>S</span>${markBtns(w.id, 's', ATT_S, m.s, dis)}</div></div></div>`;
   }).join('');
@@ -2816,7 +2825,7 @@ function renderAsistencia(D) {
   // En la computadora: la quincena entera como la planilla de papel (obreros por días); tocando un día se marca abajo.
   const nDays = attLen(sh);
   const cellMark = (m) => (!m || !m.e ? '' : m.e === 'x' ? 'x' : [ATT_SHOW[m.e] || '', m.p ? ATT_SHOW[m.p] || '' : '·', m.s ? ATT_SHOW[m.s] || '' : '·'].join('\u2009'));
-  const plan = wide() && rows.length ? `<div class="card att-plan"><div class="att-plan-in"><table class="tbl att-tbl"><colgroup><col class="w-aname">${'<col>'.repeat(nDays)}<col class="w-adays"><col class="w-apay"></colgroup><thead><tr><th><span class="th-txt">Obrero</span></th>${Array.from({ length: nDays }, (_, j) => { const d = ymd(attDate(sh, j)); return `<th class="att-h${j === k ? ' on' : ''}${attDate(sh, j) === todayISO() ? ' today' : ''}"><button type="button" class="th-sort" data-act="att-day" data-k="${j}" aria-pressed="${j === k}">${DOW[d.getDay()]} <b>${d.getDate()}</b></button></th>`; }).join('')}<th class="r"><span class="th-txt">Días</span></th><th class="r"><span class="th-txt">Pago</span></th></tr></thead><tbody>${tots.map((x) => `<tr><td class="c-aname"><b>${esc(x.w.name)}</b><small>${esc(x.w.role || '')}</small></td>${Array.from({ length: nDays }, (_, j) => { const m = (marks[x.w.id] || {})[j]; const v = attDayValue(m, R, attDow(sh, j)); return `<td class="att-c${j === k ? ' on' : ''}${m && m.e === 'x' ? ' abs' : ''}" data-act="att-day" data-k="${j}"><span>${esc(cellMark(m))}</span>${v === null ? '' : `<small>${esc(fmtDays(v))}</small>`}</td>`; }).join('')}<td class="r mono">${esc(fmtDays(x.t.days))}</td><td class="r mono">${isNum(payOf(x)) ? esc(money(payOf(x))) : '—'}</td></tr>`).join('')}</tbody></table></div><p class="usage">En cada día: entrada · pase sorpresa · salida, y lo que cuenta. Toca un día para marcarlo abajo.</p></div>` : '';
+  const plan = wide() && rows.length ? `<div class="card att-plan"><div class="att-plan-in"><table class="tbl att-tbl"><colgroup><col class="w-aname">${'<col>'.repeat(nDays)}<col class="w-adays"><col class="w-apay"></colgroup><thead><tr><th><span class="th-txt">Obrero</span></th>${Array.from({ length: nDays }, (_, j) => { const d = ymd(attDate(sh, j)); return `<th class="att-h${j === k ? ' on' : ''}${attDate(sh, j) === todayISO() ? ' today' : ''}"><button type="button" class="th-sort" data-act="att-day" data-k="${j}" aria-pressed="${j === k}">${DOW[d.getDay()]} <b>${d.getDate()}</b>${attHalf(sh, j) ? ' <i class="att-half-mk" title="Medio día">½</i>' : ''}</button></th>`; }).join('')}<th class="r"><span class="th-txt">Días</span></th><th class="r"><span class="th-txt">Pago</span></th></tr></thead><tbody>${tots.map((x) => `<tr><td class="c-aname"><b>${esc(x.w.name)}</b><small>${esc(x.w.role || '')}</small></td>${Array.from({ length: nDays }, (_, j) => { const m = (marks[x.w.id] || {})[j]; const v = attDayValue(m, R, attDow(sh, j), attHalf(sh, j)); return `<td class="att-c${j === k ? ' on' : ''}${m && m.e === 'x' ? ' abs' : ''}" data-act="att-day" data-k="${j}"><span>${esc(cellMark(m))}</span>${v === null ? '' : `<small>${esc(fmtDays(v))}</small>`}</td>`; }).join('')}<td class="r mono">${esc(fmtDays(x.t.days))}</td><td class="r mono">${isNum(payOf(x)) ? esc(money(payOf(x))) : '—'}</td></tr>`).join('')}</tbody></table></div><p class="usage">En cada día: entrada · pase sorpresa · salida, y lo que cuenta. Toca un día para marcarlo abajo.</p></div>` : '';
   el.innerHTML = chips + bar + `
     <div class="card att-head">
       <div class="att-period"><button type="button" class="icon-btn" data-act="att-prev" aria-label="Quincena anterior"${idx < sheets.length - 1 ? '' : ' disabled'}>‹</button><b>${esc(attPeriodLabel(sh))}</b><button type="button" class="icon-btn" data-act="att-next" aria-label="Quincena siguiente"${idx > 0 ? '' : ' disabled'}>›</button></div>
@@ -2825,14 +2834,15 @@ function renderAsistencia(D) {
     </div>
     ${plan}
     <div class="att-days" role="group" aria-label="Día">${dayBtns}</div>
-    <div class="att-quick"><b>${esc(DOW_LONG[dayDate.getDay()].replace(/^./, (c) => c.toUpperCase()) + ' ' + fmtDate(attDate(sh, k)))}</b>
+    <div class="att-quick"><b>${esc(DOW_LONG[dayDate.getDay()].replace(/^./, (c) => c.toUpperCase()) + ' ' + fmtDate(attDate(sh, k)))}${!edit && attHalf(sh, k) ? ' · medio día' : ''}</b>
+      ${edit ? `<div class="seg att-jornada" role="group" aria-label="Jornada de este día"><button type="button" data-act="att-half" data-v="0" aria-pressed="${!attHalf(sh, k)}"><span>Día entero</span></button><button type="button" data-act="att-half" data-v="1" aria-pressed="${attHalf(sh, k)}"><span>Medio día</span></button></div>` : ''}
       ${edit && rows.length ? `<div class="actions"><button type="button" class="btn sm" data-act="att-all" data-f="e">Entrada: todos ✓</button><button type="button" class="btn sm" data-act="att-surprise">${ptime ? 'Pase sorpresa: ' + esc(ptime) : 'Pase sorpresa ahora'}</button><button type="button" class="btn sm" data-act="att-all" data-f="s">Salida: todos ✓</button></div>` : ''}
       ${ptime && edit ? `<label class="att-ptime">Hora del pase sorpresa <input type="time" id="att-ptime" value="${esc(/^\d{1,2}:\d{2}$/.test(ptime) ? ptime.padStart(5, '0') : '')}"></label>` : ''}
     </div>
     ${rows.length ? `<div class="att-list">${list}</div>` : '<div class="empty"><p>Esta planilla no tiene obreros. Agrégalos en <b>Obreros</b>.</p></div>'}
     ${rows.length ? `<div class="card"><h2>Resumen de la quincena</h2>${noExit ? `<div class="msg warn">${ICON.alert}<span>${plural(noExit, 'día tiene', 'días tienen')} la entrada marcada pero no la salida; cuentan como día completo hasta que la marques.</span></div>` : ''}<div class="table-wrap"><table class="sum"><thead><tr><th>Obrero</th><th class="num">Días</th><th class="num">Pago</th></tr></thead><tbody>${sumRows}</tbody><tfoot><tr><td>Total</td><td class="num">${fmtDays(totalDays)}</td><td class="num">${esc(money(totalPay))}</td></tr></tfoot></table></div>
       <div class="actions"><button type="button" class="btn" data-act="att-xlsx">${ICON.sheet} Excel</button><button type="button" class="btn" data-act="att-pdf">${ICON.down} PDF de la planilla</button><button type="button" class="btn ghost" data-act="att-blank">Planilla en blanco para imprimir</button></div>
-      <p class="usage">${esc(ruleTxt)}. Se cambian en <b>Reglas</b>.</p></div>` : ''}`;
+      <p class="usage">${attHalfDays(sh).length ? `Medio día: ${esc(attHalfDays(sh).map((j) => { const d = ymd(attDate(sh, j)); return DOW_LONG[d.getDay()] + ' ' + d.getDate(); }).join(', '))}. ` : ''}${esc(ruleTxt)}. Se cambian en <b>Reglas</b>.</p></div>` : ''}`;
 }
 // Obreros de la obra: se anotan una vez; los que se van quedan en las planillas viejas.
 function openWorkers() {
@@ -2939,25 +2949,46 @@ function attSurpriseNow() {
   });
   toast('Pase sorpresa: los que llegaron quedan con ✓. Marca con x a los que no estaban.');
 }
+// Día entero o medio día: se escoge en cada día. Si otras obras tienen planilla ese día, se ofrece ponerles lo mismo.
+async function attSetHalf(on) {
+  const { sh } = attCurrent(derive());
+  if (!sh || !canEdit()) return;
+  const k = S.attDay, date = attDate(sh, k);
+  if (attHalf(sh, k) === on) return;
+  if (!(await setAttHalf(sh, k, on))) return;
+  const d = ymd(date);
+  const what = `${on ? 'Medio día' : 'Día entero'} el ${DOW_LONG[d.getDay()]} ${d.getDate()}`;
+  const others = S.asistencia.filter((x) => x.id !== sh.id && ymd(x.start) && x.start <= date && date <= attEnd(x) && attHalf(x, attIdxOf(x, date)) !== on);
+  if (!others.length) { toast(what + '.'); return; }
+  toastAct(`${what} en esta obra.`, others.length === 1 ? 'También en la otra obra' : `También en las otras ${others.length}`, async () => {
+    for (const x of others) if (!(await setAttHalf(x, attIdxOf(x, date), on))) return;
+    toast(`${what} en todas las obras.`);
+  });
+}
+function setAttHalf(sh, k, on) {
+  const half = { ...(sh.half || {}) };
+  if (on) half[k] = true; else delete half[k];
+  return write(() => db.doc('asistencia/' + sh.id).update({ half, updatedAt: new Date().toISOString() }));
+}
 function openAttRules() {
   const R = attRules();
   const sel = (id, label, opts, v) => `<div class="field full"><label for="${id}">${label}</label><select id="${id}">${opts.map(([val, l]) => `<option value="${val}"${Number(val) === Number(v) ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select></div>`;
   const ded = [['0', 'No se descuenta'], ['0.25', 'Se descuenta ¼ de día'], ['0.5', 'Se descuenta ½ día'], ['1', 'No se paga el día']];
   openSheet(`<form id="att-rules-form" autocomplete="off">${sheetHead('Reglas del pase de lista')}<div class="sheet-b">
-    <p class="hint">Así cuenta la app los días a pagar de cada obrero. Valen para todas las obras.</p>
+    <p class="hint">Así cuenta la app los días a pagar de cada obrero. Valen para todas las obras. Para un día de medio día (un feriado, por ejemplo), escoge <b>Medio día</b> en ese día de la planilla.</p>
     <div class="fields">
       ${sel('ar-late', 'Llegó después de la hora límite (T)', ded, R.late)}
       ${sel('ar-sm', 'No estaba en el pase sorpresa (x)', ded, R.surpriseMiss)}
       ${sel('ar-le', 'Se fue antes (x en la salida)', [['0.5', 'Cuenta ½ día'], ['0', 'No se paga el día'], ['1', 'Cuenta el día completo']], R.leftEarly)}
       ${sel('ar-c', 'Siguió corrido y se fue antes (C)', [['1', 'Cuenta 1 día'], ['0.5', 'Cuenta ½ día']], R.corrido)}
       ${sel('ar-cc', 'Siguió corrido hasta la salida (1½)', [['1.5', 'Cuenta día y medio'], ['1', 'Cuenta 1 día']], R.corridoFull)}
-      ${sel('ar-sat', 'Sábado', [['1', 'Como cualquier día'], ['0.5', 'Vale medio día']], R.saturday)}
+      ${sel('ar-sat', 'Sábado', [['1', 'Día entero, como cualquier día'], ['0.5', 'Todos los sábados valen medio día']], R.saturday)}
       ${sel('ar-sun', 'Domingo', [['1', 'Como cualquier día'], ['1.5', 'Vale día y medio'], ['2', 'Vale doble']], R.sunday)}
     </div></div><div class="sheet-f"><button type="submit" class="btn primary block">Guardar</button></div></form>`, { type: 'att-rules' });
 }
 async function saveAttRules() {
   const g = (id) => Number($(id).value);
-  const data = { late: g('#ar-late'), surpriseMiss: g('#ar-sm'), leftEarly: g('#ar-le'), corrido: g('#ar-c'), corridoFull: g('#ar-cc'), saturday: g('#ar-sat'), sunday: g('#ar-sun'), rev: 2, updatedAt: new Date().toISOString() };
+  const data = { late: g('#ar-late'), surpriseMiss: g('#ar-sm'), leftEarly: g('#ar-le'), corrido: g('#ar-c'), corridoFull: g('#ar-cc'), saturday: g('#ar-sat'), sunday: g('#ar-sun'), rev: 3, updatedAt: new Date().toISOString() };
   if (await write(() => db.doc('settings/asistencia').set(data), 'Reglas guardadas')) { S.attRules = data; closeSheet(); renderAll(); }
 }
 // Excel de la quincena: la planilla con las marcas y el resumen para pagar.
@@ -2971,7 +3002,7 @@ function attWorkbook(sh, proj) {
   const top = [[{ v: st.company || 'Pase de lista', s: XS.title }], [{ v: `Pase de lista · ${proj.name} · ${attPeriodLabel(sh)}`, s: XS.bold }], [{ v: [`Entrada hasta las ${sh.entryLimit || '—'}`, `Salida desde las ${sh.exitFrom || '—'}`, 'Generado el ' + fmtDate(todayISO())].join(' · '), s: XS.muted }]];
   const g = [...top];
   const h1 = [{ v: '', s: XS.head }, { v: '', s: XS.head }, { v: '', s: XS.head }], h2 = [{ v: 'No.', s: XS.head }, { v: 'Obrero', s: XS.head }, { v: 'Función', s: XS.head }];
-  for (let k = 0; k < n; k++) { const d = ymd(attDate(sh, k)); h1.push({ v: `${DOW[d.getDay()]} ${d.getDate()}/${d.getMonth() + 1}`, s: XS.head }, { v: '', s: XS.head }, { v: '', s: XS.head }); h2.push({ v: 'E', s: XS.head }, { v: 'P', s: XS.head }, { v: 'S', s: XS.head }); }
+  for (let k = 0; k < n; k++) { const d = ymd(attDate(sh, k)); h1.push({ v: `${DOW[d.getDay()]} ${d.getDate()}/${d.getMonth() + 1}${attHalf(sh, k) ? ' ½' : ''}`, s: XS.head }, { v: '', s: XS.head }, { v: '', s: XS.head }); h2.push({ v: 'E', s: XS.head }, { v: 'P', s: XS.head }, { v: 'S', s: XS.head }); }
   for (const x of ['Días a pagar', 'Pago por día', 'Total']) { h1.push({ v: '', s: XS.head }); h2.push({ v: x, s: XS.headR }); }
   g[3] = h1; g[4] = h2;
   let total = 0;
@@ -2992,7 +3023,7 @@ function attWorkbook(sh, proj) {
   tr.push({ v: total, s: XS.totMoney });
   g.push(tr);
   g.push([]);
-  g.push([{ v: 'E: ✓ llegó a tiempo · T llegó después de la hora límite · x no vino.   P: ✓ estaba · x no estaba.   S: ✓ estaba a la salida · C siguió corrido sin almorzar y se fue antes · 1½ siguió corrido hasta la salida · x se fue antes.', s: XS.muted }]);
+  g.push([{ v: 'E: ✓ llegó a tiempo · T llegó después de la hora límite · x no vino.   P: ✓ estaba · x no estaba.   S: ✓ estaba a la salida · C siguió corrido sin almorzar y se fue antes · 1½ siguió corrido hasta la salida · x se fue antes.' + (attHalfDays(sh).length ? '   ½ = ese día se trabajó medio día y todo cuenta la mitad.' : ''), s: XS.muted }]);
   const widths = [5, 24, 14, ...Array(n * 3).fill(3.6), 12, 13, 14];
   // Resumen para pagar.
   const rs = [...top];
@@ -3040,7 +3071,7 @@ async function attPdf(sh, proj, blank) {
     y -= 28;
     T(pg, `Obreros por la casa   ·   Entrada hasta las: ${sh.entryLimit || '______'}   ·   Salida desde las: ${sh.exitFrom || '______'}   ·   ${attPeriodLabel(sh)}`, M, y, 9, font, ink);
     y -= 14;
-    T(pg, 'E = entrada · P = pase sorpresa · S = salida', M, y, 8, font, grey);
+    T(pg, 'E = entrada · P = pase sorpresa · S = salida' + (attHalfDays(sh).length ? ' · ½ = medio día (ese día todo cuenta la mitad)' : ''), M, y, 8, font, grey);
     y -= 12;
     const top = y;
     pg.drawRectangle({ x: x0, y: top - headH, width: W - 2 * M, height: headH, color: band });
@@ -3050,7 +3081,7 @@ async function attPdf(sh, proj, blank) {
     for (let k = 0; k < n; k++) {
       const d = ymd(attDate(sh, k));
       const cx = xDays + k * dayW + dayW / 2;
-      C(pg, `${DOW[d.getDay()]} ${d.getDate()}`, cx, top - 11, 7.5, bold);
+      C(pg, `${DOW[d.getDay()]} ${d.getDate()}${attHalf(sh, k) ? ' ½' : ''}`, cx, top - 11, 7.5, bold);
       ['E', 'P', 'S'].forEach((l, j) => C(pg, l, xDays + k * dayW + cw * j + cw / 2, top - 23, 6, font, grey));
     }
     if (!blank) { C(pg, 'Días', xTot + 15, top - 18, 7.5, bold); C(pg, 'Pago', xTot + 15 + 41, top - 18, 7.5, bold); }
@@ -3107,9 +3138,12 @@ async function attPdf(sh, proj, blank) {
   return out.save();
 }
 async function attExport(kind) {
+  // Lo último que se marcó se guarda primero, y el archivo sale con eso aunque la lista todavía no se haya puesto al día.
+  const pend = attPend ? JSON.parse(JSON.stringify({ id: attPend.id, marks: attPend.marks, surprise: attPend.surprise })) : null;
   await flushAtt();
   const D = derive();
-  const { sh } = attCurrent(D);
+  const { sh: cur } = attCurrent(D);
+  const sh = cur && pend && pend.id === cur.id ? { ...cur, marks: pend.marks, surprise: pend.surprise } : cur;
   const proj = D.projById.get(S.attProject);
   if (!sh || !proj) return;
   const name = fileSafe(`Pase de lista ${proj.name} ${sh.start} al ${attEnd(sh)}`);
@@ -3557,8 +3591,8 @@ function addedDay(i) { const d = new Date(i.createdAt || ''); return isNaN(d) ? 
 const dayGroupName = (iso) => (!iso ? 'Sin fecha' : iso === todayISO() ? 'De hoy' : iso === addDays(todayISO(), -1) ? 'De ayer' : 'Del ' + fmtDate(iso));
 const monthLong = new Intl.DateTimeFormat('es-DO', { month: 'long' });
 const longDate = (iso) => { const d = ymd(iso); if (!d) return ''; const t = `${DOW_LONG[d.getDay()]} ${d.getDate()} de ${monthLong.format(d)} de ${d.getFullYear()}`; return t.charAt(0).toUpperCase() + t.slice(1); };
-// En la tarde (el sábado, desde las 11) toca mandarle las del día.
-const digiLate = () => { const d = new Date(); return d.getHours() >= (d.getDay() === 6 ? 11 : 15); };
+// En la tarde (desde las 3, también el sábado) toca mandarle las del día.
+const digiLate = () => new Date().getHours() >= 15;
 // Por el día en que se agregaron, el más nuevo primero; dentro de cada día, por proyecto y proveedor.
 function digiByDay(list) {
   const m = new Map();
@@ -4913,6 +4947,7 @@ function onClick(e) {
     case 'att-mark': attMark(t.dataset.w, t.dataset.f, t.dataset.v); break;
     case 'att-all': attAll(t.dataset.f); break;
     case 'att-surprise': attSurpriseNow(); break;
+    case 'att-half': attSetHalf(t.dataset.v === '1'); break;
     case 'att-new': newAttSheet(); break;
     case 'att-prev': case 'att-next': { flushAtt(); const sheets = attSheetsOf(S.attProject); const k = sheets.findIndex((x) => x.id === S.attSheet) + (a === 'att-prev' ? 1 : -1); if (sheets[k]) { S.attSheet = sheets[k].id; S.attDay = attTodayIdx(sheets[k]); renderAll(); } break; }
     case 'att-workers': openWorkers(); break;

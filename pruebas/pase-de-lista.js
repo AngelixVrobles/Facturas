@@ -108,10 +108,10 @@ const val = async (page, name) => (await rowOf(page, name).locator('.att-val').t
   await mark(page, 'Marcelo', 's', 'c');
   await mark(page, 'Maslem', 's', 'x');
   check(await val(page, 'Marcelo') === '1' && await val(page, 'Maslem') === '0.5', 'martes: C cuenta 1 y se fue antes ½');
-  // Sábado: Felipe viene; el sábado vale medio día.
+  // Sábado: Felipe viene; el sábado es día entero.
   await page.click('.att-day[data-k="6"]');
   await mark(page, 'Felipe', 'e', 'ok');
-  check(await val(page, 'Felipe') === '0.5' && /el sábado vale 0\.5/.test(await page.textContent('#v-asistencia')) && /T descuenta 0\.5 día/.test(await page.textContent('#v-asistencia')), 'sábado: Felipe vino y cuenta medio día; las reglas de la empresa vienen puestas (tardanza y sábado, medio día)');
+  check(await val(page, 'Felipe') === '1' && !/el sábado vale/.test(await page.textContent('#v-asistencia')) && /T descuenta 0\.5 día/.test(await page.textContent('#v-asistencia')), 'sábado: Felipe vino y cuenta el día entero; la tardanza descuenta medio día (reglas de la empresa)');
   await settle(page, 900);
   sheets = await docs(page, 'asistencia');
   const W = Object.fromEntries((await docs(page, 'workers')).map((w) => [w.name, w.id]));
@@ -123,7 +123,7 @@ const val = async (page, name) => (await rowOf(page, name).locator('.att-val').t
   const sumOf = () => page.$$eval('#v-asistencia table.sum tr', (trs) => trs.map((tr) => [...tr.children].map((td) => (td.querySelector('.pname') || td).textContent.trim()).join(' ')).join(' | '));
   const sum = await sumOf();
   console.log('     resumen:', sum);
-  check(/Marcelo 2\.5 RD\$3,000\.00/.test(sum) && /Maslem 1 RD\$1,100\.00/.test(sum) && /Felipe 0\.5 RD\$750\.00/.test(sum) && /Total 4 RD\$4,850\.00/.test(sum), 'resumen: Marcelo 2.5 días RD$3,000; Maslem 1 día RD$1,100; Felipe ½ RD$750; total RD$4,850');
+  check(/Marcelo 2\.5 RD\$3,000\.00/.test(sum) && /Maslem 1 RD\$1,100\.00/.test(sum) && /Felipe 1 RD\$1,500\.00/.test(sum) && /Total 4\.5 RD\$5,600\.00/.test(sum), 'resumen: Marcelo 2.5 días RD$3,000; Maslem 1 día RD$1,100; Felipe 1 día (el sábado) RD$1,500; total RD$5,600');
   await page.$eval('#v-asistencia table.sum', (e) => e.scrollIntoView({ block: 'center' }));
   await settle(page, 200);
   await page.screenshot({ path: path.join(OUT, 'resumen-quincena.png') });
@@ -131,7 +131,7 @@ const val = async (page, name) => (await rowOf(page, name).locator('.att-val').t
   // 5) Reglas: se pueden cambiar (aquí, que la tardanza no descuente).
   await page.click('#v-asistencia [data-act="att-rules"]');
   await page.waitForSelector('#att-rules-form');
-  check(await page.inputValue('#ar-late') === '0.5' && await page.inputValue('#ar-sat') === '0.5', 'las reglas muestran la tardanza y el sábado en medio día');
+  check(await page.inputValue('#ar-late') === '0.5' && await page.inputValue('#ar-sat') === '1', 'las reglas muestran la tardanza en medio día y el sábado como día entero');
   await page.selectOption('#ar-late', '0');
   await page.click('#att-rules-form button[type="submit"]');
   await page.waitForSelector('#att-rules-form', { state: 'detached' });
@@ -139,7 +139,7 @@ const val = async (page, name) => (await rowOf(page, name).locator('.att-val').t
   const sum2 = await sumOf();
   check(/Maslem 1\.5 RD\$1,650\.00/.test(sum2) && /T no descuenta/.test(await page.textContent('#v-asistencia')), 'con la regla cambiada, Maslem queda en 1.5 días (RD$1,650)');
   const rs = await page.evaluate(async () => (await RT.db.doc('settings/asistencia').get()).data());
-  check(rs.late === 0 && rs.saturday === 0.5 && rs.rev === 2, 'las reglas guardadas llevan su versión');
+  check(rs.late === 0 && rs.saturday === 1 && rs.rev === 3, 'las reglas guardadas llevan su versión');
 
   // 6) Excel y PDF.
   const xl = await download(page, '[data-act="att-xlsx"]', 'asistencia.xlsx');
@@ -154,11 +154,11 @@ res['marcas'] = [c for c in pl[5] if c in ('✓', 'T', 'x', 'C', '1½')]
 print(json.dumps(res, ensure_ascii=False, default=str))
 `, xl]).toString());
   console.log('     excel:', JSON.stringify(xr));
-  check(xr.hojas.join('|') === 'Resumen|Planilla' && xr.res.Marcelo[0] === 2.5 && xr.res.Marcelo[1] === 3000 && xr.res.Felipe[0] === 0.5 && xr.res.Total[1] === 5400, 'Excel: resumen con días y pago, total RD$5,400');
+  check(xr.hojas.join('|') === 'Resumen|Planilla' && xr.res.Marcelo[0] === 2.5 && xr.res.Marcelo[1] === 3000 && xr.res.Felipe[0] === 1 && xr.res.Total[1] === 6150, 'Excel: resumen con días y pago, total RD$6,150');
   check(xr.marcas.join('') === '✓✓1½✓C', 'Excel: la planilla de Marcelo con sus marcas (✓ ✓ 1½ y ✓ C)');
   const pdf = await download(page, '[data-act="att-pdf"]', 'asistencia.pdf');
   const pt = pdfText(pdf);
-  check(/PASE DE LISTA — Residencial ENZO/.test(pt) && /Marcelo/.test(pt) && /Total a pagar: RD\$5,400\.00/.test(pt) && /Entrada hasta las: 7:30/.test(pt), 'PDF de la planilla con los obreros, la hora de entrada y el total');
+  check(/PASE DE LISTA — Residencial ENZO/.test(pt) && /Marcelo/.test(pt) && /Total a pagar: RD\$6,150\.00/.test(pt) && /Entrada hasta las: 7:30/.test(pt), 'PDF de la planilla con los obreros, la hora de entrada y el total');
   execFileSync('pdftoppm', ['-r', '70', '-png', '-singlefile', pdf, path.join(OUT, 'planilla')]);
   const blank = await download(page, '[data-act="att-blank"]', 'blanco.pdf');
   const bt = pdfText(blank);
@@ -189,12 +189,17 @@ print(json.dumps(res, ensure_ascii=False, default=str))
   await page.click('.sheet-h [data-act="sheet-close"]');
   check((await page.$$('.att-row')).length === 3, 'en la quincena con sus marcas, Felipe sigue');
 
-  // 9) Reglas guardadas con una versión anterior (la tardanza no descontaba, el sábado valía 1): se ponen las de la empresa.
+  // 9) Reglas guardadas con versiones anteriores: antes de la 1.11 (la tardanza no descontaba) y de la 1.11 a la 1.19 (el sábado valía medio día).
   await page.evaluate(() => RT.db.doc('settings/asistencia').set({ late: 0, surpriseMiss: 0, leftEarly: 0.5, corrido: 1, corridoFull: 1.5, saturday: 1, sunday: 1, updatedAt: '2026-11-01T10:00:00.000Z' }));
   await page.reload();
-  for (let t = 0; t < 50; t++) { const d = await page.evaluate(async () => (await RT.db.doc("settings/asistencia").get()).data()).catch(() => null); if (d && d.rev === 2) break; await settle(page, 300); }
+  for (let t = 0; t < 50; t++) { const d = await page.evaluate(async () => (await RT.db.doc("settings/asistencia").get()).data()).catch(() => null); if (d && d.rev === 3) break; await settle(page, 300); }
   const rold = await page.evaluate(async () => (await RT.db.doc('settings/asistencia').get()).data());
-  check(rold.late === 0.5 && rold.saturday === 0.5 && rold.leftEarly === 0.5 && rold.rev === 2, 'las reglas viejas guardadas pasan a las de la empresa: tardanza y sábado, medio día');
+  check(rold.late === 0.5 && rold.saturday === 1 && rold.leftEarly === 0.5 && rold.rev === 3, 'las reglas de antes de la 1.11: la tardanza pasa a descontar medio día y el sábado sigue de día entero');
+  await page.evaluate(() => RT.db.doc('settings/asistencia').set({ late: 0.25, surpriseMiss: 0, leftEarly: 0.5, corrido: 1, corridoFull: 1.5, saturday: 0.5, sunday: 1, rev: 2, updatedAt: '2026-11-02T10:00:00.000Z' }));
+  await page.reload();
+  for (let t = 0; t < 50; t++) { const d = await page.evaluate(async () => (await RT.db.doc("settings/asistencia").get()).data()).catch(() => null); if (d && d.rev === 3) break; await settle(page, 300); }
+  const r2 = await page.evaluate(async () => (await RT.db.doc('settings/asistencia').get()).data());
+  check(r2.saturday === 1 && r2.late === 0.25 && r2.rev === 3, 'las reglas de la 1.11 a la 1.19: el sábado pasa a día entero y lo demás se queda como estaba');
 
   console.log('problemas:', problems.length ? problems : 'ninguno');
   await browser.close();
