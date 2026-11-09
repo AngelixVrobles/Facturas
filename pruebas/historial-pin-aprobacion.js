@@ -225,6 +225,13 @@ async function connect(page, NUBE, email, pass, code) {
   await b.waitForSelector('[data-act="pay-return"]');
   await b.click('[data-act="pay-return"]');
   await b.fill('#pay-ret-note', 'Falta la copia firmada de la orden');
+  // Mientras escribe, la nube se pone al día; y aunque la pantalla se redibuje, la nota sigue ahí.
+  await b.evaluate(() => RT.sync.syncNow());
+  await settle(b, 800);
+  const stillOpen = await b.isVisible('#pay-ret-box') && (await b.inputValue('#pay-ret-note')) === 'Falta la copia firmada de la orden';
+  await b.evaluate(() => { document.activeElement.blur(); document.dispatchEvent(new Event('visibilitychange')); });
+  await settle(b, 600);
+  check(stillOpen && await b.isVisible('#pay-ret-box') && (await b.inputValue('#pay-ret-note')) === 'Falta la copia firmada de la orden', 'la nota para devolver sigue abierta y con lo escrito aunque la nube se ponga al día y la pantalla se redibuje');
   await b.click('[data-act="pay-return-yes"]');
   await settle(b, 500);
   await b.evaluate(() => RT.sync.syncNow());

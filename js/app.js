@@ -727,7 +727,15 @@ function toastAct(msg, label, fn) {
 
 /* ---------- pantallas ---------- */
 let rq = 0;
-function scheduleRender() { if (rq) return; rq = requestAnimationFrame(() => { rq = 0; renderAll(); }); }
+function scheduleRender() { if (rq) return; rq = requestAnimationFrame(() => { rq = 0; if (typingInView()) { heldRender = true; return; } renderAll(); }); }
+// Mientras se escribe en algo que la pantalla vuelve a dibujar (la nota para devolver un pago, el nombre del pago, la hora
+// de entrada), lo que llega de fondo (la nube, otro aparato) espera a que termine: así no se borra lo escrito ni se cierra el teclado.
+let staticFields = new Set(), heldRender = false;
+function typingInView() {
+  const a = document.activeElement, v = $('#v-' + S.tab);
+  if (!a || !v || !v.contains(a) || staticFields.has(a)) return false;
+  return a.tagName === 'TEXTAREA' || (a.tagName === 'INPUT' && /^(text|search|email|number|tel|url|password)$/.test(a.type));
+}
 const canEdit = () => S.dbState === 'ready';
 const canUpload = () => canEdit() && !!assets;
 const isStandalone = () => !!(navigator.standalone || (window.matchMedia && matchMedia('(display-mode: standalone)').matches));
@@ -1120,7 +1128,8 @@ function renderPayDetail(D, pay) {
   }
   const apMsg = approvalOn() && st === 'presentado' ? (pay.approvedAt ? `<div class="msg ok">${ICON.check}<span>Aprobado por <b>${esc(pay.approvedBy || 'el dueño')}</b> el ${esc(fmtDate(String(pay.approvedAt).slice(0, 10)))}.</span></div>` : `<div class="msg warn">${ICON.alert}<span>${amOwner() ? 'Este pago espera <b>tu aprobación</b>.' : `Esperando la aprobación del dueño (${esc(S.settings.ownerEmail)}). Cuando lo apruebe desde su ${'teléfono'}, se puede marcar como pagado.`}</span></div>`) : '';
   const retMsg = st === 'armando' && pay.returnNote ? `<div class="msg warn">${ICON.alert}<span>El dueño lo devolvió${pay.returnedAt ? ' el ' + esc(fmtDate(String(pay.returnedAt).slice(0, 10))) : ''}: «${esc(pay.returnNote)}»</span></div>` : '';
-  const retBox = '<div id="pay-ret-box" hidden><div class="confirm"><div class="field full"><label for="pay-ret-note">¿Qué hay que corregir?</label><textarea id="pay-ret-note" rows="2" maxlength="300"></textarea></div><div class="actions"><button type="button" class="btn danger solid" data-act="pay-return-yes">Devolver</button><button type="button" class="btn" data-act="pay-return-no">No</button></div></div></div>';
+  const ret = S.payRet && S.payRet.id === pay.id ? S.payRet : null;
+  const retBox = `<div id="pay-ret-box"${ret ? '' : ' hidden'}><div class="confirm"><div class="field full"><label for="pay-ret-note">¿Qué hay que corregir?</label><textarea id="pay-ret-note" rows="2" maxlength="300">${esc(ret ? ret.note : '')}</textarea></div><div class="actions"><button type="button" class="btn danger solid" data-act="pay-return-yes">Devolver</button><button type="button" class="btn" data-act="pay-return-no">No</button></div></div></div>`;
   const pdfBtn = `<button type="button" class="btn primary" data-act="pay-pdf" ${invs.length && !S.busyPdf ? '' : 'disabled'}>${ICON.down} ${S.busyPdf ? esc(S.pdfMsg || 'Preparando PDF…') : 'PDF para presentar'}</button>`;
   const xlsBtn = `<button type="button" class="btn" data-act="pay-xlsx" ${invs.length ? '' : 'disabled'}>${ICON.sheet} Excel</button>`;
   const undo = edit && st !== 'armando' ? `<button type="button" class="btn ghost sm" data-act="pay-status" data-s="${st === 'pagado' ? 'presentado' : 'armando'}">Regresar a “${st === 'pagado' ? 'Presentado' : 'Por presentar'}”</button>` : '';
@@ -4925,9 +4934,9 @@ function onClick(e) {
     case 'pick-more': openPicker('add'); break;
     case 'pay-status': setPayStatus(S.paymentId, t.dataset.s); break;
     case 'pay-approve': if (amOwner()) write(() => db.doc('payments/' + S.paymentId).update({ approvedAt: new Date().toISOString(), approvedBy: RT.sync.status().email }), 'Pago aprobado'); break;
-    case 'pay-return': { const b = $('#pay-ret-box'); if (b) { b.hidden = false; $('#pay-ret-note').focus(); } break; }
-    case 'pay-return-no': $('#pay-ret-box').hidden = true; break;
-    case 'pay-return-yes': { const note = $('#pay-ret-note').value.trim().slice(0, 300); if (!note) { toast('Escribe qué hay que corregir.'); break; } if (amOwner()) write(() => db.doc('payments/' + S.paymentId).update({ status: 'armando', presentedAt: '', approvedAt: '', approvedBy: '', returnNote: note, returnedAt: new Date().toISOString(), returnedBy: RT.sync.status().email }), 'Pago devuelto con la nota'); break; }
+    case 'pay-return': { S.payRet = { id: S.paymentId, note: (S.payRet && S.payRet.id === S.paymentId && S.payRet.note) || '' }; const b = $('#pay-ret-box'); if (b) { b.hidden = false; $('#pay-ret-note').focus(); } break; }
+    case 'pay-return-no': S.payRet = null; if (document.activeElement) document.activeElement.blur(); $('#pay-ret-box').hidden = true; break;
+    case 'pay-return-yes': { const note = $('#pay-ret-note').value.trim().slice(0, 300); if (!note) { toast('Escribe qué hay que corregir.'); break; } S.payRet = null; if (document.activeElement) document.activeElement.blur(); if (amOwner()) write(() => db.doc('payments/' + S.paymentId).update({ status: 'armando', presentedAt: '', approvedAt: '', approvedBy: '', returnNote: note, returnedAt: new Date().toISOString(), returnedBy: RT.sync.status().email }), 'Pago devuelto con la nota'); break; }
     case 'pin-open': closeSheet(); openPinSheet(); break;
     case 'pin-off': lsSet(PIN_KEY, ''); closeSheet(); toast('PIN quitado'); break;
     case 'pin-forgot': { const f = $('#lock-forgot'); if (f) f.hidden = !f.hidden; break; }
@@ -5174,6 +5183,7 @@ function onInput(e) {
   if (t.id === 'f-search') { S.search = t.value; renderAll(); return; }
   if (t.id === 'o-search') { S.orderSearch = t.value; renderAll(); return; }
   if (t.id === 'c-search') { S.condSearch = t.value; renderAll(); return; }
+  if (t.id === 'pay-ret-note' && S.payRet) S.payRet.note = t.value;
   if (t.id === 'o-link-q') { const r = $('#o-link-results'); if (r) r.innerHTML = orderLinkResultsHTML(t.dataset.order, t.value); return; }
   if (S.sheet && S.sheet.type === 'order' && t.closest && t.closest('#order-form') && t.id !== 'o-msg') S.sheet.dirty = true;
   if (t.closest && t.closest('#o-items') && $('#o-est')) $('#o-est').textContent = estText(collectItems());
@@ -5230,6 +5240,8 @@ function onSubmit(e) {
 }
 function bind() {
   document.addEventListener('click', onClick);
+  staticFields = new Set($$('.view input, .view textarea'));
+  document.addEventListener('focusout', () => { if (heldRender) setTimeout(() => { if (heldRender && !typingInView()) { heldRender = false; scheduleRender(); } }, 250); });
   document.addEventListener('change', onChange);
   document.addEventListener('input', onInput);
   document.addEventListener('submit', onSubmit);
@@ -5313,7 +5325,10 @@ function subscribe() {
 function boot() {
   bind();
   initPinLock();
-  RT.sync.onChange((s) => { refreshNubeBox(s); scheduleRender(); maybeCloudBackup(s); });
+  // Cada sincronización cambia el indicador; la pantalla entera se redibuja solo si cambió algo que ella muestra
+  // (conectada o no, el usuario, un error). Los datos que llegan la redibujan por su cuenta.
+  let syncKey = '';
+  RT.sync.onChange((s) => { refreshNubeBox(s); const k = [s.on, s.email, s.status === 'error' ? s.code : ''].join('|'); if (k !== syncKey) { syncKey = k; scheduleRender(); } else renderSyncChip(); maybeCloudBackup(s); });
   renderAll();
   RT.use('db').then((d) => {
     db = d;
