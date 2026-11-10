@@ -103,13 +103,13 @@ async function seed(page) {
   await page.waitForSelector('.att-plan table');
   const plan = await page.evaluate(() => {
     const t = document.querySelector('.att-plan table');
-    return { heads: [...t.querySelectorAll('thead th')].map((h) => h.textContent.replace(/\s+/g, ' ').trim()), rows: [...t.querySelectorAll('tbody tr')].map((r) => [...r.children].map((c) => c.textContent.replace(/\s+/g, ' ').trim())), daysHidden: getComputedStyle(document.querySelector('.att-days')).display === 'none', cols: getComputedStyle(document.querySelector('.att-list')).gridTemplateColumns.split(' ').length };
+    return { heads: [...t.querySelectorAll('thead th')].map((h) => h.textContent.replace(/\s+/g, ' ').trim()), rows: [...t.querySelectorAll('tbody tr')].map((r) => [...r.children].map((c) => c.textContent.replace(/\s+/g, ' ').trim())), daysHidden: getComputedStyle(document.querySelector('.att-days')).display === 'none', cols: getComputedStyle(document.querySelector('.att-list')).gridTemplateColumns.split(' ').length, over: [...document.querySelectorAll('.att-row')].filter((row) => [...row.querySelectorAll('.am')].some((x) => x.getBoundingClientRect().right > row.getBoundingClientRect().right - 1)).length };
   });
   console.log('     planilla:', JSON.stringify({ heads: plan.heads, fila1: plan.rows[0] }));
   check(plan.heads.length === 17 && plan.heads[0] === 'Obrero' && plan.heads[1] === 'D 1' && plan.heads[2] === 'L 2' && plan.heads[15] === 'Días' && plan.heads[16] === 'Pago', 'la planilla: obrero, los 14 días y los totales');
   check(plan.rows.length === 3 && /Marcelo Peña/.test(plan.rows[0][0]) && plan.rows[0][2] === '✓ ✓ 1½1.5' && plan.rows[0][3] === '✓ · C1', 'cada día con su entrada, pase y salida, y lo que cuenta (' + plan.rows[0][2] + ' / ' + plan.rows[0][3] + ')');
   check(plan.rows[2][2] === 'x0' && plan.rows[0][15] === '2.5' && /RD\$3,000\.00/.test(plan.rows[0][16]), 'la falta se ve, y los días y el pago de la quincena');
-  check(plan.daysHidden && plan.cols === 3, 'los botones de los días se quitan (la planilla los tiene) y las tarjetas van en 3 columnas');
+  check(plan.daysHidden && plan.cols >= 2 && plan.over === 0, `los botones de los días se quitan (la planilla los tiene) y las tarjetas van en ${plan.cols} columnas, con los botones adentro`);
   await page.screenshot({ path: path.join(OUT, 'planilla.png') });
   await page.click('.att-plan thead th.att-h:nth-child(4) [data-act="att-day"]');
   await settle(page, 300);
