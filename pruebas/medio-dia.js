@@ -147,6 +147,13 @@ print(json.dumps({'head': [c for c in pl[3] if c], 'nota': [str(r[0]) for r in p
   await page.waitForSelector('.att-tbl');
   check(await page.$$eval('.att-tbl th .att-half-mk', (l) => l.length) === 1, 'en la computadora, la planilla marca el lunes con ½');
   await page.screenshot({ path: path.join(OUT, 'computadora.png') });
+  // En una pantalla mediana (1170 de ancho), los botones de las marcas no se salen de las tarjetas.
+  for (const w of [1170, 1024]) {
+    await page.setViewportSize({ width: w, height: 900 });
+    await settle(page, 300);
+    const over = await page.evaluate(() => [...document.querySelectorAll('.att-row')].filter((row) => [...row.querySelectorAll('.am')].some((b) => b.getBoundingClientRect().right > row.getBoundingClientRect().right - 1)).length);
+    check(over === 0, 'a ' + w + ' de ancho, los botones del pase de lista caben en sus tarjetas');
+  }
 
   console.log('problemas:', problems.length ? problems : 'ninguno');
   await browser.close();

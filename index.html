@@ -426,6 +426,14 @@ body.locked .toast { top: calc(14px + env(safe-area-inset-top, 0px)); bottom: au
 .tr-lines { margin: 6px 0 10px; padding-left: 18px; }
 .tr-lines li + li { margin-top: 3px; }
 .tr-mvs { display: flex; flex-direction: column; }
+.tr-recv-rows { display: flex; flex-direction: column; gap: 6px; margin: 6px 0 10px; }
+.tr-recv-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.tr-recv-in { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); white-space: nowrap; }
+.tr-recv-in input { width: 84px; text-align: right; }
+.tr-photos { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.tr-photos .preview { width: 140px; }
+.warn-txt { color: var(--warn) !important; font-weight: 600; }
+.status-line .pill + .pill { margin-left: -4px; }
 .tr-mv { display: flex; flex-direction: column; gap: 3px; padding: 10px 0; border-top: 1px solid var(--line); }
 .tr-mv-top { display: flex; justify-content: space-between; gap: 10px; color: var(--muted); font-size: 13px; }
 .tr-mv-top b { color: var(--ink); font-size: 15px; }
@@ -598,12 +606,14 @@ body.pin-locked > *:not(.lock) { visibility: hidden; }
 .att-list { display: flex; flex-direction: column; gap: 8px; }
 .rev-doc, .att-plan { display: none; }
 @media (min-width: 960px) {
-  .att-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; align-items: start; }
+  /* Tantas columnas como quepan sin que los botones se salgan de la tarjeta. */
+  .att-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(372px, 1fr)); gap: 10px; align-items: start; }
   /* Planilla de la quincena */
   .att-plan { display: block; padding: 12px; }
   .att-plan ~ .att-days { display: none; }
-  .att-plan-in { overflow-x: auto; }
-  .att-tbl { min-width: 900px; font-size: 13px; }
+  .att-plan-in { overflow-x: auto; padding-bottom: 10px; }
+  .att-plan .usage { margin-top: 6px; }
+  .att-tbl { min-width: 780px; font-size: 13px; }
   .att-tbl .w-aname { width: 170px; } .att-tbl .w-adays { width: 64px; } .att-tbl .w-apay { width: 112px; }
   .att-tbl th .th-sort { text-align: center; padding: 7px 2px; font-size: 12px; }
   .att-tbl th .th-sort b { font-family: var(--font-data); color: var(--ink); }
@@ -633,7 +643,7 @@ body.pin-locked > *:not(.lock) { visibility: hidden; }
 .att-who small { color: var(--muted); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .att-val { margin-left: auto; font: 650 14px var(--font-data); background: var(--paid-bg); color: var(--paid); border-radius: 999px; padding: 2px 9px; }
 .att-val.empty { background: var(--surface-2); color: var(--muted); }
-.att-marks { display: flex; gap: 8px; justify-content: space-between; }
+.att-marks { display: flex; flex-wrap: wrap; gap: 6px 8px; justify-content: space-between; }
 .att-g { display: flex; align-items: center; gap: 3px; }
 .att-g > span { font: 700 11px var(--font-data); color: var(--muted); margin-right: 1px; }
 .am { min-width: 30px; height: 34px; padding: 0 5px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); font: 700 14px var(--font-data); }

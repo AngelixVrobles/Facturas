@@ -10,7 +10,7 @@ const LIB = {
   qrgen: 'js/qr.js',
 };
 const PDF_CREATOR = 'Facturas de Proyectos';
-const APP_VERSION = '1.21.0';
+const APP_VERSION = '1.22.0';
 const SVG = (d) => `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ICON = {
   lock: SVG('<rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>'),
@@ -211,6 +211,7 @@ function derive() {
 function reviewFlags(i, D) {
   const r = [];
   if (i.notInvoice) r.push('¿No es factura?');
+  if (struckPending(i)) r.push('Tiene tachados');
   if (!i.project) r.push('Falta proyecto');
   if (i.ai !== 'pending') {
     if (!isNum(i.amount)) r.push('Falta monto');
@@ -841,6 +842,7 @@ function invTags(i, D, opts = {}) {
   const minor = []; // lo que casi todas tienen o es solo informativo: va al final, como texto suave
   if (i.fiscal === 'qr' || i.fiscal === 'xml') minor.push(`<span class="pill official minor">${i.fiscal === 'xml' ? 'XML' : 'QR'} DGII</span>`);
   if (isCreditNcf(i.number)) tags.push('<span class="pill nc">Nota de crédito</span>');
+  if (((i.struck || []).length || i.struckFixed) && !struckPending(i)) minor.push('<span class="pill nooc minor" title="Artículos tachados (devueltos o cambiados), ya revisada">Con tachados</span>');
   if (reading) tags.push('<span class="pill reading">Leyendo…</span>');
   if (D.orders.length && (i.order || !isCreditNcf(i.number))) {
     if (i.order) {
@@ -1075,6 +1077,10 @@ function renderTodo(D) {
     if (waitAp.length) rows.push(amOwner() ? row(waitAp.length, plural(waitAp.length, 'pago esperando tu aprobación', 'pagos esperando tu aprobación'), b('tab', 'Ver', ' data-tab="pagos"', ' primary'), 'now') : row(waitAp.length, plural(waitAp.length, 'pago esperando la aprobación del dueño', 'pagos esperando la aprobación del dueño'), b('tab', 'Ver', ' data-tab="pagos"')));
     if (apOk.length) rows.push(row(apOk.length, plural(apOk.length, 'pago aprobado, falta pagarlo', 'pagos aprobados, falta pagarlos'), b('tab', 'Ver', ' data-tab="pagos"'), 'ok'));
   } else if (presented.length) rows.push(row(presented.length, plural(presented.length, 'pago presentado, esperando que lo paguen', 'pagos presentados, esperando que los paguen'), b('tab', 'Ver', ' data-tab="pagos"')));
+  // Traslados: los que llegaron con diferencia y los que falta anotar lo que llegó.
+  const trBad = S.traslados.filter((t) => trState(t) === 'diferencia'), trWait = S.traslados.filter((t) => trState(t) === 'porrecibir');
+  if (trBad.length) rows.push(row(trBad.length, plural(trBad.length, 'traslado llegó con diferencia (no llegó lo mismo que salió)', 'traslados llegaron con diferencia (no llegó lo mismo que salió)'), b('tab', 'Ver', ' data-tab="traslados"'), 'warn'));
+  if (trWait.length) rows.push(row(trWait.length, plural(trWait.length, 'traslado por recibir: falta anotar lo que llegó', 'traslados por recibir: falta anotar lo que llegó'), b('tab', 'Ver', ' data-tab="traslados"')));
   el.hidden = !rows.length;
   // Lo urgente arriba; si son muchas, se ven las primeras y «Ver todo».
   const RANK = { now: 0, warn: 1, ok: 2 };
@@ -1229,6 +1235,74 @@ const trTotal = (items) => round2((items || []).reduce((s, it) => s + (trLine(it
 const trNoPrice = (items) => (items || []).filter((it) => trLine(it) == null).length;
 const trWhen = (t) => String(t.date || '') + '|' + String(t.createdAt || '');
 const trSigned = (t) => !!(t && t.signedFileId);
+// Recepción: quien recibe cuenta lo que llegó y se anota; la app lo compara con lo que salió.
+// A la obra que recibe solo se le cuenta lo que llegó; lo que faltó se queda en la obra de donde salió hasta que se aclare.
+const trRecvQty = (t, k) => (t && t.received && Array.isArray(t.received.qty) && isNum(t.received.qty[k]) ? t.received.qty[k] : null);
+function trEffTotal(t) {
+  if (!t.received) return trTotal(t.items);
+  return round2((t.items || []).reduce((s, it, k) => { const q = trRecvQty(t, k), qq = q == null ? it.qty : q; return s + (isNum(qq) && isNum(it.price) ? qq * it.price : 0); }, 0));
+}
+function trDiffs(t) {
+  if (!t || !t.received) return [];
+  return (t.items || []).map((it, k) => {
+    const q = trRecvQty(t, k);
+    if (q == null || !isNum(it.qty)) return null;
+    const diff = round2(it.qty - q);
+    return Math.abs(diff) < 0.0005 ? null : { k, it, got: q, diff, value: isNum(it.price) ? round2(diff * it.price) : null };
+  }).filter(Boolean);
+}
+const trShortValue = (t) => round2(trDiffs(t).filter((x) => x.diff > 0).reduce((s, x) => s + (x.value || 0), 0));
+const trState = (t) => (isTrPago(t) ? 'pago' : !t.received ? 'porrecibir' : trDiffs(t).length && !t.shortOk ? 'diferencia' : 'recibido');
+const TR_ST = { porrecibir: ['o-enviada', 'Por recibir'], recibido: ['o-autorizada', 'Recibido'], diferencia: ['warn', 'Con diferencia'], pago: ['pagada', 'Pago'] };
+const trWhenTxt = (iso) => { const d = new Date(iso); return isNaN(d) ? '' : d.toLocaleString('es-DO', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }); };
+const localDT = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}T${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+const trDiffTxt = (x) => { const u = x.it.unit ? ' ' + x.it.unit : ''; return x.diff > 0 ? `Faltan ${fmtQty(x.diff)}${u} de ${x.it.desc || 'material'}${x.value ? ' (' + money(x.value) + ')' : ''}` : `Llegaron ${fmtQty(-x.diff)}${u} de más de ${x.it.desc || 'material'}`; };
+function trRecvHTML(t, edit) {
+  const from = trProj(t.fromId), to = trProj(t.toId), rec = t.received, items = t.items || [];
+  const box = edit ? `<div id="tr-recv-box"${rec ? ' hidden' : ' hidden'}><div class="tr-recv-rows">${items.map((it, k) => `<label class="tr-recv-row"><span>${esc([it.qty !== '' && it.qty != null ? fmtQty(it.qty) : '', it.unit, it.desc].filter(Boolean).join(' '))}</span><span class="tr-recv-in">llegó <input class="mono" inputmode="decimal" maxlength="12" data-rq="${k}" aria-label="Cuánto llegó" value="${esc(rec ? (trRecvQty(t, k) == null ? '' : String(trRecvQty(t, k))) : isNum(it.qty) ? String(it.qty) : '')}"></span></label>`).join('')}</div>
+    <div class="fields"><div class="field"><label for="tr-rcv-by">Lo recibió</label><input id="tr-rcv-by" maxlength="80" value="${esc((rec && rec.by) || t.receivedBy || '')}"></div><div class="field"><label for="tr-rcv-when">Llegó el</label><input id="tr-rcv-when" type="datetime-local" value="${esc(rec && rec.at ? localDT(new Date(rec.at)) : localDT())}"></div><div class="field full"><label for="tr-rcv-note">Nota de la recepción</label><input id="tr-rcv-note" maxlength="160" value="${esc((rec && rec.note) || '')}" placeholder="Ej. se contó al bajarlo del camión"></div></div>
+    <div class="actions"><button type="button" class="btn primary" data-act="tr-recv-save" data-id="${esc(t.id)}">Guardar lo que llegó</button></div></div>` : '';
+  const ph = [['out', 'Foto de la carga al salir', t.outPhotoId, t.outPhotoType, t.outPhotoAt], ['in', 'Foto de lo que llegó', t.inPhotoId, t.inPhotoType, t.inPhotoAt]]
+    .map(([k, label, id, type, at]) => (id ? `<button type="button" class="preview" data-act="tr-photo-view" data-id="${esc(t.id)}" data-k="${k}">${String(type).startsWith('image/') ? `<img src="${esc(assetUrl(id))}" alt="">` : '<span class="ph">PDF</span>'}<span class="preview-tag">${esc(k === 'out' ? 'Al salir' : 'Al llegar')}${at ? ' · ' + esc(trWhenTxt(at)) : ''}</span></button>` : edit ? `<button type="button" class="btn sm" data-act="tr-photo" data-k="${k}">${ICON.plus} ${esc(label)}</button>` : '')).join('');
+  let body;
+  if (!rec) {
+    body = `<p class="hint">La hoja viaja con el que se lo lleva. Quien recibe en ${esc(to)} cuenta lo que llegó, lo escribe en la columna «Recibido» y firma. Cuando te llegue la hoja (o la foto por WhatsApp), anota aquí lo que llegó: la app lo compara con lo que salió de ${esc(from)}.</p>${edit ? '<div><button type="button" class="btn sm primary" data-act="tr-recv-open">Anotar lo que llegó</button></div>' : ''}`;
+  } else {
+    const d = trDiffs(t), sv = trShortValue(t);
+    const who = [rec.at ? 'Llegó el ' + trWhenTxt(rec.at) : 'Llegó', rec.by ? 'lo recibió ' + rec.by : ''].filter(Boolean).join(' · ');
+    const diffMsg = d.length ? `<div class="msg warn">${ICON.alert}<span>${esc(d.map(trDiffTxt).join('. '))}.${sv ? ` A ${esc(to)} solo se le cuenta lo que llegó; lo que faltó (${esc(money(sv))}) se queda en ${esc(from)} hasta que se aclare.` : ''}</span></div>` : `<div class="msg ok">${ICON.check}<span>Llegó completo: lo mismo que salió.</span></div>`;
+    const clear = d.length ? (t.shortOk ? `<p class="usage">Diferencia aclarada${t.shortNote ? ': ' + esc(t.shortNote) : ''}.</p>` : edit ? `<p class="hint">Si al final sí llegó, toca «Corregir lo que llegó». Si se devolvió, se perdió o ya se habló con el chofer, anótalo y toca «Ya se aclaró».</p><div class="ab-add"><input id="tr-short-note" maxlength="120" placeholder="Cómo se aclaró" aria-label="Cómo se aclaró"><button type="button" class="btn sm" data-act="tr-short-ok" data-id="${esc(t.id)}">Ya se aclaró</button></div>` : '') : '';
+    body = `<p class="usage">${esc(who)}${rec.note ? ' · ' + esc(rec.note) : ''}</p>${diffMsg}${clear}${edit ? '<div><button type="button" class="btn sm" data-act="tr-recv-open">Corregir lo que llegó</button></div>' : ''}`;
+  }
+  return `<div class="card" id="tr-recv"><h2>Recepción en ${esc(to)}</h2>${body}${box}${ph ? `<div class="tr-photos">${ph}</div>` : ''}</div>`;
+}
+function refreshTrRecv(id) {
+  setTimeout(() => {
+    const c = $('#tr-recv');
+    const t = S.traslados.find((x) => x.id === id);
+    if (!c || !t || !S.sheet || S.sheet.type !== 'tr' || S.sheet.id !== id) return;
+    c.outerHTML = trRecvHTML(t, canEdit());
+    const sl = $('#tr-form .status-line');
+    if (sl) sl.innerHTML = trStatusHTML(t);
+    if (S.sheet && !S.sheet.dirty) S.sheet.sig = trSig(t);
+  }, 150);
+}
+async function saveTrRecv(id) {
+  const t = S.traslados.find((x) => x.id === id);
+  if (!t) return;
+  const qty = (t.items || []).map((it, k) => { const inp = $(`#tr-recv-box [data-rq="${k}"]`); const v = inp ? inp.value.trim() : ''; const n = v === '' ? null : parseAmount(v); return isNum(n) && n >= 0 ? round2(n) : null; });
+  if (qty.some((q, k) => q == null && isNum(t.items[k].qty))) { toast('Escribe cuánto llegó de cada material (0 si no llegó nada).'); return; }
+  const raw = $('#tr-rcv-when').value;
+  const received = { at: raw && !isNaN(Date.parse(raw)) ? new Date(raw).toISOString() : new Date().toISOString(), by: $('#tr-rcv-by').value.trim().slice(0, 80), qty, note: $('#tr-rcv-note').value.trim().slice(0, 160), savedBy: whoAmI() };
+  const next = { ...t, received };
+  const upd = { received, receivedBy: received.by || t.receivedBy || '', sentTotal: trTotal(t.items), total: trEffTotal(next), shortOk: false, shortNote: '', updatedAt: new Date().toISOString() };
+  if (await write(() => db.doc('traslados/' + id).update(upd), trDiffs(next).length ? 'Guardado: no llegó lo mismo que salió' : 'Guardado: llegó completo')) refreshTrRecv(id);
+}
+const trStatusHTML = (t) => `${trPill(t)}${isTrPago(t) ? '' : `<span class="pill ${trSigned(t) ? 'o-autorizada' : 'o-enviada'}">${trSigned(t) ? 'Firmado' : 'Sin firmar'}</span>`}<span>${esc(trAccLine(t))}</span>`;
+function trAccLine(t) {
+  const acc = trAccOf(t.fromId, t.toId);
+  return acc && acc.amount >= 0.01 ? `Cuenta entre ${trProj(t.fromId)} y ${trProj(t.toId)}: ${trOwes(acc)}.` : `${trProj(t.fromId)} y ${trProj(t.toId)} están a mano.`;
+}
 // Cuentas entre obras: por cada par, lo que entregó una menos lo que entregó la otra.
 function trAccounts(list = S.traslados) {
   const m = new Map();
@@ -1271,7 +1345,7 @@ const trPriceSrc = (it) => (trLine(it) == null ? 'Sin precio' : it.priceSrc ? 'P
 
 // Apartado Traslados: las cuentas entre obras arriba y la lista de traslados y pagos.
 const trAccRowHTML = (x, edit) => `<div class="tr-acc-row"><div class="grow"><span><b>${esc(trProj(x.debtor))}</b> le debe a <b>${esc(trProj(x.creditor))}</b></span><small>A favor de ${esc(trProj(x.creditor))} · ${plural(x.moves.length, 'movimiento', 'movimientos')}${x.last ? ' · el último el ' + esc(fmtDate(x.last)) : ''}</small></div><b class="mono tr-amt">${esc(money(x.amount))}</b><div class="acts"><button type="button" class="btn sm" data-act="tr-acc" data-a="${esc(x.creditor)}" data-b="${esc(x.debtor)}">Ver la cuenta</button>${edit ? `<button type="button" class="btn sm" data-act="tr-pay" data-from="${esc(x.debtor)}" data-to="${esc(x.creditor)}">Registrar pago</button>` : ''}</div></div>`;
-const trPill = (t) => (isTrPago(t) ? '<span class="pill pagada">Pago</span>' : `<span class="pill ${trSigned(t) ? 'o-autorizada' : 'o-enviada'}">${trSigned(t) ? 'Firmado' : 'Sin firmar'}</span>`);
+const trPill = (t) => { const [c, l] = TR_ST[trState(t)]; return `<span class="pill ${c}">${l}</span>`; };
 function trWhat(t) {
   if (isTrPago(t)) return [t.notes || ''].filter(Boolean).join('');
   const its = t.items || [], it = its[0];
@@ -1281,7 +1355,7 @@ function trWhat(t) {
 function trCardHTML(t) {
   if (isTrPago(t)) return `<button type="button" class="ord tr-card" data-act="tr-open" data-id="${esc(t.id)}"><span class="ord-top"><b>Pago entre obras</b>${trPill(t)}</span><span class="ord-sup">${esc(trProj(t.fromId))} le pagó a ${esc(trProj(t.toId))}</span><span class="ord-meta">${esc([fmtDate(t.date), money(t.total || 0), t.notes || ''].filter(Boolean).join(' · '))}</span></button>`;
   const np = trNoPrice(t.items);
-  return `<button type="button" class="ord tr-card" data-act="tr-open" data-id="${esc(t.id)}"><span class="ord-top"><b class="mono">${esc(trNo(t))}</b>${trPill(t)}</span><span class="ord-sup">${esc(trProj(t.fromId))} → ${esc(trProj(t.toId))}</span><span class="ord-meta">${esc([fmtDate(t.date), trWhat(t), money(t.total || 0), np ? np + ' sin precio' : ''].filter(Boolean).join(' · '))}</span></button>`;
+  return `<button type="button" class="ord tr-card" data-act="tr-open" data-id="${esc(t.id)}"><span class="ord-top"><b class="mono">${esc(trNo(t))}</b>${trPill(t)}</span><span class="ord-sup">${esc(trProj(t.fromId))} → ${esc(trProj(t.toId))}</span><span class="ord-meta">${esc([fmtDate(t.date), trWhat(t), money(t.total || 0), np ? np + ' sin precio' : '', trSigned(t) ? 'hoja firmada' : 'sin la hoja firmada'].filter(Boolean).join(' · '))}</span></button>`;
 }
 function trTableHTML(list) {
   const val = (t, k) => (k === 'total' ? (isNum(t.total) ? t.total : -Infinity) : k === 'date' ? trWhen(t) : k === 'from' ? norm(trProj(t.fromId)) : k === 'to' ? norm(trProj(t.toId)) : isTrPago(t) ? 0 : Number(t.number) || 0);
@@ -1306,7 +1380,7 @@ function renderTraslados(D) {
   if (!S.traslados.length) {
     el.innerHTML = D.projects.length < 2
       ? '<div class="empty"><h2>Traslados de materiales</h2><p>Para pasar materiales de una obra a otra, primero agrega las dos obras en <b>Proyectos</b>.</p><button type="button" class="btn" data-act="go-tab" data-go="proyectos">Ir a Proyectos</button></div>'
-      : `<div class="empty"><h2>Traslados de materiales</h2><ol><li>Cuando saquen materiales de una obra para llevarlos a otra, toca <b>Nuevo traslado</b>: de qué obra salen, para cuál van, cada material con su cantidad, unidad y precio, y quién lo pidió, lo entregó, se lo llevó y lo recibió.</li><li>Saca la <b>hoja de traslado</b> en PDF para que la firmen, y después adjunta la foto firmada.</li><li>Aquí arriba sale la cuenta entre las obras: cuánto le debe una a la otra. Cuando se salde, toca <b>Registrar pago</b>.</li></ol>${edit ? '<button type="button" class="btn primary" data-act="tr-new">Nuevo traslado</button>' : ''}</div>`;
+      : `<div class="empty"><h2>Traslados de materiales</h2><ol><li>Cuando saquen materiales de una obra para llevarlos a otra, toca <b>Nuevo traslado</b>: de qué obra salen, para cuál van, cada material con su cantidad, unidad y precio, y quién lo pidió, lo entregó, se lo llevó y lo recibió.</li><li>Saca la <b>hoja de traslado</b> en PDF: viaja con el que se lo lleva, y quien recibe cuenta lo que llegó, lo escribe en «Recibido» y firma.</li><li>Anota <b>lo que llegó</b>: la app lo compara con lo que salió y avisa si falta algo. Adjunta la hoja firmada y, si puedes, una foto de la carga al salir y otra al llegar.</li><li>Aquí arriba sale la cuenta entre las obras: cuánto le debe una a la otra. Cuando se salde, toca <b>Registrar pago</b>.</li></ol>${edit ? '<button type="button" class="btn primary" data-act="tr-new">Nuevo traslado</button>' : ''}</div>`;
     return;
   }
   const q = norm(S.trSearch);
@@ -1338,6 +1412,13 @@ function trFormRefresh() {
   const s = $('#t-sum');
   if (s) s.textContent = trSumText(collectItems('#t-items'), from, to);
   for (const [k, idn] of TR_PEOPLE) { const l = $(`label[for="${idn}"]`); if (l) l.textContent = trPeopleLabel(k, from, to); }
+  // Para que se pueda comprobar, quien entrega, quien se lo lleva y quien recibe deben ser personas distintas.
+  const w = $('#t-who-warn');
+  if (w) {
+    const v = (id) => norm(($('#' + id) || {}).value || '');
+    const m = v('t-dlv') && v('t-dlv') === v('t-rcv') ? 'La misma persona entrega y recibe: para poder comprobar el traslado, que sean personas distintas.' : v('t-car') && v('t-car') === v('t-rcv') ? 'El que se lo lleva no debería ser el mismo que lo recibe: así otro cuenta lo que llegó.' : '';
+    w.textContent = m; w.hidden = !m;
+  }
 }
 // Al escribir el material, si no tiene precio y ya se conoce uno, se pone (y se dice de dónde salió).
 function trFillPrice(inp) {
@@ -1375,14 +1456,12 @@ function openTraslado(id, keepScroll) {
   const opt = (sel) => D.projects.map((p) => `<option value="${esc(p.id)}"${p.id === sel ? ' selected' : ''}>${esc(p.name)}</option>`).join('');
   const dl = (idn, arr) => `<datalist id="${idn}">${arr.map((v) => `<option value="${esc(v)}"></option>`).join('')}</datalist>`;
   const trItems = S.traslados.flatMap((x) => x.items || []);
-  const acc = t ? trAccOf(t.fromId, t.toId) : null;
-  const accTxt = !t ? '' : acc && acc.amount >= 0.01 ? `Cuenta entre ${trProj(t.fromId)} y ${trProj(t.toId)}: ${trOwes(acc)}.` : `${trProj(t.fromId)} y ${trProj(t.toId)} están a mano.`;
   const thumb = t && t.signedFileId ? t.signedThumbId || (String(t.signedFileType).startsWith('image/') ? t.signedFileId : null) : null;
   const signedBox = t ? `<div class="card"><h2>Hoja firmada</h2>${trSigned(t) ? `<button type="button" class="preview" data-act="tr-view-signed" data-id="${esc(t.id)}">${thumb ? `<img src="${esc(assetUrl(thumb))}" alt="">` : '<span class="ph">PDF</span>'}<span class="preview-tag">Ver</span></button><p class="usage">Firmada el ${esc(fmtDate(t.signedAt) || '')}.</p>` : '<p class="hint">Saca la hoja en PDF, que la firmen quien entrega, quien se lo lleva y quien lo recibe, y adjunta aquí la foto. Esa es la prueba del traslado.</p>'}${edit ? `<div><button type="button" class="btn sm" data-act="tr-signed">${trSigned(t) ? 'Cambiar la hoja firmada' : 'Adjuntar la hoja firmada'}</button></div>` : ''}</div>` : '';
   const prevScroll = keepScroll && $('.sheet-b') ? $('.sheet-b').scrollTop : 0;
   openSheet(`<form id="tr-form" data-id="${t ? esc(t.id) : ''}" autocomplete="off">${sheetHead(t ? esc(trNo(t)) : 'Traslado de materiales')}
     <div class="sheet-b">
-      ${t ? `<div class="status-line">${trPill(t)}<span>${esc(accTxt)}</span></div>` : ''}
+      ${t ? `<div class="status-line">${trStatusHTML(t)}</div>` : ''}
       <div class="fields">
         <div class="field"><label for="t-no">No. de traslado</label><input id="t-no" class="mono" value="${esc(trNo(data))}" disabled></div>
         <div class="field"><label for="t-date">Fecha</label><input id="t-date" type="date" value="${esc(data.date || '')}" ${dis}></div>
@@ -1395,13 +1474,16 @@ function openTraslado(id, keepScroll) {
       <p class="usage" id="t-sum">${esc(trSumText(data.items, data.fromId, data.toId))}</p>
       <h3 class="h2">Quiénes</h3>
       <div class="fields">${TR_PEOPLE.map(([k, idn]) => `<div class="field"><label for="${idn}">${esc(trPeopleLabel(k, data.fromId, data.toId))}</label><input id="${idn}"${k === 'vehicle' ? '' : ' list="dl-trpeople"'} maxlength="80" value="${esc(data[k] || '')}" ${dis}></div>`).join('')}</div>
+      <p class="usage warn-txt" id="t-who-warn" hidden></p>
       <div class="field"><label for="t-notes">Notas (para qué es, de dónde se sacó…)</label><textarea id="t-notes" rows="2" maxlength="300" ${dis}>${esc(data.notes || '')}</textarea></div>
+      ${t ? trRecvHTML(t, edit) : ''}
       ${signedBox}
       ${t && edit ? `<div><button type="button" class="btn danger sm" data-act="tr-del" data-id="${esc(t.id)}">${ICON.trash} Eliminar traslado</button></div>` : ''}
     </div>
     <div class="sheet-f">${edit ? '<button type="submit" class="btn">Guardar</button>' : ''}<button type="button" class="btn primary" data-act="tr-pdf">${ICON.down} ${edit ? 'Guardar y sacar la hoja' : 'Sacar la hoja'}</button></div>
   </form>${dl('dl-units', uniqList([...UNITS, ...D.orders.flatMap((x) => (x.items || []).map((it) => it.unit)), ...trItems.map((it) => it.unit)]))}${dl('dl-items', uniqList([...trItems.map((it) => it.desc), ...D.orders.flatMap((x) => (x.items || []).map((it) => it.desc)), ...S.conduces.map((c) => c.material)]).slice(0, 400))}${dl('dl-trpeople', uniqList([...S.traslados.flatMap((x) => TR_PEOPLE.filter(([k]) => k !== 'vehicle').map(([k]) => x[k])), ...D.orders.map((x) => x.requestedBy), ...S.workers.map((w) => w.name)]).slice(0, 300))}`, { type: 'tr', id: t ? t.id : null, dirty: false, sig: t ? trSig(t) : '' });
   if (keepScroll && $('.sheet-b')) $('.sheet-b').scrollTop = prevScroll;
+  trFormRefresh();
 }
 async function saveTraslado(thenPdf) {
   const f = $('#tr-form');
@@ -1415,7 +1497,7 @@ async function saveTraslado(thenPdf) {
   if (fromId === toId) { toast('La obra de donde salen y la obra para donde van tienen que ser distintas.'); $('#t-to').focus(); return null; }
   if (!items.length) { toast('Agrega al menos un material.'); return null; }
   const date = $('#t-date').value;
-  const data = { kind: 'material', date: ymd(date) ? date : todayISO(), fromId, toId, items: items.slice(0, 200), total: trTotal(items), notes: $('#t-notes').value.trim().slice(0, 300), updatedAt: new Date().toISOString() };
+  const data = { kind: 'material', date: ymd(date) ? date : todayISO(), fromId, toId, items: items.slice(0, 200), total: prev && prev.received ? trEffTotal({ ...prev, items }) : trTotal(items), sentTotal: trTotal(items), notes: $('#t-notes').value.trim().slice(0, 300), updatedAt: new Date().toISOString() };
   for (const [k, idn] of TR_PEOPLE) data[k] = $('#' + idn).value.trim().slice(0, 80);
   let full = null;
   const ok = await write(async () => {
@@ -1448,7 +1530,7 @@ async function makeTrPdf(t) {
     toast('No se pudo preparar la hoja de traslado.');
   }
 }
-async function attachTrSigned(id, file) {
+async function attachTrSigned(id, file, kind = 'signed') {
   const t = S.traslados.find((x) => x.id === id);
   if (!t) return;
   toast('Guardando la hoja firmada…');
@@ -1462,7 +1544,7 @@ async function attachTrSigned(id, file) {
       ftype = 'application/pdf';
       let r = null;
       try { r = await inspectPdf(bytes); thumb = r.thumb; } catch (e) { console.warn('miniatura', e); }
-      if (r && r.creator === PDF_CREATOR) throw new UserError('Ese es el PDF que hizo la app, sin firmar. Adjunta la foto o el escaneo de la hoja ya firmada.');
+      if (r && r.creator === PDF_CREATOR && kind === 'signed') throw new UserError('Ese es el PDF que hizo la app, sin firmar. Adjunta la foto o el escaneo de la hoja ya firmada.');
     } else {
       blob = (await prepImage(file)).blob;
       ftype = 'image/jpeg';
@@ -1470,6 +1552,16 @@ async function attachTrSigned(id, file) {
     const up = await assets.upload(blob, { type: ftype });
     let thumbId = null;
     if (thumb) { try { thumbId = (await assets.upload(thumb, { type: 'image/jpeg' })).id; } catch (e) { console.warn('miniatura', e); } }
+    if (kind !== 'signed') {
+      const at = file.lastModified && Date.now() - file.lastModified < 30 * 864e5 && file.lastModified <= Date.now() ? new Date(file.lastModified).toISOString() : new Date().toISOString();
+      const old = t[kind + 'PhotoId'];
+      await dbw(() => db.doc('traslados/' + id).update({ [kind + 'PhotoId']: up.id, [kind + 'PhotoType']: ftype, [kind + 'PhotoAt']: at }));
+      if (old) { try { await assets.delete(old); } catch (e) { /* ya no existe */ } }
+      if (thumbId) { try { await assets.delete(thumbId); } catch (e) { /* nada */ } }
+      toast(kind === 'out' ? 'Foto de la carga al salir guardada' : 'Foto de lo que llegó guardada');
+      refreshTrRecv(id);
+      return;
+    }
     const old = [t.signedFileId, t.signedThumbId].filter(Boolean);
     await dbw(() => db.doc('traslados/' + id).update({ signedFileId: up.id, signedFileType: ftype, signedThumbId: thumbId, signedAt: todayISO() }));
     for (const a of old) { try { await assets.delete(a); } catch (e) { /* ya no existe */ } }
@@ -1613,13 +1705,14 @@ async function buildTrPdf(t) {
       field(l1, v1, 44, top, 300);
       field(l2, v2, 322, top, X1 - 2);
     });
-    const tTop = 184, hH = 22, rH = 24, cols = [X0, 64, 122, 180, 428, 500, X1];
+    const tTop = 184, hH = 22, rH = 24, cols = [X0, 60, 112, 160, 384, 446, 512, X1];
     const bodyTop = tTop + hH, bottom = bodyTop + rH * per;
     p.drawRectangle({ x: X0, y: yy(bodyTop), width: X1 - X0, height: hH, color: NAVY });
     [['No.', 0], ['Cantidad', 1], ['Unidad', 2]].forEach(([l, k]) => center(l, (cols[k] + cols[k + 1]) / 2, tTop + 14.5, 8.5, bold, WHITE));
     text('Material / descripción', cols[3] + 6, tTop + 14.5, 8.5, bold, WHITE);
     right('Precio', cols[5] - 6, tTop + 14.5, 8.5, bold, WHITE);
     right('Total', cols[6] - 6, tTop + 14.5, 8.5, bold, WHITE);
+    center('Recibido', (cols[6] + cols[7]) / 2, tTop + 14.5, 8.5, bold, WHITE);
     for (let r = 0; r < per; r++) {
       const top = bodyTop + rH * r, n = pg * per + r, it = items[n];
       if (r % 2) p.drawRectangle({ x: X0, y: yy(top + rH), width: X1 - X0, height: rH, color: BAND });
@@ -1632,17 +1725,22 @@ async function buildTrPdf(t) {
       else { text(lines[0], cols[3] + 6, top + 10.5, 8.5, font, VAL); text(fitT(lines.slice(1).join(' '), font, 8.5, cols[4] - cols[3] - 10), cols[3] + 6, top + 20.5, 8.5, font, VAL); }
       if (isNum(it.price)) right(fitT(money(it.price), font, 8.5, cols[5] - cols[4] - 8), cols[5] - 6, top + 15.5, 8.5, font, VAL);
       const ln = trLine(it);
-      right(ln == null ? 'sin precio' : fitT(money(ln), bold, 9, cols[6] - cols[5] - 8), cols[6] - 6, top + 15.5, ln == null ? 7.5 : 9, ln == null ? font : bold, ln == null ? GREY : VAL);
+      right(ln == null ? 'sin precio' : fitT(money(ln), bold, 8.5, cols[6] - cols[5] - 8), cols[6] - 6, top + 15.5, ln == null ? 7.5 : 8.5, ln == null ? font : bold, ln == null ? GREY : VAL);
+      const rq = trRecvQty(t, (t.items || []).indexOf(it));
+      if (rq != null) center(fitT(fmtQty(rq), bold, 9.5, cols[7] - cols[6] - 6), (cols[6] + cols[7]) / 2, top + 15.5, 9.5, bold, isNum(it.qty) && Math.abs(it.qty - rq) >= 0.0005 ? rgb(0.75, 0.15, 0.12) : VAL);
     }
     p.drawRectangle({ x: X0, y: yy(bottom), width: X1 - X0, height: bottom - tTop, borderColor: GRID, borderWidth: 0.8 });
     for (const cx of cols.slice(1, -1)) p.drawLine({ start: { x: cx, y: yy(tTop) }, end: { x: cx, y: yy(bottom) }, thickness: 0.5, color: GRID });
     if (pg < nPages - 1) continue;
     const yT = bottom + 18;
-    right('TOTAL DEL TRASLADO:', cols[5] - 6, yT, 9.5, bold, INK);
-    right(money(total), cols[6] - 6, yT, 10.5, bold, VAL);
-    const sentence = total
-      ? `${from} entrega estos materiales a ${to} por ${money(total)}. Ese monto queda a favor de ${from} en la cuenta entre las dos obras.${np ? ` ${plural(np, 'material', 'materiales')} sin precio no se ${np === 1 ? 'sumó' : 'sumaron'}.` : ''}`
-      : `Estos materiales no tienen precio: no cambian la cuenta entre ${from} y ${to}.`;
+    const got = t.received ? trEffTotal({ ...t, items: t.items || [] }) : null, short = t.received ? trShortValue(t) : 0;
+    right(got == null ? 'TOTAL DEL TRASLADO:' : 'TOTAL QUE SALIÓ:', cols[4] - 6, yT, 9.5, bold, INK);
+    right(money(total), cols[6] - 6, yT, 10, bold, VAL);
+    const sentence = !total
+      ? `Estos materiales no tienen precio: no cambian la cuenta entre ${from} y ${to}.`
+      : got == null
+        ? `${from} entrega estos materiales a ${to} por ${money(total)}. Ese monto queda a favor de ${from} en la cuenta entre las dos obras.${np ? ` ${plural(np, 'material', 'materiales')} sin precio no se ${np === 1 ? 'sumó' : 'sumaron'}.` : ''}`
+        : `Salieron materiales por ${money(total)} y llegaron por ${money(got)}${short ? ` (faltaron ${money(short)})` : ''}. A ${to} se le cuenta lo que llegó: ${money(got)} quedan a favor de ${from} en la cuenta entre las dos obras.`;
     wrapText(sentence, font, 9, X1 - X0 - 12).slice(0, 3).forEach((ln, k) => text(ln, 44, yT + 20 + 12 * k, 9, font, INK));
     const nLabel = 'Notas:';
     text(nLabel, 44, yT + 66, 9, bold, INK);
@@ -1651,16 +1749,19 @@ async function buildTrPdf(t) {
     const notes = wrapText(t.notes || '', font, 9, X1 - nx - 6);
     if (notes[0]) text(notes[0], nx + 2, yT + 65, 9, font, VAL);
     if (notes.length > 1) { hline(44, X1 - 2, yT + 82, 0.6, INK); text(fitT(notes.slice(1).join(' '), font, 9, X1 - 50), 46, yT + 79, 9, font, VAL); }
+    text(`Salida: ${t.outPhotoAt ? trWhenTxt(t.outPhotoAt) : 'fecha ______  hora ______'}`, 44, 666, 9, font, INK);
+    text(`Llegada: ${t.received && t.received.at ? trWhenTxt(t.received.at) : 'fecha ______  hora ______'}`, 322, 666, 9, font, INK);
+    text('Quien recibe: cuente lo que llegó, escríbalo en la columna «Recibido» y firme. Si falta algo, anótelo en Notas.', 44, 681, 8, font, GREY);
     const sigs = [['Lo entregó', t.deliveredBy, 'en ' + from], ['Se lo llevó', t.carriedBy, t.vehicle ? 'Vehículo: ' + t.vehicle : ''], ['Lo recibió', t.receivedBy, 'en ' + to], ['Lo autorizó', t.authorizedBy, '']];
     const gap = 16, sw = (X1 - X0 - gap * 3) / 4;
     sigs.forEach(([lbl, name, sub], k) => {
       const a = X0 + k * (sw + gap), b = a + sw, cx = (a + b) / 2;
-      hline(a, b, 694, 0.8, INK);
-      center(lbl, cx, 707, 9, bold, INK);
-      if (name) center(fitT(name, font, 8.5, sw), cx, 719, 8.5, font, VAL);
-      if (sub) center(fitT(sub, font, 7.5, sw), cx, name ? 730 : 719, 7.5, font, GREY);
+      hline(a, b, 716, 0.8, INK);
+      center(lbl, cx, 728, 9, bold, INK);
+      if (name) center(fitT(name, font, 8.5, sw), cx, 740, 8.5, font, VAL);
+      if (sub) center(fitT(sub, font, 7.5, sw), cx, name ? 751 : 740, 7.5, font, GREY);
     });
-    text(`Generado el ${fmtDmy(todayISO())}`, X0, 764, 7.5, font, GREY);
+    text(`Generado el ${fmtDmy(todayISO())}`, X0, 772, 7.5, font, GREY);
   }
   return doc.save();
 }
@@ -1685,13 +1786,13 @@ function trWorkbook(list, title) {
   }
   const mats = list.filter((t) => !isTrPago(t)).sort((a, b) => trWhen(a).localeCompare(trWhen(b)));
   const tr = top('Materiales trasladados');
-  const heads = ['Fecha', 'No.', 'Sale de', 'Va para', 'Cantidad', 'Unidad', 'Material', 'Precio', 'Total', 'De dónde salió el precio', 'Lo pidió', 'Lo autorizó', 'Lo entregó', 'Se lo llevó', 'Vehículo', 'Lo recibió', 'Hoja firmada', 'Notas'];
-  tr.push(heads.map((v, j) => ({ v, s: j === 4 || j === 7 || j === 8 ? XS.headR : XS.head })));
+  const heads = ['Fecha', 'No.', 'Sale de', 'Va para', 'Cantidad', 'Unidad', 'Material', 'Precio', 'Total', 'De dónde salió el precio', 'Llegó', 'Estado', 'Lo pidió', 'Lo autorizó', 'Lo entregó', 'Se lo llevó', 'Vehículo', 'Lo recibió', 'Hoja firmada', 'Notas'];
+  tr.push(heads.map((v, j) => ({ v, s: j === 4 || j === 7 || j === 8 || j === 10 ? XS.headR : XS.head })));
   let sum = 0;
-  for (const t of mats) for (const it of t.items || []) {
+  for (const t of mats) for (const [k, it] of (t.items || []).entries()) {
     const ln = trLine(it);
     if (ln) sum = round2(sum + ln);
-    tr.push([Dt(t.date), { v: trNo(t) }, { v: trProj(t.fromId) }, { v: trProj(t.toId) }, isNum(it.qty) ? { v: it.qty } : { v: String(it.qty == null ? '' : it.qty) }, { v: it.unit || '' }, { v: it.desc || '' }, isNum(it.price) ? { v: it.price, s: XS.money } : { v: '' }, ln == null ? { v: '' } : { v: ln, s: XS.money }, { v: trPriceSrc(it) }, { v: t.requestedBy || '' }, { v: t.authorizedBy || '' }, { v: t.deliveredBy || '' }, { v: t.carriedBy || '' }, { v: t.vehicle || '' }, { v: t.receivedBy || '' }, { v: trSigned(t) ? 'Sí' : 'No' }, { v: t.notes || '' }]);
+    tr.push([Dt(t.date), { v: trNo(t) }, { v: trProj(t.fromId) }, { v: trProj(t.toId) }, isNum(it.qty) ? { v: it.qty } : { v: String(it.qty == null ? '' : it.qty) }, { v: it.unit || '' }, { v: it.desc || '' }, isNum(it.price) ? { v: it.price, s: XS.money } : { v: '' }, ln == null ? { v: '' } : { v: ln, s: XS.money }, { v: trPriceSrc(it) }, trRecvQty(t, k) == null ? { v: '' } : { v: trRecvQty(t, k) }, { v: TR_ST[trState(t)][1] }, { v: t.requestedBy || '' }, { v: t.authorizedBy || '' }, { v: t.deliveredBy || '' }, { v: t.carriedBy || '' }, { v: t.vehicle || '' }, { v: t.receivedBy || '' }, { v: trSigned(t) ? 'Sí' : 'No' }, { v: t.notes || '' }]);
   }
   tr.push([{ v: 'Total', s: XS.totLabel }, ...Array(7).fill(0).map(() => ({ v: '', s: XS.totBlank })), { v: sum, s: XS.totMoney }]);
   const pg = top('Pagos entre obras');
@@ -1700,7 +1801,7 @@ function trWorkbook(list, title) {
   const footer = `&L${(st.company || 'Traslados').replace(/&/g, '&&')}&C${title.replace(/&/g, '&&')}&RPágina &P de &N`;
   return buildXlsx([
     { name: 'Cuentas', xml: sheetXml(ac, { widths: [28, 28, 16, 14, 13], selected: true, footer }) },
-    { name: 'Materiales', xml: sheetXml(tr, { widths: [11, 9, 20, 20, 9, 9, 34, 12, 13, 20, 16, 16, 16, 16, 12, 16, 11, 30], freeze: 5, landscape: true, footer }) },
+    { name: 'Materiales', xml: sheetXml(tr, { widths: [11, 9, 20, 20, 9, 9, 34, 12, 13, 20, 9, 14, 16, 16, 16, 16, 12, 16, 11, 30], freeze: 5, landscape: true, footer }) },
     { name: 'Pagos', xml: sheetXml(pg, { widths: [11, 24, 24, 14, 34], footer }) },
   ], { title, creator: st.preparedBy || 'Facturas de Proyectos', names: [] });
 }
@@ -2016,6 +2117,7 @@ function openInvoice(id, keepScroll) {
         <div class="field full"><label for="f-ref">Otra referencia (cubicación, contrato)</label><input id="f-ref" maxlength="60" placeholder="Opcional" value="${esc(i.ref || '')}" ${dis}></div>
       </div>
       ${invCondBoxHTML(i, D, edit)}
+      ${tachHTML(i, edit)}
       ${abonosHTML(i, edit)}
       ${histBox}
       ${delBtn}
@@ -2666,12 +2768,14 @@ function runAI() {
     (job.condId ? readConduceWithAI(job.condId, job.input) : readWithAI(job.invId, job.input)).catch((e) => { console.error(e); return 'failed'; }).then((r) => { aiRunning--; aiActive.delete(key); job.res(r); runAI(); });
   }
 }
-const AI_FIELDS = ['es_factura', 'tipo_documento', 'proveedor', 'rnc_proveedor', 'ncf', 'ncf_vence', 'fecha', 'itbis', 'total', 'moneda', 'concepto', 'proyecto', 'rnc_cliente', 'referencia', 'conduces', 'conduce_numero', 'material', 'cantidad', 'viajes'];
+const AI_FIELDS = ['es_factura', 'tipo_documento', 'proveedor', 'rnc_proveedor', 'ncf', 'ncf_vence', 'fecha', 'itbis', 'total', 'total_corregido', 'tachados', 'moneda', 'concepto', 'proyecto', 'rnc_cliente', 'referencia', 'conduces', 'conduce_numero', 'material', 'cantidad', 'viajes'];
 const AI_SCHEMA = {
   type: 'object',
   properties: {
     es_factura: { type: 'boolean' }, proveedor: { type: 'string' }, rnc_proveedor: { type: 'string' }, ncf: { type: 'string' }, ncf_vence: { type: 'string' },
     fecha: { type: 'string' }, itbis: { type: 'string' }, total: { type: 'string' }, moneda: { type: 'string', enum: ['DOP', 'USD', 'EUR', ''] },
+    total_corregido: { type: 'string' },
+    tachados: { type: 'array', items: { type: 'object', properties: { descripcion: { type: 'string' }, monto: { type: 'string' } }, required: ['descripcion', 'monto'], additionalProperties: false } },
     concepto: { type: 'string' }, proyecto: { type: 'string' }, rnc_cliente: { type: 'string' }, referencia: { type: 'string' },
     tipo_documento: { type: 'string', enum: ['factura', 'conduce', 'otro'] }, conduces: { type: 'string' }, conduce_numero: { type: 'string' },
     material: { type: 'string' }, cantidad: { type: 'string' }, viajes: { type: 'string' },
@@ -2697,7 +2801,9 @@ function buildPrompt(text, withImage) {
     '- ncf_vence: la fecha de vencimiento del NCF ("Válida hasta" o "Vencimiento"), en AAAA-MM-DD.',
     '- fecha: fecha de emisión en formato AAAA-MM-DD (en la factura suele estar como DD/MM/AAAA).',
     '- itbis: total de ITBIS facturado, solo el número con punto decimal (ej. 2880.00).',
-    '- total: el total de la factura que aparece al pie (Total DOP, Total RD$ o Total a pagar), solo el número con punto decimal. No uses "Balance" ni "Saldo": ese es el saldo de la cuenta del cliente, no el total de esta factura.',
+    '- total: el total de la factura que aparece al pie (Total DOP, Total RD$ o Total a pagar), solo el número con punto decimal. No uses "Balance" ni "Saldo": ese es el saldo de la cuenta del cliente, no el total de esta factura. Aunque el total esté corregido a mano, aquí va el impreso.',
+    '- tachados: los renglones (artículos) que están tachados a mano, con una raya encima, porque se devolvieron o se cambiaron por otra cosa. Pon cada uno con su descripción y su importe (el monto de ese renglón, solo el número con punto decimal; "" si no se lee). Si no hay ninguno tachado, deja la lista vacía. Un renglón solo subrayado, marcado con un cotejo o con una nota al lado no está tachado.',
+    '- total_corregido: si el total se corrigió a mano (tachado y escrito otro, por renglones devueltos, cambiados o agregados a mano), el total nuevo escrito a mano, solo el número; si no, "".',
     '- moneda: "DOP" si está en pesos (RD$), "USD" si está en dólares (US$).',
     '- concepto: qué se está cobrando, máximo 80 caracteres.',
     '- proyecto: la obra o proyecto; suele venir en campos como Nota, Obra, Proyecto o Referencia (ej. "Nota: CAPERUZA 2"). Si coincide con uno de los proyectos que ya existen (aunque esté escrito distinto, por ejemplo "caperuza II" y "Caperuza 2"), escribe el nombre exactamente como está en la lista; si no, escríbelo tal cual.',
@@ -2748,6 +2854,15 @@ function parseAI(out, inv) {
   const ordRef = refx && !(inv && inv.orderId && !inv.orderAuto) ? matchOrderRef(refx, pid) : null;
   if (ordRef) { upd.orderId = ordRef.id; upd.orderAuto = false; if (!pid && ordRef.projectId) { upd.projectId = ordRef.projectId; upd.projectHint = ''; } if (!upd.supplier && !(inv && inv.supplier) && ordRef.supplier) upd.supplier = ordRef.supplier; }
   else if (refx && !(inv && inv.ref)) upd.ref = refx;
+  // Renglones tachados a mano (se devolvieron o se cambiaron): se anotan, el impreso queda aparte y, si hay un total corregido a mano, ese es el que se paga.
+  const tach = (Array.isArray(o.tachados) ? o.tachados : []).map((x) => ({ desc: s(x && x.descripcion, 120), amount: parseAmount(s(x && x.monto, 40)) })).filter((x) => x.desc || isNum(x.amount)).slice(0, 40).map((x) => ({ desc: x.desc, amount: isNum(x.amount) && x.amount >= 0 && x.amount < 1e12 ? round2(x.amount) : null }));
+  const fixed = parseAmount(s(o.total_corregido, 40));
+  const printed = isNum(upd.amount) ? upd.amount : inv && isNum(inv.amount) ? inv.amount : null;
+  const hasFix = isNum(fixed) && fixed > 0 && fixed < 1e12 && printed != null && Math.abs(fixed - printed) >= 0.01;
+  if (tach.length || hasFix) {
+    upd.struck = tach; upd.struckOk = false; upd.struckFixed = hasFix; upd.printedTotal = printed;
+    if (hasFix && !keep('amount')) upd.amount = round2(fixed);
+  }
   const crefs = (s(o.conduces, 300).match(/\d{3,12}/g) || []).slice(0, 40);
   if (crefs.length) upd.conduceRefs = crefs;
   return signAmounts(upd, inv);
@@ -4057,6 +4172,70 @@ async function undoCrop(invId) {
   if (await write(() => db.doc('invoices/' + invId).update({ fileId: i.origFileId, fileType: 'image/jpeg', thumbId: null, origFileId: null }), 'Volvió la foto original') && cur !== i.origFileId) assets.delete(cur).catch(() => {});
 }
 
+/* ---------- artículos tachados (devueltos o cambiados) ---------- */
+// A veces el plomero (o quien sea) devolvió o cambió algo y en la factura lo tacharon a mano: eso no se paga.
+// Se anota qué se tachó y cuánto, el total impreso se guarda aparte y el monto a pagar queda rebajado.
+const struckSum = (i) => round2((i.struck || []).reduce((s, x) => s + (isNum(x.amount) ? x.amount : 0), 0));
+const struckPending = (i) => !!((i.struck || []).length || i.struckFixed) && !i.struckOk;
+function tachHTML(i, edit) {
+  const list = i.struck || [];
+  if (!list.length && !i.struckFixed && !edit) return '';
+  const cur = i.currency;
+  const sum = struckSum(i);
+  const official = i.fiscal === 'qr' || i.fiscal === 'xml';
+  const base = isNum(i.printedTotal) ? i.printedTotal : i.amount;
+  const rows = list.map((x, k) => `<div class="ab-row"><span>${esc(x.desc || 'Artículo tachado')}</span><b class="mono">${isNum(x.amount) ? esc(money(x.amount, cur)) : 'sin monto'}</b>${edit ? `<button type="button" class="icon-btn plain" data-act="tc-rm" data-id="${esc(i.id)}" data-k="${k}" aria-label="Quitar">${ICON.close}</button>` : ''}</div>`).join('');
+  let calc = '';
+  if (isNum(base) && sum > 0) {
+    const net = round2(base - sum), netTax = isNum(i.itbis) && i.itbis > 0 ? round2(base - sum * 1.18) : null;
+    calc = `<p class="usage">Total impreso ${esc(money(base, cur))} − tachado ${esc(money(sum, cur))} = <b>${esc(money(net, cur))}</b>${netTax != null ? `. Si los precios de los renglones no traen el ITBIS, con el 18 % queda en ${esc(money(netTax, cur))}` : ''}.</p>`;
+    if (official) calc += `<div class="msg warn">${ICON.alert}<span>Es una factura electrónica: el monto es el que registró la DGII. Para que baje, pídele al proveedor la nota de crédito.</span></div>`;
+    else if (edit) calc += `<div class="actions"><button type="button" class="btn sm${Math.abs(i.amount - net) < 0.005 ? '' : ' primary'}" data-act="tc-apply" data-id="${esc(i.id)}" data-v="${net}">A pagar ${esc(money(net, cur))}</button>${netTax != null ? `<button type="button" class="btn sm" data-act="tc-apply" data-id="${esc(i.id)}" data-v="${netTax}">A pagar ${esc(money(netTax, cur))} (con ITBIS)</button>` : ''}</div>`;
+  } else if (i.struckFixed && isNum(i.printedTotal)) calc = `<p class="usage">El total se corrigió a mano: el impreso era ${esc(money(i.printedTotal, cur))} y el corregido es ${esc(money(i.amount, cur))}.</p>`;
+  const state = struckPending(i)
+    ? `<div class="msg warn">${ICON.alert}<span>Tiene artículos tachados: revisa que el total a pagar sea el de lo que de verdad se quedó.</span>${edit ? `<button type="button" class="btn sm" data-act="tc-ok" data-id="${esc(i.id)}">El monto está bien</button>` : ''}</div>`
+    : list.length || i.struckFixed ? `<p class="usage">Monto revisado.</p>` : '';
+  const add = edit ? `<div class="ab-add"><input id="tc-desc" maxlength="120" placeholder="Qué se tachó (ej. 2 codos de 1/2)" aria-label="Artículo tachado"><input id="tc-amt" class="mono" inputmode="decimal" maxlength="18" placeholder="Monto" aria-label="Monto del artículo"><button type="button" class="btn sm" data-act="tc-add" data-id="${esc(i.id)}">${ICON.plus} Anotar</button></div>` : '';
+  const note = edit ? `<div class="field"><label for="tc-note">Quién lo devolvió o lo cambió, y por qué</label><input id="tc-note" maxlength="120" value="${esc(i.struckNote || '')}" placeholder="Ej. el plomero los cambió por codos de 3/4"></div>` : i.struckNote ? `<p class="usage">${esc(i.struckNote)}</p>` : '';
+  const sumTxt = list.length ? ` · ${list.length} · ${money(sum, cur)}` : i.struckFixed ? ' · total corregido a mano' : '';
+  return `<details class="edit" id="inv-tach"${list.length || i.struckFixed ? ' open' : ''}><summary>Artículos tachados (devueltos o cambiados)${esc(sumTxt)}</summary><div class="ab-box">${rows || (i.struckFixed ? '' : '<p class="hint">Si en la factura tacharon algo porque se devolvió o se cambió por otra cosa, anótalo aquí: no se paga lo tachado.</p>')}${state}${calc}${add}${note}</div></details>`;
+}
+function refreshTach(invId) {
+  setTimeout(() => {
+    const box = $('#inv-tach');
+    if (!box || !S.sheet || S.sheet.type !== 'inv' || S.sheet.id !== invId) return;
+    const i = derive().invoices.find((x) => x.id === invId);
+    if (i) box.outerHTML = tachHTML(i, canEdit());
+  }, 150);
+}
+async function addTach(invId) {
+  const raw = S.invoices.find((x) => x.id === invId);
+  if (!raw) return;
+  const desc = $('#tc-desc').value.trim().slice(0, 120), amt = parseAmount($('#tc-amt').value);
+  if (!desc && !isNum(amt)) { toast('Escribe qué se tachó y su monto.'); return; }
+  const upd = { struck: [...(raw.struck || []), { desc, amount: isNum(amt) && amt >= 0 ? round2(amt) : null }].slice(0, 40), struckOk: false };
+  if (!isNum(raw.printedTotal) && isNum(raw.amount)) upd.printedTotal = raw.amount;
+  if (await write(() => db.doc('invoices/' + invId).update(upd), 'Anotado')) refreshTach(invId);
+}
+async function removeTach(invId, k) {
+  const raw = S.invoices.find((x) => x.id === invId);
+  if (!raw || !raw.struck || !raw.struck[k]) return;
+  const struck = raw.struck.filter((_, j) => j !== k);
+  if (await write(() => db.doc('invoices/' + invId).update({ struck, ...(struck.length || raw.struckFixed ? {} : { struckOk: false, printedTotal: null }) }), 'Quitado')) refreshTach(invId);
+}
+async function applyTach(invId, v) {
+  const raw = S.invoices.find((x) => x.id === invId);
+  if (!raw || !isNum(v) || v < 0) return;
+  const upd = { amount: round2(v), struckOk: true };
+  if (!isNum(raw.printedTotal) && isNum(raw.amount)) upd.printedTotal = raw.amount;
+  upd.hist = histAdd(raw, histEntry('Rebajada por artículos tachados', histDiff(raw, upd)));
+  if (await write(() => db.doc('invoices/' + invId).update(upd), `A pagar: ${money(upd.amount, raw.currency)}`)) {
+    const f = $('#f-amt');
+    if (f && S.sheet && S.sheet.id === invId) f.value = amountInput(upd.amount);
+    refreshTach(invId);
+  }
+}
+
 /* ---------- abonos (pagos parciales) ---------- */
 function abonosHTML(i, edit) {
   if (!isNum(i.amount) || i.amount <= 0) return '';
@@ -4293,7 +4472,7 @@ const rawDoc = (o) => { const { id, ...rest } = o; return rest; };
 function toTrash(kind, doc, label, extra = {}) {
   return db.collection('papelera').doc().set({ kind, srcId: doc.id, data: rawDoc(doc), label: String(label || '').slice(0, 160), extra, deletedAt: new Date().toISOString() });
 }
-const trashFiles = (e) => { const d = e.data || {}; return [d.fileId, d.thumbId, d.xmlId, d.origFileId, d.signedFileId, d.signedThumbId, ...(d.extraPages || []).flatMap((x) => [x.fileId, x.thumbId])].filter(Boolean); };
+const trashFiles = (e) => { const d = e.data || {}; return [d.fileId, d.thumbId, d.xmlId, d.origFileId, d.signedFileId, d.signedThumbId, d.outPhotoId, d.inPhotoId, ...(d.extraPages || []).flatMap((x) => [x.fileId, x.thumbId])].filter(Boolean); };
 const trashLeft = (e) => Math.max(0, TRASH_DAYS - Math.floor((Date.now() - (Date.parse(e.deletedAt || '') || 0)) / 864e5));
 async function restoreTrash(entryId) {
   const e = S.papelera.find((x) => x.id === entryId);
@@ -5506,6 +5685,10 @@ function onClick(e) {
     case 'digi-one': digiOne(id, t); break;
     case 'digi-undo-one': digiUndoOne(id); break;
     case 'ab-add': addAbono(id); break;
+    case 'tc-add': addTach(id); break;
+    case 'tc-rm': removeTach(id, Number(t.dataset.k)); break;
+    case 'tc-apply': applyTach(id, Number(t.dataset.v)); break;
+    case 'tc-ok': write(() => db.doc('invoices/' + id).update({ struckOk: true }), 'Listo: monto revisado').then((ok) => { if (ok) refreshTach(id); }); break;
     case 'ab-rm': removeAbono(id, Number(t.dataset.k)); break;
     case 'crop-open': openCrop(id); break;
     case 'crop-rot': rotateCrop(); break;
@@ -5546,7 +5729,12 @@ function onClick(e) {
     case 'tr-open': openTraslado(id); break;
     case 'tr-add-item': { addItemRow({}, '#t-items'); const rows = $$('#t-items [data-row]'); const last = rows[rows.length - 1]; if (last) last.querySelector('[data-f="qty"]').focus(); if (S.sheet) S.sheet.dirty = true; break; }
     case 'tr-pdf': trPdfAction(); break;
-    case 'tr-signed': $('#signed-input').click(); break;
+    case 'tr-signed': S.trPhotoKind = 'signed'; $('#signed-input').click(); break;
+    case 'tr-photo': S.trPhotoKind = t.dataset.k; $('#signed-input').click(); break;
+    case 'tr-photo-view': { const x = S.traslados.find((y) => y.id === id), k = t.dataset.k; if (x && x[k + 'PhotoId']) showFile({ title: trNo(x) + (k === 'out' ? ' al salir' : ' al llegar'), fileId: x[k + 'PhotoId'], fileType: x[k + 'PhotoType'] }); break; }
+    case 'tr-recv-open': { const bx = $('#tr-recv-box'); if (bx) { bx.hidden = false; const f1 = bx.querySelector('[data-rq]'); if (f1) f1.focus(); } break; }
+    case 'tr-recv-save': saveTrRecv(id); break;
+    case 'tr-short-ok': { const note = ($('#tr-short-note') || {}).value || ''; write(() => db.doc('traslados/' + id).update({ shortOk: true, shortNote: note.trim().slice(0, 120), updatedAt: new Date().toISOString() }), 'Diferencia aclarada').then((ok) => { if (ok) refreshTrRecv(id); }); break; }
     case 'tr-view-signed': { const x = S.traslados.find((y) => y.id === id); if (x && x.signedFileId) showFile({ title: trNo(x) + ' firmado', fileId: x.signedFileId, fileType: x.signedFileType }); break; }
     case 'tr-del': deleteTr(id); break;
     case 'tr-acc': openTrAccount(t.dataset.a, t.dataset.b); break;
@@ -5658,6 +5846,7 @@ function onChange(e) {
   if (t.id === 't-from' || t.id === 't-to') trFormRefresh();
   if (t.id === 'tp-from' || t.id === 'tp-to') tpRefresh();
   if (t.dataset && t.dataset.wf) saveWorkerField(t);
+  if (t.id === 'tc-note' && S.sheet && S.sheet.type === 'inv' && S.sheet.id) write(() => db.doc('invoices/' + S.sheet.id).update({ struckNote: t.value.trim().slice(0, 120) }));
   if ((t.id === 'att-in' || t.id === 'att-out') && S.attSheet) write(() => db.doc('asistencia/' + S.attSheet).update({ [t.id === 'att-in' ? 'entryLimit' : 'exitFrom']: t.value.trim().slice(0, 8) }), 'Guardado');
   if (t.id === 'att-ptime' && S.attSheet) { const sh = S.asistencia.find((x) => x.id === S.attSheet); const v = t.value.replace(/^0(\d)/, '$1'); if (sh) attEdit(sh, (m, sp) => { if (v) sp[S.attDay] = v; else delete sp[S.attDay]; }); }
   if (t.id === 'f-month') {
@@ -5702,14 +5891,14 @@ function onInput(e) {
   if (t.id === 'o-search') { S.orderSearch = t.value; renderAll(); return; }
   if (t.id === 'c-search') { S.condSearch = t.value; renderAll(); return; }
   if (t.id === 't-search') { S.trSearch = t.value; renderAll(); return; }
-  if (S.sheet && S.sheet.type === 'tr' && t.closest && t.closest('#tr-form')) { S.sheet.dirty = true; if (t.dataset && t.dataset.f === 'price') delete t.dataset.src; if (t.closest('#t-items')) trFormRefresh(); }
+  if (S.sheet && S.sheet.type === 'tr' && t.closest && t.closest('#tr-form') && !t.closest('#tr-recv')) { S.sheet.dirty = true; if (t.dataset && t.dataset.f === 'price') delete t.dataset.src; trFormRefresh(); }
   if (t.id === 'tp-amt') tpRefresh();
   if (t.id === 'pay-ret-note' && S.payRet) S.payRet.note = t.value;
   if (t.id === 'o-link-q') { const r = $('#o-link-results'); if (r) r.innerHTML = orderLinkResultsHTML(t.dataset.order, t.value); return; }
   if (S.sheet && S.sheet.type === 'order' && t.closest && t.closest('#order-form') && t.id !== 'o-msg') S.sheet.dirty = true;
   if (t.closest && t.closest('#o-items') && $('#o-est')) $('#o-est').textContent = estText(collectItems());
   if (t.id === 'f-rnc' || t.id === 'f-num') liveHelp(t);
-  if (S.sheet && S.sheet.type === 'inv' && t.closest && t.closest('#inv-form') && !String(t.id || '').startsWith('ab-') && !(t.dataset && t.dataset.cpick)) S.sheet.dirty = true;
+  if (S.sheet && S.sheet.type === 'inv' && t.closest && t.closest('#inv-form') && !/^(ab|tc)-/.test(String(t.id || '')) && !(t.dataset && t.dataset.cpick)) S.sheet.dirty = true;
   if (S.sheet && S.sheet.type === 'cond' && t.closest && t.closest('#cond-form')) S.sheet.dirty = true;
 }
 function onSubmit(e) {
@@ -5772,7 +5961,7 @@ function bind() {
   document.addEventListener('keydown', onKeys);
   $('#file-input').addEventListener('change', (e) => { const files = [...e.target.files]; e.target.value = ''; if (files.length) addFiles(files); });
   $('#restore-input').addEventListener('change', (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) restoreBackup(f); });
-  $('#signed-input').addEventListener('change', (e) => { const f = e.target.files[0]; e.target.value = ''; if (f && S.sheet && S.sheet.type === 'order' && S.sheet.id) attachSigned(S.sheet.id, f); else if (f && S.sheet && S.sheet.type === 'tr' && S.sheet.id) attachTrSigned(S.sheet.id, f); });
+  $('#signed-input').addEventListener('change', (e) => { const f = e.target.files[0]; e.target.value = ''; if (f && S.sheet && S.sheet.type === 'order' && S.sheet.id) attachSigned(S.sheet.id, f); else if (f && S.sheet && S.sheet.type === 'tr' && S.sheet.id) { attachTrSigned(S.sheet.id, f, S.trPhotoKind || 'signed'); S.trPhotoKind = null; } });
   $('#page-input').addEventListener('change', (e) => { const files = [...e.target.files]; e.target.value = ''; const inv = pageTarget; pageTarget = null; if (files.length && inv) addPages(inv, files); });
   $('#cond-input').addEventListener('change', (e) => { const files = [...e.target.files]; e.target.value = ''; const inv = condTarget; condTarget = null; if (files.length) addConduceFiles(files, inv); });
   $('#fill-photo-input').addEventListener('change', (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) fillOrderFromMessage(null, f); });
