@@ -10,7 +10,7 @@ const LIB = {
   qrgen: 'js/qr.js',
 };
 const PDF_CREATOR = 'Facturas de Proyectos';
-const APP_VERSION = '1.20.0';
+const APP_VERSION = '1.21.0';
 const SVG = (d) => `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ICON = {
   lock: SVG('<rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>'),
@@ -96,8 +96,8 @@ const DEFAULT_ORDER_NOTE = 'Toda factura recibida por compras deberá estar acom
 
 const S = {
   tab: 'facturas', filter: 'pendientes', projectFilter: 'all', search: '', paymentId: null,
-  projects: [], invoices: [], payments: [], orders: [], conduces: [], workers: [], asistencia: [], suppliers: [], envios: [], papelera: [], settings: {}, attRules: {}, digi: {}, bk: {}, envioPending: null, got: { projects: false, invoices: false, payments: false, orders: false, conduces: false, workers: false, asistencia: false, suppliers: false, envios: false, papelera: false },
-  attProject: '', attSheet: '', attDay: 0, orderFilter: 'todas', orderSearch: '', orderProject: 'all', condFilter: 'esperando', condSearch: '', condProject: 'all', sort: { inv: null, cond: null, ord: null }, sel: new Set(), todoAll: false, focus: null, invOrder: 'all', dateFilter: '', dateFrom: '', dateTo: '', showAll: new Set(),
+  projects: [], invoices: [], payments: [], orders: [], conduces: [], workers: [], asistencia: [], suppliers: [], envios: [], papelera: [], traslados: [], settings: {}, attRules: {}, digi: {}, bk: {}, envioPending: null, got: { projects: false, invoices: false, payments: false, orders: false, conduces: false, workers: false, asistencia: false, suppliers: false, envios: false, papelera: false, traslados: false },
+  attProject: '', attSheet: '', attDay: 0, orderFilter: 'todas', orderSearch: '', orderProject: 'all', condFilter: 'esperando', condSearch: '', condProject: 'all', trProject: 'all', trSearch: '', sort: { inv: null, cond: null, ord: null, tr: null }, sel: new Set(), todoAll: false, focus: null, invOrder: 'all', dateFilter: '', dateFrom: '', dateTo: '', showAll: new Set(),
   dbState: 'loading', aiState: 'ok', queue: [], sheet: null, payDel: false, busyPdf: false, pdfMsg: '',
   updateReg: null, updating: false, ready: null, restoreFile: null,
 };
@@ -544,13 +544,14 @@ function projCosts(p, D) {
   const other = invs.filter((i) => normCur(i.currency) !== 'DOP' && isNum(i.amount));
   const labor = laborCost(p.id);
   const pendingOrders = round2(D.orders.filter((o) => o.projectId === p.id && o.status !== 'anulada' && !(D.invByOrder.get(o.id) || []).length).reduce((t, o) => t + (orderEst(o) || 0), 0));
-  return { dop, other, labor, pendingOrders, total: round2(dop + labor) };
+  const tr = trOfProject(p.id);
+  return { dop, other, labor, pendingOrders, trIn: tr.inn, trOut: tr.out, total: round2(dop + labor + tr.inn - tr.out) };
 }
 function budgetHTML(p, D) {
   const c = projCosts(p, D);
   const b = isNum(p.budget) && p.budget > 0 ? p.budget : null;
   const pct = b ? Math.round((c.total / b) * 100) : null;
-  return `<div class="card budget"><div class="b-top"><span>Gastado${b ? ` · ${pct} %` : ''}</span><b>${esc(money(c.total))}</b></div>${b ? `<div class="b-bar"><i style="width:${Math.min(100, pct)}%" class="${pct > 100 ? 'over' : pct >= 85 ? 'near' : ''}"></i></div><small>de ${esc(money(b))} · ${c.total > b ? 'se pasó por ' + esc(money(round2(c.total - b))) : 'quedan ' + esc(money(round2(b - c.total)))}</small>` : ''}<small>Facturas ${esc(money(c.dop))}${c.labor ? ' · mano de obra ' + esc(money(c.labor)) : ''}${c.other.length ? ' · más ' + esc(totalStr(c.other)) : ''}${c.pendingOrders ? ' · órdenes por facturar ' + esc(money(c.pendingOrders)) : ''}</small></div>`;
+  return `<div class="card budget"><div class="b-top"><span>Gastado${b ? ` · ${pct} %` : ''}</span><b>${esc(money(c.total))}</b></div>${b ? `<div class="b-bar"><i style="width:${Math.min(100, pct)}%" class="${pct > 100 ? 'over' : pct >= 85 ? 'near' : ''}"></i></div><small>de ${esc(money(b))} · ${c.total > b ? 'se pasó por ' + esc(money(round2(c.total - b))) : 'quedan ' + esc(money(round2(b - c.total)))}</small>` : ''}<small>Facturas ${esc(money(c.dop))}${c.labor ? ' · mano de obra ' + esc(money(c.labor)) : ''}${c.other.length ? ' · más ' + esc(totalStr(c.other)) : ''}${c.trIn ? ' · materiales de otras obras ' + esc(money(c.trIn)) : ''}${c.trOut ? ' · materiales dados a otras obras −' + esc(money(c.trOut)) : ''}${c.pendingOrders ? ' · órdenes por facturar ' + esc(money(c.pendingOrders)) : ''}</small></div>`;
 }
 function ncfExpired(i) { return !!(i.ncfExpiry && ymd(i.ncfExpiry) && i.date && ymd(i.date) && i.date > i.ncfExpiry); }
 const sortByDateDesc = (a, b) => String(b.date || '').localeCompare(String(a.date || '')) || String(b.createdAt || '').localeCompare(String(a.createdAt || ''));
@@ -755,13 +756,14 @@ function onKeys(e) {
   }
   if (typing || S.sheet || !$('#viewer').hidden) return;
   if (e.key === '/') {
-    const box = { facturas: '#f-search', conduces: '#c-search', ordenes: '#o-search' }[S.tab];
+    const box = { facturas: '#f-search', conduces: '#c-search', ordenes: '#o-search', traslados: '#t-search' }[S.tab];
     if (box && $(box)) { e.preventDefault(); $(box).focus(); }
   } else if (e.key === 'n' || e.key === 'N') {
     if (!canEdit()) return;
     if (S.tab === 'facturas' && canUpload()) { e.preventDefault(); pickFiles(); }
     else if (S.tab === 'conduces' && canUpload()) { e.preventDefault(); condTarget = null; $('#cond-input').click(); }
     else if (S.tab === 'ordenes') { e.preventDefault(); $('#o-new').click(); }
+    else if (S.tab === 'traslados' && S.projects.length > 1) { e.preventDefault(); openTraslado(null); }
   }
 }
 const deviceWord = () => (wide() ? 'esta computadora' : 'este teléfono');
@@ -776,17 +778,18 @@ async function measureStorage() {
 function renderAll() {
   const D = derive();
   $$('.tabs [data-tab]').forEach((b) => { if (b.dataset.tab === S.tab) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current'); });
-  { const m = $('.tabs .more-tab'); if (m) { if (S.tab === 'asistencia' || S.tab === 'proyectos') m.setAttribute('aria-current', 'page'); else m.removeAttribute('aria-current'); } }
-  for (const t of ['facturas', 'conduces', 'ordenes', 'pagos', 'asistencia', 'proyectos']) $('#v-' + t).hidden = S.tab !== t;
+  { const m = $('.tabs .more-tab'); if (m) { if (S.tab === 'asistencia' || S.tab === 'proyectos' || S.tab === 'traslados') m.setAttribute('aria-current', 'page'); else m.removeAttribute('aria-current'); } }
+  for (const t of ['facturas', 'conduces', 'ordenes', 'traslados', 'pagos', 'asistencia', 'proyectos']) $('#v-' + t).hidden = S.tab !== t;
   const pay = S.tab === 'pagos' && S.paymentId ? S.payments.find((p) => p.id === S.paymentId) : null;
   $('#back').hidden = !pay;
-  $('#title').textContent = pay ? (pay.name || 'Pago') : { facturas: 'Facturas', conduces: 'Conduces', ordenes: 'Órdenes', pagos: 'Pagos', asistencia: 'Pase de lista', proyectos: 'Proyectos' }[S.tab];
+  $('#title').textContent = pay ? (pay.name || 'Pago') : { facturas: 'Facturas', conduces: 'Conduces', ordenes: 'Órdenes', pagos: 'Pagos', asistencia: 'Pase de lista', proyectos: 'Proyectos', traslados: 'Traslados' }[S.tab];
   renderBanner(D);
   if (S.tab === 'facturas') renderFacturas(D);
   else if (S.tab === 'ordenes') renderOrdenes(D);
   else if (S.tab === 'pagos') renderPagos(D, pay);
   else if (S.tab === 'asistencia') renderAsistencia(D);
   else if (S.tab === 'conduces') renderConduces(D);
+  else if (S.tab === 'traslados') renderTraslados(D);
   else renderProyectos(D);
   // En Conduces, el botón de abajo agrega conduces.
   const fab = $('#fab'), condTab = S.tab === 'conduces';
@@ -799,6 +802,7 @@ function renderAll() {
   refreshInvoiceSheet(D);
   refreshOrderSheet(D);
   refreshCondSheet(D);
+  refreshTrSheet();
 }
 
 function renderBanner(D) {
@@ -946,6 +950,7 @@ function openMoreMenu() {
   openSheet(`${sheetHead('Más')}<div class="sheet-b"><div class="menu-list">
     ${row('data-act="go-tab" data-go="asistencia"', IC('<rect x="4" y="4" width="16" height="17" rx="2"/><path d="M8 2.5v3M16 2.5v3M8 13l2.5 2.5L16 10"/>'), 'Pase de lista', 'Asistencia de los obreros, por quincena')}
     ${row('data-act="go-tab" data-go="proyectos"', IC('<path d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2h8.5A1.5 1.5 0 0 1 21 9.5v8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z"/>'), 'Proyectos', 'Obras, presupuesto y lo gastado')}
+    ${row('data-act="go-tab" data-go="traslados"', IC('<path d="M4 8h14l-3.5-3.5M20 16H6l3.5 3.5"/>'), 'Traslados de materiales', 'De una obra a otra, y lo que se deben')}
     ${row('data-act="sups"', IC('<path d="M4 20V9l8-5 8 5v11"/><path d="M9 20v-6h6v6"/>'), 'Proveedores', 'Crédito, banco y cuenta de cada uno')}
     ${row('data-act="digi-open"', IC('<path d="M4 6h16v12H4z"/><path d="M4 7l8 6 8-6"/>'), 'Digitadora', 'Lo que falta por mandar y los envíos')}
     ${row('data-act="trash-open"', ICON.trash, 'Papelera', S.papelera.length ? plural(S.papelera.length, 'cosa', 'cosas') + ' para recuperar' : 'Lo borrado se queda aquí 30 días')}
@@ -1206,6 +1211,503 @@ function renderOrdenes(D) {
     const toSign = g.items.filter((o) => o.status === 'borrador' || o.status === 'enviada').length;
     return `<section class="group"><h2 class="group-h">${g.color ? `<i class="dot" style="--c:${g.color}"></i>` : '<i class="dot ring"></i>'}<span class="gname">${esc(g.name)}</span><span class="gmeta">${esc([plural(g.items.length, 'orden', 'órdenes'), toSign && S.orderFilter !== 'porfirmar' ? `${toSign} por firmar` : ''].filter(Boolean).join(' · '))}</span></h2>${wide() ? orderTableHTML(g.items, D) : `<div class="list">${g.items.map((o) => orderCardHTML(o, D, { hideProject: true })).join('')}</div>`}</section>`;
   }).join('');
+}
+
+/* ---------- traslados de materiales entre obras ---------- */
+// Cuando se sacan materiales de una obra y se llevan a otra (por ejemplo, 3 m³ de tierra del ENZO para el Monaco): la hoja
+// de traslado (qué, cuánto, a qué precio, quién lo pidió, lo autorizó, lo entregó, se lo llevó y lo recibió) y la cuenta
+// entre las dos obras. En la cuenta, la obra que entrega (materiales o dinero) queda con eso a su favor: la que recibió
+// los materiales le debe a la que los entregó, y un pago entre obras (o una compensación) rebaja esa deuda.
+// Muchos materiales ya estaban en la obra y no tienen orden de compra: el precio se escribe a mano (el acordado); la app
+// solo lo sugiere si ya lo conoce de otro traslado o de una orden, y anota de dónde salió.
+const trNo = (t) => (t && Number(t.number) > 0 ? 'TR-' + String(t.number).padStart(4, '0') : 'Traslado nuevo');
+const nextTrNumber = () => S.traslados.reduce((m, t) => (Number(t.number) > m ? Number(t.number) : m), 0) + 1;
+const trProj = (id) => { const p = S.projects.find((x) => x.id === id); return p ? p.name : 'obra borrada'; };
+const isTrPago = (t) => !!t && t.kind === 'pago';
+const trLine = (it) => (isNum(it.qty) && isNum(it.price) ? round2(it.qty * it.price) : null);
+const trTotal = (items) => round2((items || []).reduce((s, it) => s + (trLine(it) || 0), 0));
+const trNoPrice = (items) => (items || []).filter((it) => trLine(it) == null).length;
+const trWhen = (t) => String(t.date || '') + '|' + String(t.createdAt || '');
+const trSigned = (t) => !!(t && t.signedFileId);
+// Cuentas entre obras: por cada par, lo que entregó una menos lo que entregó la otra.
+function trAccounts(list = S.traslados) {
+  const m = new Map();
+  for (const t of list) {
+    if (!t.fromId || !t.toId || t.fromId === t.toId || !isNum(t.total) || !t.total) continue;
+    const [a, b] = [t.fromId, t.toId].sort();
+    const k = a + '|' + b;
+    if (!m.has(k)) m.set(k, { a, b, net: 0, moves: [] });
+    const acc = m.get(k);
+    acc.net = round2(acc.net + (t.fromId === a ? 1 : -1) * t.total);
+    acc.moves.push(t);
+  }
+  return [...m.values()].map((x) => {
+    x.moves.sort((p, q) => trWhen(p).localeCompare(trWhen(q)));
+    const last = x.moves[x.moves.length - 1];
+    return { ...x, last: last ? last.date : '', creditor: x.net >= 0 ? x.a : x.b, debtor: x.net >= 0 ? x.b : x.a, amount: Math.abs(x.net) };
+  }).sort((p, q) => q.amount - p.amount);
+}
+const trAccOf = (a, b, list) => trAccounts(list).find((x) => (x.a === a && x.b === b) || (x.a === b && x.b === a)) || null;
+const trOwes = (x) => `${trProj(x.debtor)} le debe ${money(x.amount)} a ${trProj(x.creditor)}`;
+// Lo que una obra recibió y dio en materiales (cambia lo que cuesta cada obra).
+function trOfProject(pid) {
+  let inn = 0, out = 0;
+  for (const t of S.traslados) if (!isTrPago(t) && isNum(t.total)) { if (t.toId === pid) inn += t.total; if (t.fromId === pid) out += t.total; }
+  return { inn: round2(inn), out: round2(out) };
+}
+// El último precio conocido de un material: de un traslado anterior o de una orden de compra.
+function lastPriceOf(desc, skipId) {
+  const k = norm(desc);
+  if (!k) return null;
+  const byDate = (a, b) => String(b.date || '').localeCompare(String(a.date || ''));
+  const pools = [
+    ...S.traslados.filter((t) => !isTrPago(t) && t.id !== skipId).sort(byDate).map((t) => ({ items: t.items, src: trNo(t) })),
+    ...[...S.orders].sort(byDate).map((o) => ({ items: o.items, src: orderNo(o) })),
+  ];
+  for (const p of pools) for (const it of p.items || []) if (isNum(it.price) && it.price > 0 && norm(it.desc) === k) return { price: it.price, unit: it.unit || '', src: p.src };
+  return null;
+}
+const trPriceSrc = (it) => (trLine(it) == null ? 'Sin precio' : it.priceSrc ? 'Precio de ' + it.priceSrc : 'Escrito a mano');
+
+// Apartado Traslados: las cuentas entre obras arriba y la lista de traslados y pagos.
+const trAccRowHTML = (x, edit) => `<div class="tr-acc-row"><div class="grow"><span><b>${esc(trProj(x.debtor))}</b> le debe a <b>${esc(trProj(x.creditor))}</b></span><small>A favor de ${esc(trProj(x.creditor))} · ${plural(x.moves.length, 'movimiento', 'movimientos')}${x.last ? ' · el último el ' + esc(fmtDate(x.last)) : ''}</small></div><b class="mono tr-amt">${esc(money(x.amount))}</b><div class="acts"><button type="button" class="btn sm" data-act="tr-acc" data-a="${esc(x.creditor)}" data-b="${esc(x.debtor)}">Ver la cuenta</button>${edit ? `<button type="button" class="btn sm" data-act="tr-pay" data-from="${esc(x.debtor)}" data-to="${esc(x.creditor)}">Registrar pago</button>` : ''}</div></div>`;
+const trPill = (t) => (isTrPago(t) ? '<span class="pill pagada">Pago</span>' : `<span class="pill ${trSigned(t) ? 'o-autorizada' : 'o-enviada'}">${trSigned(t) ? 'Firmado' : 'Sin firmar'}</span>`);
+function trWhat(t) {
+  if (isTrPago(t)) return [t.notes || ''].filter(Boolean).join('');
+  const its = t.items || [], it = its[0];
+  if (!it) return '';
+  return `${it.qty !== '' && it.qty != null ? fmtQty(it.qty) + ' ' : ''}${it.unit ? it.unit + ' ' : ''}${it.desc || ''}`.trim() + (its.length > 1 ? ` y ${plural(its.length - 1, 'material', 'materiales')} más` : '');
+}
+function trCardHTML(t) {
+  if (isTrPago(t)) return `<button type="button" class="ord tr-card" data-act="tr-open" data-id="${esc(t.id)}"><span class="ord-top"><b>Pago entre obras</b>${trPill(t)}</span><span class="ord-sup">${esc(trProj(t.fromId))} le pagó a ${esc(trProj(t.toId))}</span><span class="ord-meta">${esc([fmtDate(t.date), money(t.total || 0), t.notes || ''].filter(Boolean).join(' · '))}</span></button>`;
+  const np = trNoPrice(t.items);
+  return `<button type="button" class="ord tr-card" data-act="tr-open" data-id="${esc(t.id)}"><span class="ord-top"><b class="mono">${esc(trNo(t))}</b>${trPill(t)}</span><span class="ord-sup">${esc(trProj(t.fromId))} → ${esc(trProj(t.toId))}</span><span class="ord-meta">${esc([fmtDate(t.date), trWhat(t), money(t.total || 0), np ? np + ' sin precio' : ''].filter(Boolean).join(' · '))}</span></button>`;
+}
+function trTableHTML(list) {
+  const val = (t, k) => (k === 'total' ? (isNum(t.total) ? t.total : -Infinity) : k === 'date' ? trWhen(t) : k === 'from' ? norm(trProj(t.fromId)) : k === 'to' ? norm(trProj(t.toId)) : isTrPago(t) ? 0 : Number(t.number) || 0);
+  const rows = sortRows('tr', list, val).map((t) => `<tr data-act="tr-open" data-id="${esc(t.id)}"><td class="c-main"><button type="button" class="row-btn mono" data-act="tr-open" data-id="${esc(t.id)}">${esc(isTrPago(t) ? 'Pago' : trNo(t))}</button></td><td>${esc(fmtDate(t.date) || '—')}</td><td>${esc(trProj(t.fromId))}</td><td>${esc(trProj(t.toId))}</td><td class="c-what">${esc(trWhat(t) || '—')}</td><td>${trPill(t)}</td><td class="r mono">${esc(money(t.total || 0))}</td></tr>`).join('');
+  return `<table class="tbl tr-tbl"><colgroup><col class="w-ord"><col class="w-date"><col class="w-cmain"><col class="w-cmain"><col><col class="w-st"><col class="w-amt"></colgroup><thead><tr>${thHTML('tr', 'number', 'No.')}${thHTML('tr', 'date', 'Fecha')}${thHTML('tr', 'from', 'Sale de')}${thHTML('tr', 'to', 'Va para')}${thHTML('tr', '', 'Materiales o pago')}${thHTML('tr', '', 'Estado')}${thHTML('tr', 'total', 'Total', 'r')}</tr></thead><tbody>${rows}</tbody></table>`;
+}
+function renderTraslados(D) {
+  const el = $('#t-list'), edit = canEdit();
+  $('#t-new').hidden = !edit || D.projects.length < 2;
+  if (S.trProject !== 'all' && !D.projById.has(S.trProject) && S.got.projects) S.trProject = 'all';
+  if (!S.got.traslados || !S.got.projects) { $('#t-acc').innerHTML = ''; $('#t-bar').innerHTML = ''; el.innerHTML = S.dbState === 'absent' ? '' : '<p class="loading">Cargando traslados…</p>'; return; }
+  const inProj = (t) => S.trProject === 'all' || t.fromId === S.trProject || t.toId === S.trProject;
+  const accs = trAccounts().filter((x) => x.amount >= 0.01 && (S.trProject === 'all' || x.a === S.trProject || x.b === S.trProject));
+  $('#t-acc').innerHTML = S.traslados.length ? `<div class="card tr-acc"><h2>Cuentas entre obras</h2>${accs.length ? accs.map((x) => trAccRowHTML(x, edit)).join('') : `<p class="hint">${S.trProject === 'all' ? 'Las obras están a mano: ninguna le debe a otra.' : 'Esta obra está a mano con las demás.'}</p>`}</div>` : '';
+  $('#t-bar').innerHTML = S.traslados.length ? `<button type="button" class="btn sm" data-act="tr-xlsx">${ICON.sheet} Excel</button>${edit ? '<button type="button" class="btn sm ghost" data-act="tr-pay">Registrar pago entre obras</button>' : ''}` : '';
+  const ch = $('#t-chips');
+  const withTr = D.projects.filter((p) => S.traslados.some((t) => t.fromId === p.id || t.toId === p.id) || S.trProject === p.id);
+  if (withTr.length > 1) {
+    ch.hidden = false;
+    ch.innerHTML = [`<button type="button" class="chip" data-act="tr-projf" data-p="all" aria-pressed="${S.trProject === 'all'}"><span>Todas las obras</span></button>`, ...withTr.map((p) => `<button type="button" class="chip" data-act="tr-projf" data-p="${esc(p.id)}" aria-pressed="${S.trProject === p.id}"><i class="dot" style="--c:${p.color}"></i><span>${esc(p.name)}</span></button>`)].join('');
+  } else { ch.hidden = true; ch.innerHTML = ''; }
+  if (!S.traslados.length) {
+    el.innerHTML = D.projects.length < 2
+      ? '<div class="empty"><h2>Traslados de materiales</h2><p>Para pasar materiales de una obra a otra, primero agrega las dos obras en <b>Proyectos</b>.</p><button type="button" class="btn" data-act="go-tab" data-go="proyectos">Ir a Proyectos</button></div>'
+      : `<div class="empty"><h2>Traslados de materiales</h2><ol><li>Cuando saquen materiales de una obra para llevarlos a otra, toca <b>Nuevo traslado</b>: de qué obra salen, para cuál van, cada material con su cantidad, unidad y precio, y quién lo pidió, lo entregó, se lo llevó y lo recibió.</li><li>Saca la <b>hoja de traslado</b> en PDF para que la firmen, y después adjunta la foto firmada.</li><li>Aquí arriba sale la cuenta entre las obras: cuánto le debe una a la otra. Cuando se salde, toca <b>Registrar pago</b>.</li></ol>${edit ? '<button type="button" class="btn primary" data-act="tr-new">Nuevo traslado</button>' : ''}</div>`;
+    return;
+  }
+  const q = norm(S.trSearch);
+  let list = S.traslados.filter(inProj);
+  if (q) list = list.filter((t) => norm([trNo(t), isTrPago(t) ? 'pago' : 'traslado', trProj(t.fromId), trProj(t.toId), t.requestedBy, t.authorizedBy, t.deliveredBy, t.carriedBy, t.vehicle, t.receivedBy, t.notes, (t.items || []).map((x) => x.desc).join(' ')].join(' ')).includes(q));
+  list.sort((a, b) => trWhen(b).localeCompare(trWhen(a)) || (Number(b.number) || 0) - (Number(a.number) || 0));
+  if (!list.length) { el.innerHTML = `<div class="empty"><p>${q ? 'Nada coincide con tu búsqueda.' : 'Esta obra no tiene traslados.'}</p></div>`; return; }
+  const LIM = wide() ? 150 : 60, key = 'tr';
+  const shown = list.length <= LIM || S.showAll.has(key) ? list : list.slice(0, LIM);
+  el.innerHTML = (wide() ? trTableHTML(shown) : `<div class="list">${shown.map(trCardHTML).join('')}</div>`) + (shown.length < list.length ? `<button type="button" class="btn sm more" data-act="more" data-k="${key}">Ver ${list.length - shown.length} más</button>` : '');
+}
+
+// La hoja de traslado (formulario).
+const TR_PEOPLE = [['requestedBy', 't-req', 'Lo pidió'], ['authorizedBy', 't-auth', 'Lo autorizó'], ['deliveredBy', 't-dlv', 'Lo entregó'], ['carriedBy', 't-car', 'Se lo llevó (chofer o persona)'], ['vehicle', 't-veh', 'Vehículo o placa'], ['receivedBy', 't-rcv', 'Lo recibió']];
+function trPeopleLabel(k, fromId, toId) {
+  if (k === 'deliveredBy') return fromId ? 'Lo entregó en ' + trProj(fromId) : 'Lo entregó (en la obra de donde sale)';
+  if (k === 'receivedBy') return toId ? 'Lo recibió en ' + trProj(toId) : 'Lo recibió (en la obra a donde va)';
+  return (TR_PEOPLE.find((x) => x[0] === k) || ['', '', ''])[2];
+}
+function trSumText(items, fromId, toId) {
+  const list = (items || []).filter((x) => x.desc || (x.qty !== '' && x.qty != null));
+  if (!list.length) return 'Escribe la cantidad, la unidad (m³, metro, saco, viaje…), el precio por unidad y la descripción de cada material. Si ya estaba en la obra y no tiene orden de compra (la tierra, por ejemplo), escribe el precio acordado.';
+  const tot = trTotal(list), np = trNoPrice(list);
+  const who = fromId && toId && fromId !== toId && tot ? ` Con este traslado, ${trProj(toId)} le queda debiendo ${money(tot)} a ${trProj(fromId)}.` : '';
+  return `Total: ${money(tot)}${np ? ` · ${plural(np, 'material', 'materiales')} sin precio (no ${np === 1 ? 'suma' : 'suman'})` : ''}.${who}`;
+}
+function trFormRefresh() {
+  const from = $('#t-from') ? $('#t-from').value : '', to = $('#t-to') ? $('#t-to').value : '';
+  const s = $('#t-sum');
+  if (s) s.textContent = trSumText(collectItems('#t-items'), from, to);
+  for (const [k, idn] of TR_PEOPLE) { const l = $(`label[for="${idn}"]`); if (l) l.textContent = trPeopleLabel(k, from, to); }
+}
+// Al escribir el material, si no tiene precio y ya se conoce uno, se pone (y se dice de dónde salió).
+function trFillPrice(inp) {
+  const row = inp.closest('[data-row]');
+  if (!row) return;
+  const pr = row.querySelector('[data-f="price"]'), un = row.querySelector('[data-f="unit"]');
+  if (!pr || pr.value.trim()) return;
+  const f = $('#tr-form');
+  const hit = lastPriceOf(inp.value, f && f.dataset.id);
+  if (!hit) return;
+  pr.value = String(hit.price);
+  pr.dataset.src = hit.src;
+  if (un && !un.value.trim() && hit.unit) un.value = hit.unit;
+  trFormRefresh();
+  toast(`Precio de ${hit.src}: ${money(hit.price)} por ${hit.unit || 'unidad'}. Revísalo.`);
+}
+const trSig = (t) => JSON.stringify([t.updatedAt, t.signedFileId, t.signedAt, t.number]);
+function refreshTrSheet() {
+  const sh = S.sheet;
+  if (!sh || sh.type !== 'tr' || !sh.id || sh.dirty) return;
+  const t = S.traslados.find((x) => x.id === sh.id);
+  if (!t) { if (S.got.traslados && sh.sig) closeSheet(); return; }
+  if (trSig(t) !== sh.sig) openTraslado(t.id, true);
+}
+function openTraslado(id, keepScroll) {
+  const D = derive();
+  const t = id ? S.traslados.find((x) => x.id === id) : null;
+  if (id && !t) return;
+  if (isTrPago(t)) { openTrPago('', '', t.id); return; }
+  if (!t && D.projects.length < 2) { toast('Primero agrega las dos obras en Proyectos.'); return; }
+  const edit = canEdit(), dis = edit ? '' : 'disabled';
+  const data = t || { number: nextTrNumber(), date: todayISO(), fromId: S.trProject !== 'all' ? S.trProject : '', toId: '', items: [], notes: '' };
+  const items = (data.items || []).slice();
+  if (edit) for (let k = Math.max(1, 3 - items.length); k > 0; k--) items.push({});
+  const opt = (sel) => D.projects.map((p) => `<option value="${esc(p.id)}"${p.id === sel ? ' selected' : ''}>${esc(p.name)}</option>`).join('');
+  const dl = (idn, arr) => `<datalist id="${idn}">${arr.map((v) => `<option value="${esc(v)}"></option>`).join('')}</datalist>`;
+  const trItems = S.traslados.flatMap((x) => x.items || []);
+  const acc = t ? trAccOf(t.fromId, t.toId) : null;
+  const accTxt = !t ? '' : acc && acc.amount >= 0.01 ? `Cuenta entre ${trProj(t.fromId)} y ${trProj(t.toId)}: ${trOwes(acc)}.` : `${trProj(t.fromId)} y ${trProj(t.toId)} están a mano.`;
+  const thumb = t && t.signedFileId ? t.signedThumbId || (String(t.signedFileType).startsWith('image/') ? t.signedFileId : null) : null;
+  const signedBox = t ? `<div class="card"><h2>Hoja firmada</h2>${trSigned(t) ? `<button type="button" class="preview" data-act="tr-view-signed" data-id="${esc(t.id)}">${thumb ? `<img src="${esc(assetUrl(thumb))}" alt="">` : '<span class="ph">PDF</span>'}<span class="preview-tag">Ver</span></button><p class="usage">Firmada el ${esc(fmtDate(t.signedAt) || '')}.</p>` : '<p class="hint">Saca la hoja en PDF, que la firmen quien entrega, quien se lo lleva y quien lo recibe, y adjunta aquí la foto. Esa es la prueba del traslado.</p>'}${edit ? `<div><button type="button" class="btn sm" data-act="tr-signed">${trSigned(t) ? 'Cambiar la hoja firmada' : 'Adjuntar la hoja firmada'}</button></div>` : ''}</div>` : '';
+  const prevScroll = keepScroll && $('.sheet-b') ? $('.sheet-b').scrollTop : 0;
+  openSheet(`<form id="tr-form" data-id="${t ? esc(t.id) : ''}" autocomplete="off">${sheetHead(t ? esc(trNo(t)) : 'Traslado de materiales')}
+    <div class="sheet-b">
+      ${t ? `<div class="status-line">${trPill(t)}<span>${esc(accTxt)}</span></div>` : ''}
+      <div class="fields">
+        <div class="field"><label for="t-no">No. de traslado</label><input id="t-no" class="mono" value="${esc(trNo(data))}" disabled></div>
+        <div class="field"><label for="t-date">Fecha</label><input id="t-date" type="date" value="${esc(data.date || '')}" ${dis}></div>
+        <div class="field"><label for="t-from">Sale de (obra)</label><select id="t-from" ${dis}><option value="">Elige la obra</option>${opt(data.fromId)}</select></div>
+        <div class="field"><label for="t-to">Va para (obra)</label><select id="t-to" ${dis}><option value="">Elige la obra</option>${opt(data.toId)}</select></div>
+      </div>
+      <h3 class="h2">Materiales</h3>
+      <div id="t-items" class="o-items">${items.map((it, k) => itemRowHTML(it, k + 1, dis)).join('')}</div>
+      ${edit ? `<div><button type="button" class="btn sm" data-act="tr-add-item">${ICON.plus} Agregar material</button></div>` : ''}
+      <p class="usage" id="t-sum">${esc(trSumText(data.items, data.fromId, data.toId))}</p>
+      <h3 class="h2">Quiénes</h3>
+      <div class="fields">${TR_PEOPLE.map(([k, idn]) => `<div class="field"><label for="${idn}">${esc(trPeopleLabel(k, data.fromId, data.toId))}</label><input id="${idn}"${k === 'vehicle' ? '' : ' list="dl-trpeople"'} maxlength="80" value="${esc(data[k] || '')}" ${dis}></div>`).join('')}</div>
+      <div class="field"><label for="t-notes">Notas (para qué es, de dónde se sacó…)</label><textarea id="t-notes" rows="2" maxlength="300" ${dis}>${esc(data.notes || '')}</textarea></div>
+      ${signedBox}
+      ${t && edit ? `<div><button type="button" class="btn danger sm" data-act="tr-del" data-id="${esc(t.id)}">${ICON.trash} Eliminar traslado</button></div>` : ''}
+    </div>
+    <div class="sheet-f">${edit ? '<button type="submit" class="btn">Guardar</button>' : ''}<button type="button" class="btn primary" data-act="tr-pdf">${ICON.down} ${edit ? 'Guardar y sacar la hoja' : 'Sacar la hoja'}</button></div>
+  </form>${dl('dl-units', uniqList([...UNITS, ...D.orders.flatMap((x) => (x.items || []).map((it) => it.unit)), ...trItems.map((it) => it.unit)]))}${dl('dl-items', uniqList([...trItems.map((it) => it.desc), ...D.orders.flatMap((x) => (x.items || []).map((it) => it.desc)), ...S.conduces.map((c) => c.material)]).slice(0, 400))}${dl('dl-trpeople', uniqList([...S.traslados.flatMap((x) => TR_PEOPLE.filter(([k]) => k !== 'vehicle').map(([k]) => x[k])), ...D.orders.map((x) => x.requestedBy), ...S.workers.map((w) => w.name)]).slice(0, 300))}`, { type: 'tr', id: t ? t.id : null, dirty: false, sig: t ? trSig(t) : '' });
+  if (keepScroll && $('.sheet-b')) $('.sheet-b').scrollTop = prevScroll;
+}
+async function saveTraslado(thenPdf) {
+  const f = $('#tr-form');
+  if (!f) return null;
+  const id = f.dataset.id;
+  const prev = id ? S.traslados.find((x) => x.id === id) : null;
+  const items = collectItems('#t-items');
+  const fromId = $('#t-from').value, toId = $('#t-to').value;
+  if (!fromId) { toast('Elige la obra de donde salen los materiales.'); $('#t-from').focus(); return null; }
+  if (!toId) { toast('Elige la obra para donde van.'); $('#t-to').focus(); return null; }
+  if (fromId === toId) { toast('La obra de donde salen y la obra para donde van tienen que ser distintas.'); $('#t-to').focus(); return null; }
+  if (!items.length) { toast('Agrega al menos un material.'); return null; }
+  const date = $('#t-date').value;
+  const data = { kind: 'material', date: ymd(date) ? date : todayISO(), fromId, toId, items: items.slice(0, 200), total: trTotal(items), notes: $('#t-notes').value.trim().slice(0, 300), updatedAt: new Date().toISOString() };
+  for (const [k, idn] of TR_PEOPLE) data[k] = $('#' + idn).value.trim().slice(0, 80);
+  let full = null;
+  const ok = await write(async () => {
+    if (prev) { await db.doc('traslados/' + id).update(data); full = { ...prev, ...data }; }
+    else {
+      const ref = db.collection('traslados').doc();
+      full = { ...data, number: nextTrNumber(), createdAt: new Date().toISOString(), by: whoAmI() };
+      await ref.set(full);
+      full.id = ref.id;
+    }
+  }, thenPdf ? '' : 'Traslado guardado');
+  if (!ok) return null;
+  if (S.sheet && S.sheet.type === 'tr') { S.sheet.dirty = false; S.sheet.id = full.id; S.sheet.sig = trSig(full); f.dataset.id = full.id; }
+  if (thenPdf) await makeTrPdf(full); else closeSheet();
+  return full;
+}
+async function trPdfAction() {
+  const f = $('#tr-form');
+  if (!f) return;
+  if (canEdit()) { await saveTraslado(true); return; }
+  const t = S.traslados.find((x) => x.id === f.dataset.id);
+  if (t) await makeTrPdf(t);
+}
+async function makeTrPdf(t) {
+  try {
+    const bytes = await buildTrPdf(t);
+    deliverFile(new Blob([bytes], { type: 'application/pdf' }), fileSafe(`Traslado ${trNo(t)} - ${trProj(t.fromId)} a ${trProj(t.toId)}`) + '.pdf');
+  } catch (e) {
+    console.error(e);
+    toast('No se pudo preparar la hoja de traslado.');
+  }
+}
+async function attachTrSigned(id, file) {
+  const t = S.traslados.find((x) => x.id === id);
+  if (!t) return;
+  toast('Guardando la hoja firmada…');
+  try {
+    const name = String(file.name || ''), type = String(file.type || '').toLowerCase();
+    const isPdf = type === 'application/pdf' || /\.pdf$/i.test(name);
+    let blob, ftype, thumb = null;
+    if (isPdf) {
+      const bytes = await file.arrayBuffer();
+      blob = new Blob([bytes], { type: 'application/pdf' });
+      ftype = 'application/pdf';
+      let r = null;
+      try { r = await inspectPdf(bytes); thumb = r.thumb; } catch (e) { console.warn('miniatura', e); }
+      if (r && r.creator === PDF_CREATOR) throw new UserError('Ese es el PDF que hizo la app, sin firmar. Adjunta la foto o el escaneo de la hoja ya firmada.');
+    } else {
+      blob = (await prepImage(file)).blob;
+      ftype = 'image/jpeg';
+    }
+    const up = await assets.upload(blob, { type: ftype });
+    let thumbId = null;
+    if (thumb) { try { thumbId = (await assets.upload(thumb, { type: 'image/jpeg' })).id; } catch (e) { console.warn('miniatura', e); } }
+    const old = [t.signedFileId, t.signedThumbId].filter(Boolean);
+    await dbw(() => db.doc('traslados/' + id).update({ signedFileId: up.id, signedFileType: ftype, signedThumbId: thumbId, signedAt: todayISO() }));
+    for (const a of old) { try { await assets.delete(a); } catch (e) { /* ya no existe */ } }
+    toast('Hoja firmada guardada');
+  } catch (e) {
+    console.error(e);
+    toast(e instanceof UserError ? e.message : 'No se pudo guardar la hoja firmada. Intenta de nuevo.');
+  }
+}
+async function deleteTr(id) {
+  const t = S.traslados.find((x) => x.id === id);
+  if (!t) return;
+  const kind = isTrPago(t) ? 'trpago' : 'traslado';
+  const label = `${isTrPago(t) ? 'Pago' : trNo(t)} · ${trProj(t.fromId)} → ${trProj(t.toId)} · ${money(t.total || 0)}`;
+  if (await write(async () => { await toTrash(kind, t, label); await db.doc('traslados/' + id).delete(); })) {
+    closeSheet();
+    toastAct(isTrPago(t) ? 'Pago movido a la papelera' : 'Traslado movido a la papelera', 'Deshacer', () => undoTrash(kind, id));
+  }
+}
+
+// Pago entre obras (o compensación): rebaja la cuenta.
+function openTrPago(fromId, toId, id) {
+  const D = derive();
+  const t = id ? S.traslados.find((x) => x.id === id) : null;
+  if (id && !t) return;
+  const edit = canEdit(), dis = edit ? '' : 'disabled';
+  let a = fromId, b = toId;
+  if (!t && (!a || !b)) { const top = trAccounts().filter((x) => x.amount >= 0.01 && (S.trProject === 'all' || x.a === S.trProject || x.b === S.trProject))[0]; if (top) { a = top.debtor; b = top.creditor; } }
+  const acc = !t && a && b ? trAccOf(a, b) : null;
+  const data = t || { date: todayISO(), fromId: a || '', toId: b || '', total: acc && acc.debtor === a ? acc.amount : null, notes: '' };
+  const opt = (sel) => D.projects.map((p) => `<option value="${esc(p.id)}"${p.id === sel ? ' selected' : ''}>${esc(p.name)}</option>`).join('');
+  openSheet(`<form id="tp-form" data-id="${t ? esc(t.id) : ''}" autocomplete="off">${sheetHead(t ? 'Pago entre obras' : 'Registrar pago entre obras')}<div class="sheet-b">
+    <p class="hint">Cuando una obra le paga a otra lo que le debe por materiales (con dinero, una transferencia o compensándolo con otra cosa), anótalo aquí: rebaja la cuenta entre las dos.</p>
+    <div class="fields">
+      <div class="field"><label for="tp-from">Paga (la obra que debe)</label><select id="tp-from" ${dis}><option value="">Elige la obra</option>${opt(data.fromId)}</select></div>
+      <div class="field"><label for="tp-to">Recibe</label><select id="tp-to" ${dis}><option value="">Elige la obra</option>${opt(data.toId)}</select></div>
+      <div class="field"><label for="tp-date">Fecha</label><input id="tp-date" type="date" value="${esc(data.date || '')}" ${dis}></div>
+      <div class="field"><label for="tp-amt">Monto (RD$)</label><input id="tp-amt" class="mono" inputmode="decimal" maxlength="18" value="${esc(amountInput(data.total))}" ${dis}></div>
+      <div class="field full"><label for="tp-note">Cómo se pagó</label><input id="tp-note" maxlength="200" placeholder="Transferencia, cheque, compensado con…" value="${esc(data.notes || '')}" ${dis}></div>
+    </div>
+    <p class="usage" id="tp-msg"></p>
+    ${t && edit ? `<div><button type="button" class="btn danger sm" data-act="tr-del" data-id="${esc(t.id)}">${ICON.trash} Eliminar este pago</button></div>` : ''}
+  </div><div class="sheet-f">${edit ? '<button type="submit" class="btn primary block">Guardar</button>' : ''}</div></form>`, { type: 'tp', id: t ? t.id : null });
+  tpRefresh();
+}
+function tpRefresh() {
+  const el = $('#tp-msg');
+  if (!el) return;
+  const a = $('#tp-from').value, b = $('#tp-to').value, amt = parseAmount($('#tp-amt').value);
+  if (!a || !b || a === b) { el.textContent = 'Elige la obra que paga y la que recibe.'; return; }
+  const id = $('#tp-form').dataset.id;
+  const acc = trAccOf(a, b, S.traslados.filter((x) => x.id !== id));
+  const owed = acc ? (acc.debtor === a ? acc.amount : -acc.amount) : 0;
+  const now = owed > 0.004 ? `Ahora ${trProj(a)} le debe ${money(owed)} a ${trProj(b)}.` : owed < -0.004 ? `Ahora ${trProj(b)} le debe ${money(-owed)} a ${trProj(a)}.` : `Ahora ${trProj(a)} y ${trProj(b)} están a mano.`;
+  const after = isNum(amt) && amt > 0 ? round2(owed - amt) : null;
+  const then = after == null ? '' : after > 0.004 ? ` Con este pago, ${trProj(a)} queda debiendo ${money(after)}.` : after < -0.004 ? ` Ojo: con este pago, ${trProj(b)} quedaría debiéndole ${money(-after)} a ${trProj(a)}.` : ' Con este pago quedan a mano.';
+  el.textContent = now + then;
+}
+async function saveTrPago() {
+  const f = $('#tp-form');
+  if (!f) return;
+  const id = f.dataset.id;
+  const prev = id ? S.traslados.find((x) => x.id === id) : null;
+  const fromId = $('#tp-from').value, toId = $('#tp-to').value, amt = parseAmount($('#tp-amt').value);
+  if (!fromId || !toId) { toast('Elige la obra que paga y la que recibe.'); return; }
+  if (fromId === toId) { toast('La obra que paga y la que recibe tienen que ser distintas.'); return; }
+  if (!isNum(amt) || amt <= 0) { toast('Escribe el monto solo con números.'); $('#tp-amt').focus(); return; }
+  const date = $('#tp-date').value;
+  const data = { kind: 'pago', date: ymd(date) ? date : todayISO(), fromId, toId, total: round2(amt), notes: $('#tp-note').value.trim().slice(0, 200), updatedAt: new Date().toISOString() };
+  const ok = await write(async () => {
+    if (prev) await db.doc('traslados/' + id).update(data);
+    else await db.collection('traslados').doc().set({ ...data, createdAt: new Date().toISOString(), by: whoAmI() });
+  }, 'Pago entre obras guardado');
+  if (ok) closeSheet();
+}
+
+// La cuenta entre dos obras, movimiento por movimiento.
+function openTrAccount(a, b) {
+  const x = trAccOf(a, b);
+  const na = trProj(a), nb = trProj(b);
+  let bal = 0;
+  const rows = (x ? x.moves : []).map((t) => {
+    const s = t.fromId === a ? 1 : -1;
+    bal = round2(bal + s * t.total);
+    const what = isTrPago(t) ? `Pago: ${trProj(t.fromId)} le pagó a ${trProj(t.toId)}` : `${trNo(t)}: materiales de ${trProj(t.fromId)} para ${trProj(t.toId)}`;
+    const saldo = Math.abs(bal) < 0.005 ? 'A mano' : money(Math.abs(bal)) + ' a favor de ' + (bal > 0 ? na : nb);
+    // En el teléfono, cada movimiento en su renglón; en la computadora, en tabla.
+    if (!wide()) return `<div class="tr-mv"><div class="tr-mv-top"><span>${esc(fmtDate(t.date) || '—')}</span><b class="mono">${esc(money(t.total))}</b></div><button type="button" class="link" data-act="tr-open" data-id="${esc(t.id)}">${esc(what)}</button><small>A favor de ${esc(s > 0 ? na : nb)} · queda ${esc(saldo === 'A mano' ? 'a mano' : saldo)}</small></div>`;
+    return `<tr><td>${esc(fmtDate(t.date) || '—')}</td><td><button type="button" class="link" data-act="tr-open" data-id="${esc(t.id)}">${esc(what)}</button></td><td class="num">${s > 0 ? esc(money(t.total)) : ''}</td><td class="num">${s < 0 ? esc(money(t.total)) : ''}</td><td class="num">${esc(saldo)}</td></tr>`;
+  }).join('');
+  const result = x && x.amount >= 0.01 ? `<p class="tr-result"><b>${esc(trProj(x.debtor))}</b> le debe <b class="mono">${esc(money(x.amount))}</b> a <b>${esc(trProj(x.creditor))}</b></p>` : `<p class="tr-result">${esc(na)} y ${esc(nb)} están a mano.</p>`;
+  openSheet(`${sheetHead('Cuenta entre obras')}<div class="sheet-b">
+    <p class="hint">Cada obra queda con a su favor lo que entrega: los materiales que le da a la otra y lo que le paga.</p>
+    <div class="card"><h2>${esc(na)} y ${esc(nb)}</h2>${result}
+    ${rows && !wide() ? `<div class="tr-mvs">${rows}</div>` : rows ? `<div class="table-wrap"><table class="sum"><thead><tr><th>Fecha</th><th>Movimiento</th><th class="num">A favor de ${esc(na)}</th><th class="num">A favor de ${esc(nb)}</th><th class="num">Saldo</th></tr></thead><tbody>${rows}</tbody></table></div>` : ''}</div>
+  </div><div class="sheet-f">${canEdit() && x && x.amount >= 0.01 ? `<button type="button" class="btn primary" data-act="tr-pay" data-from="${esc(x.debtor)}" data-to="${esc(x.creditor)}">Registrar pago</button>` : ''}<button type="button" class="btn" data-act="sheet-close">Cerrar</button></div>`, { type: 'tr-acc', id: a + '|' + b });
+}
+// En la ficha de la obra: lo que recibió y dio, y cómo está con las demás.
+function trProjBoxHTML(pid) {
+  if (!S.traslados.some((t) => t.fromId === pid || t.toId === pid)) return '';
+  const { inn, out } = trOfProject(pid);
+  const lines = trAccounts().filter((x) => x.amount >= 0.01 && (x.a === pid || x.b === pid)).map((x) => (x.creditor === pid ? `${trProj(x.debtor)} le debe ${money(x.amount)} a esta obra` : `Esta obra le debe ${money(x.amount)} a ${trProj(x.creditor)}`));
+  return `<div class="card"><h2>Traslados de materiales</h2><p class="usage">Recibió de otras obras ${esc(money(inn))} · dio a otras obras ${esc(money(out))}</p>${lines.length ? `<ul class="tr-lines">${lines.map((l) => `<li>${esc(l)}</li>`).join('')}</ul>` : '<p class="hint">Está a mano con las demás obras.</p>'}<button type="button" class="btn sm" data-act="tr-go-proj" data-id="${esc(pid)}">Ver sus traslados ${ICON.right}</button></div>`;
+}
+
+// PDF de la hoja de traslado (carta), para firmar.
+async function buildTrPdf(t) {
+  const { PDFDocument, StandardFonts, rgb } = await pdflib();
+  const doc = await PDFDocument.create();
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  const bold = await doc.embedFont(StandardFonts.HelveticaBold);
+  doc.setTitle(pdfSafe('Traslado de materiales ' + trNo(t)));
+  doc.setCreator(PDF_CREATOR);
+  const st = S.settings || {};
+  const W = 612, H = 792, X0 = 38, X1 = 574;
+  const NAVY = rgb(0.137, 0.255, 0.353), INK = rgb(0.1, 0.11, 0.13), VAL = rgb(0.04, 0.1, 0.3), GREY = rgb(0.42, 0.45, 0.5);
+  const GRID = rgb(0.62, 0.67, 0.74), WHITE = rgb(1, 1, 1), BAND = rgb(0.93, 0.95, 0.97);
+  const items = (t.items || []).filter((x) => x && (x.desc || (x.qty !== '' && x.qty != null)));
+  const per = 14;
+  const nPages = Math.max(1, Math.ceil(items.length / per));
+  const yy = (top) => H - top;
+  const fitT = (s, f, size, w) => { let x = pdfSafe(s); if (f.widthOfTextAtSize(x, size) <= w) return x; while (x.length > 1 && f.widthOfTextAtSize(x + '…', size) > w) x = x.slice(0, -1); return x + '…'; };
+  const from = trProj(t.fromId), to = trProj(t.toId), total = trTotal(items), np = trNoPrice(items);
+  for (let pg = 0; pg < nPages; pg++) {
+    const p = doc.addPage([W, H]);
+    const text = (s, x, top, size, f = font, color = INK) => p.drawText(pdfSafe(s), { x, y: yy(top), size, font: f, color });
+    const center = (s, cx, top, size, f = font, color = INK) => { const v = pdfSafe(s); p.drawText(v, { x: cx - f.widthOfTextAtSize(v, size) / 2, y: yy(top), size, font: f, color }); };
+    const right = (s, xr, top, size, f = font, color = INK) => { const v = pdfSafe(s); p.drawText(v, { x: xr - f.widthOfTextAtSize(v, size), y: yy(top), size, font: f, color }); };
+    const hline = (a, b, top, th = 0.6, color = GRID) => p.drawLine({ start: { x: a, y: yy(top) }, end: { x: b, y: yy(top) }, thickness: th, color });
+    if (st.company) center(st.company.toUpperCase(), W / 2, 50, 13.5, bold, NAVY);
+    center('TRASLADO DE MATERIALES ENTRE OBRAS', W / 2, st.company ? 70 : 54, 10.5, font, INK);
+    if (nPages > 1) text(`Página ${pg + 1} de ${nPages}`, X0, 28, 8, font, GREY);
+    const field = (label, value, x, top, xEnd) => {
+      text(label, x, top, 9, font, INK);
+      const lx = x + font.widthOfTextAtSize(pdfSafe(label), 9) + 4;
+      hline(lx, xEnd, top + 2, 0.6, INK);
+      if (value) text(fitT(value, bold, 9.5, xEnd - lx - 4), lx + 2, top - 1, 9.5, bold, VAL);
+    };
+    [['No. de traslado:', trNo(t), 'Fecha:', fmtDmy(t.date)], ['Sale de (obra):', from, 'Va para (obra):', to], ['Lo pidió:', t.requestedBy || '', 'Lo autorizó:', t.authorizedBy || '']].forEach(([l1, v1, l2, v2], k) => {
+      const top = 104 + 26 * k;
+      field(l1, v1, 44, top, 300);
+      field(l2, v2, 322, top, X1 - 2);
+    });
+    const tTop = 184, hH = 22, rH = 24, cols = [X0, 64, 122, 180, 428, 500, X1];
+    const bodyTop = tTop + hH, bottom = bodyTop + rH * per;
+    p.drawRectangle({ x: X0, y: yy(bodyTop), width: X1 - X0, height: hH, color: NAVY });
+    [['No.', 0], ['Cantidad', 1], ['Unidad', 2]].forEach(([l, k]) => center(l, (cols[k] + cols[k + 1]) / 2, tTop + 14.5, 8.5, bold, WHITE));
+    text('Material / descripción', cols[3] + 6, tTop + 14.5, 8.5, bold, WHITE);
+    right('Precio', cols[5] - 6, tTop + 14.5, 8.5, bold, WHITE);
+    right('Total', cols[6] - 6, tTop + 14.5, 8.5, bold, WHITE);
+    for (let r = 0; r < per; r++) {
+      const top = bodyTop + rH * r, n = pg * per + r, it = items[n];
+      if (r % 2) p.drawRectangle({ x: X0, y: yy(top + rH), width: X1 - X0, height: rH, color: BAND });
+      center(String(n + 1), (cols[0] + cols[1]) / 2, top + 15.5, 8.5, font, GREY);
+      if (!it) continue;
+      if (it.qty !== '' && it.qty != null) center(fitT(fmtQty(it.qty), bold, 9.5, cols[2] - cols[1] - 6), (cols[1] + cols[2]) / 2, top + 15.5, 9.5, bold, VAL);
+      if (it.unit) center(fitT(it.unit, font, 9, cols[3] - cols[2] - 6), (cols[2] + cols[3]) / 2, top + 15.5, 9, font, VAL);
+      const lines = wrapText(it.desc || '', font, 9, cols[4] - cols[3] - 10);
+      if (lines.length <= 1) text(lines[0] || '', cols[3] + 6, top + 15.5, 9, font, VAL);
+      else { text(lines[0], cols[3] + 6, top + 10.5, 8.5, font, VAL); text(fitT(lines.slice(1).join(' '), font, 8.5, cols[4] - cols[3] - 10), cols[3] + 6, top + 20.5, 8.5, font, VAL); }
+      if (isNum(it.price)) right(fitT(money(it.price), font, 8.5, cols[5] - cols[4] - 8), cols[5] - 6, top + 15.5, 8.5, font, VAL);
+      const ln = trLine(it);
+      right(ln == null ? 'sin precio' : fitT(money(ln), bold, 9, cols[6] - cols[5] - 8), cols[6] - 6, top + 15.5, ln == null ? 7.5 : 9, ln == null ? font : bold, ln == null ? GREY : VAL);
+    }
+    p.drawRectangle({ x: X0, y: yy(bottom), width: X1 - X0, height: bottom - tTop, borderColor: GRID, borderWidth: 0.8 });
+    for (const cx of cols.slice(1, -1)) p.drawLine({ start: { x: cx, y: yy(tTop) }, end: { x: cx, y: yy(bottom) }, thickness: 0.5, color: GRID });
+    if (pg < nPages - 1) continue;
+    const yT = bottom + 18;
+    right('TOTAL DEL TRASLADO:', cols[5] - 6, yT, 9.5, bold, INK);
+    right(money(total), cols[6] - 6, yT, 10.5, bold, VAL);
+    const sentence = total
+      ? `${from} entrega estos materiales a ${to} por ${money(total)}. Ese monto queda a favor de ${from} en la cuenta entre las dos obras.${np ? ` ${plural(np, 'material', 'materiales')} sin precio no se ${np === 1 ? 'sumó' : 'sumaron'}.` : ''}`
+      : `Estos materiales no tienen precio: no cambian la cuenta entre ${from} y ${to}.`;
+    wrapText(sentence, font, 9, X1 - X0 - 12).slice(0, 3).forEach((ln, k) => text(ln, 44, yT + 20 + 12 * k, 9, font, INK));
+    const nLabel = 'Notas:';
+    text(nLabel, 44, yT + 66, 9, bold, INK);
+    const nx = 44 + bold.widthOfTextAtSize(nLabel, 9) + 4;
+    hline(nx, X1 - 2, yT + 68, 0.6, INK);
+    const notes = wrapText(t.notes || '', font, 9, X1 - nx - 6);
+    if (notes[0]) text(notes[0], nx + 2, yT + 65, 9, font, VAL);
+    if (notes.length > 1) { hline(44, X1 - 2, yT + 82, 0.6, INK); text(fitT(notes.slice(1).join(' '), font, 9, X1 - 50), 46, yT + 79, 9, font, VAL); }
+    const sigs = [['Lo entregó', t.deliveredBy, 'en ' + from], ['Se lo llevó', t.carriedBy, t.vehicle ? 'Vehículo: ' + t.vehicle : ''], ['Lo recibió', t.receivedBy, 'en ' + to], ['Lo autorizó', t.authorizedBy, '']];
+    const gap = 16, sw = (X1 - X0 - gap * 3) / 4;
+    sigs.forEach(([lbl, name, sub], k) => {
+      const a = X0 + k * (sw + gap), b = a + sw, cx = (a + b) / 2;
+      hline(a, b, 694, 0.8, INK);
+      center(lbl, cx, 707, 9, bold, INK);
+      if (name) center(fitT(name, font, 8.5, sw), cx, 719, 8.5, font, VAL);
+      if (sub) center(fitT(sub, font, 7.5, sw), cx, name ? 730 : 719, 7.5, font, GREY);
+    });
+    text(`Generado el ${fmtDmy(todayISO())}`, X0, 764, 7.5, font, GREY);
+  }
+  return doc.save();
+}
+
+// Excel: las cuentas entre obras, cada material trasladado y los pagos.
+function trWorkbook(list, title) {
+  const { XS, sheetXml, buildXlsx, excelDate } = FILES;
+  const st = S.settings || {};
+  const Dt = (s) => { const d = excelDate(String(s || '').slice(0, 10)); return d == null ? { v: '' } : { v: d, s: XS.date }; };
+  const top = (name) => [[{ v: st.company || 'Traslados de materiales', s: XS.title }], [{ v: name, s: XS.bold }], [{ v: 'Generado el ' + fmtDate(todayISO()), s: XS.muted }], []];
+  const ac = top(title);
+  ac.push(['Obra que debe', 'Le debe a', 'Monto', 'Movimientos', 'Último'].map((v, j) => ({ v, s: j < 2 ? XS.head : XS.headR })));
+  const accs = trAccounts(list).filter((x) => x.amount >= 0.01);
+  for (const x of accs) ac.push([{ v: trProj(x.debtor) }, { v: trProj(x.creditor) }, { v: x.amount, s: XS.money }, { v: x.moves.length, s: XS.int }, Dt(x.last)]);
+  if (!accs.length) ac.push([{ v: 'Las obras están a mano.' }]);
+  ac.push([]);
+  ac.push(['Obra', 'Recibió en materiales', 'Dio en materiales', 'Diferencia'].map((v, j) => ({ v, s: j ? XS.headR : XS.head })));
+  for (const pid of [...new Set(list.flatMap((t) => [t.fromId, t.toId]))].filter(Boolean)) {
+    let inn = 0, out = 0;
+    for (const t of list) if (!isTrPago(t) && isNum(t.total)) { if (t.toId === pid) inn += t.total; if (t.fromId === pid) out += t.total; }
+    ac.push([{ v: trProj(pid) }, { v: round2(inn), s: XS.money }, { v: round2(out), s: XS.money }, { v: round2(inn - out), s: XS.money }]);
+  }
+  const mats = list.filter((t) => !isTrPago(t)).sort((a, b) => trWhen(a).localeCompare(trWhen(b)));
+  const tr = top('Materiales trasladados');
+  const heads = ['Fecha', 'No.', 'Sale de', 'Va para', 'Cantidad', 'Unidad', 'Material', 'Precio', 'Total', 'De dónde salió el precio', 'Lo pidió', 'Lo autorizó', 'Lo entregó', 'Se lo llevó', 'Vehículo', 'Lo recibió', 'Hoja firmada', 'Notas'];
+  tr.push(heads.map((v, j) => ({ v, s: j === 4 || j === 7 || j === 8 ? XS.headR : XS.head })));
+  let sum = 0;
+  for (const t of mats) for (const it of t.items || []) {
+    const ln = trLine(it);
+    if (ln) sum = round2(sum + ln);
+    tr.push([Dt(t.date), { v: trNo(t) }, { v: trProj(t.fromId) }, { v: trProj(t.toId) }, isNum(it.qty) ? { v: it.qty } : { v: String(it.qty == null ? '' : it.qty) }, { v: it.unit || '' }, { v: it.desc || '' }, isNum(it.price) ? { v: it.price, s: XS.money } : { v: '' }, ln == null ? { v: '' } : { v: ln, s: XS.money }, { v: trPriceSrc(it) }, { v: t.requestedBy || '' }, { v: t.authorizedBy || '' }, { v: t.deliveredBy || '' }, { v: t.carriedBy || '' }, { v: t.vehicle || '' }, { v: t.receivedBy || '' }, { v: trSigned(t) ? 'Sí' : 'No' }, { v: t.notes || '' }]);
+  }
+  tr.push([{ v: 'Total', s: XS.totLabel }, ...Array(7).fill(0).map(() => ({ v: '', s: XS.totBlank })), { v: sum, s: XS.totMoney }]);
+  const pg = top('Pagos entre obras');
+  pg.push(['Fecha', 'Pagó', 'Le pagó a', 'Monto', 'Cómo se pagó'].map((v, j) => ({ v, s: j === 3 ? XS.headR : XS.head })));
+  for (const t of list.filter(isTrPago).sort((a, b) => trWhen(a).localeCompare(trWhen(b)))) pg.push([Dt(t.date), { v: trProj(t.fromId) }, { v: trProj(t.toId) }, { v: t.total, s: XS.money }, { v: t.notes || '' }]);
+  const footer = `&L${(st.company || 'Traslados').replace(/&/g, '&&')}&C${title.replace(/&/g, '&&')}&RPágina &P de &N`;
+  return buildXlsx([
+    { name: 'Cuentas', xml: sheetXml(ac, { widths: [28, 28, 16, 14, 13], selected: true, footer }) },
+    { name: 'Materiales', xml: sheetXml(tr, { widths: [11, 9, 20, 20, 9, 9, 34, 12, 13, 20, 16, 16, 16, 16, 12, 16, 11, 30], freeze: 5, landscape: true, footer }) },
+    { name: 'Pagos', xml: sheetXml(pg, { widths: [11, 24, 24, 14, 34], footer }) },
+  ], { title, creator: st.preparedBy || 'Facturas de Proyectos', names: [] });
+}
+function trExcel() {
+  const list = S.trProject === 'all' ? S.traslados : S.traslados.filter((t) => t.fromId === S.trProject || t.toId === S.trProject);
+  const title = 'Traslados de materiales' + (S.trProject === 'all' ? '' : ' - ' + trProj(S.trProject));
+  try { deliverFile(trWorkbook(list, title), fileSafe(title + ' ' + todayISO()) + '.xlsx'); } catch (e) { console.error(e); toast('No se pudo preparar el Excel.'); }
 }
 
 /* ---------- apartado de conduces ---------- */
@@ -1713,6 +2215,7 @@ function openProject(id) {
       <div class="field"><label for="pe-name">Nombre del proyecto</label><input id="pe-name" maxlength="80" value="${esc(p.name)}" required></div>
       <div class="field"><label for="pe-budget">Presupuesto (RD$)</label><input id="pe-budget" class="mono" inputmode="decimal" maxlength="18" placeholder="Opcional" value="${esc(amountInput(p.budget))}"></div>
       ${budgetHTML(p, D)}
+      ${trProjBoxHTML(id)}
       <div class="stats card"><div><span>Pendientes (${by('pendientes').length})</span><b>${esc(totalStr(by('pendientes')))}</b></div><div><span>En trámite (${by('tramite').length})</span><b>${esc(totalStr(by('tramite')))}</b></div><div><span>Pagadas (${by('pagadas').length})</span><b>${esc(totalStr(by('pagadas')))}</b></div></div>
       <button type="button" class="btn block" data-act="proj-view" data-id="${esc(id)}">Ver las facturas de este proyecto ${ICON.right}</button>
       <div id="proj-del-box" hidden>${invs.length || ords.length ? `<div class="confirm"><p>Este proyecto tiene ${[invs.length ? plural(invs.length, 'factura', 'facturas') : '', ords.length ? plural(ords.length, 'orden de compra', 'órdenes de compra') : ''].filter(Boolean).join(' y ')}. Para eliminarlo, primero cámbialas a otro proyecto o bórralas.</p><div class="actions"><button type="button" class="btn" data-act="proj-del-no">Entendido</button></div></div>` : `<div class="confirm"><p>¿Eliminar el proyecto “${esc(p.name)}”?</p><div class="actions"><button type="button" class="btn danger solid" data-act="proj-del-yes" data-id="${esc(id)}">Eliminar proyecto</button><button type="button" class="btn" data-act="proj-del-no">Cancelar</button></div></div>`}</div>
@@ -3785,7 +4288,7 @@ async function envioPdfAgain(id) {
 
 /* ---------- papelera: lo que se borra se queda 30 días y se puede recuperar ---------- */
 const TRASH_DAYS = 30;
-const TRASH_KIND = { invoice: ['invoices', 'Factura', 'Factura recuperada'], conduce: ['conduces', 'Conduce', 'Conduce recuperado'], order: ['orders', 'Orden de compra', 'Orden recuperada'], payment: ['payments', 'Pago', 'Pago recuperado'] };
+const TRASH_KIND = { invoice: ['invoices', 'Factura', 'Factura recuperada'], conduce: ['conduces', 'Conduce', 'Conduce recuperado'], order: ['orders', 'Orden de compra', 'Orden recuperada'], payment: ['payments', 'Pago', 'Pago recuperado'], traslado: ['traslados', 'Traslado de materiales', 'Traslado recuperado'], trpago: ['traslados', 'Pago entre obras', 'Pago entre obras recuperado'] };
 const rawDoc = (o) => { const { id, ...rest } = o; return rest; };
 function toTrash(kind, doc, label, extra = {}) {
   return db.collection('papelera').doc().set({ kind, srcId: doc.id, data: rawDoc(doc), label: String(label || '').slice(0, 160), extra, deletedAt: new Date().toISOString() });
@@ -3826,7 +4329,7 @@ function openTrash() {
   const edit = canEdit();
   const rows = list.map((e) => `<div class="o-inv trash-row"><span class="grow"><b>${esc((TRASH_KIND[e.kind] || ['', 'Documento'])[1])}</b> · ${esc(e.label || '')}<small>Borrado ${esc(relTime(Date.parse(e.deletedAt)))} · se elimina para siempre en ${plural(trashLeft(e), 'día', 'días')}</small></span>${edit ? `<button type="button" class="btn sm" data-act="trash-restore" data-id="${esc(e.id)}">Recuperar</button>` : ''}</div>`).join('');
   openSheet(`${sheetHead('Papelera')}<div class="sheet-b">
-    <p class="hint">Lo que borras (facturas, conduces, órdenes y pagos) se queda aquí ${TRASH_DAYS} días con sus archivos, y se puede recuperar. Después se elimina para siempre.</p>
+    <p class="hint">Lo que borras (facturas, conduces, órdenes, pagos y traslados) se queda aquí ${TRASH_DAYS} días con sus archivos, y se puede recuperar. Después se elimina para siempre.</p>
     ${rows ? `<div class="list">${rows}</div>` : '<div class="empty"><p>La papelera está vacía.</p></div>'}
   </div>${edit && list.length ? `<div class="sheet-f"><span class="grow">${plural(list.length, 'cosa', 'cosas')} en la papelera</span><button type="button" class="btn danger sm" data-act="trash-empty">Vaciar la papelera</button></div>` : ''}`, { type: 'trash', id: 'trash' });
 }
@@ -3949,7 +4452,7 @@ async function deletePayment(payId) {
 
 /* ---------- órdenes de compra ---------- */
 function itemRowHTML(it, n, dis) {
-  return `<div class="o-row" data-row><span class="o-n mono">${n}</span><input data-f="qty" class="mono" inputmode="decimal" maxlength="12" placeholder="Cant." aria-label="Cantidad" value="${esc(it.qty != null ? String(it.qty) : '')}" ${dis}><input data-f="unit" list="dl-units" maxlength="20" placeholder="Unidad" aria-label="Unidad" value="${esc(it.unit || '')}" ${dis}><input data-f="price" class="mono" inputmode="decimal" maxlength="12" placeholder="Precio" aria-label="Precio por unidad" value="${esc(isNum(it.price) ? String(it.price) : '')}" ${dis}><input data-f="desc" list="dl-items" maxlength="160" placeholder="Descripción y especificaciones" aria-label="Descripción" value="${esc(it.desc || '')}" ${dis}>${dis ? '' : `<button type="button" class="icon-btn plain" data-act="order-rm-item" aria-label="Quitar artículo">${ICON.close}</button>`}</div>`;
+  return `<div class="o-row" data-row><span class="o-n mono">${n}</span><input data-f="qty" class="mono" inputmode="decimal" maxlength="12" placeholder="Cant." aria-label="Cantidad" value="${esc(it.qty != null ? String(it.qty) : '')}" ${dis}><input data-f="unit" list="dl-units" maxlength="20" placeholder="Unidad" aria-label="Unidad" value="${esc(it.unit || '')}" ${dis}><input data-f="price" class="mono" inputmode="decimal" maxlength="12" placeholder="Precio" aria-label="Precio por unidad" value="${esc(isNum(it.price) ? String(it.price) : '')}"${it.priceSrc ? ` data-src="${esc(it.priceSrc)}"` : ''} ${dis}><input data-f="desc" list="dl-items" maxlength="160" placeholder="Descripción y especificaciones" aria-label="Descripción" value="${esc(it.desc || '')}" ${dis}>${dis ? '' : `<button type="button" class="icon-btn plain" data-act="order-rm-item" aria-label="Quitar artículo">${ICON.close}</button>`}</div>`;
 }
 function uniqList(list) { const seen = new Set(); const out = []; for (const v of list) { const s = String(v || '').trim(); const k = norm(s); if (s && !seen.has(k)) { seen.add(k); out.push(s); } } return out; }
 function orderSig(o, D) { return JSON.stringify([o.status, o.signedFileId, o.signedAt, o.updatedAt, o.number, (D.invByOrder.get(o.id) || []).map((i) => [i.id, i.supplier, i.number, i.amount, (i.conduces || []).map((c) => [c.id, c.material, c.qty, c.trips])])]); }
@@ -4061,15 +4564,15 @@ function refreshOrderInvBox(orderId) {
     if (S.sheet) S.sheet.sig = S.sheet.dirty ? S.sheet.sig : orderSig(o, D);
   }, 80);
 }
-function renumberItems() { $$('#o-items [data-row]').forEach((r, k) => { r.querySelector('.o-n').textContent = String(k + 1); }); }
-function addItemRow(it = {}) { const box = $('#o-items'); if (!box) return; box.insertAdjacentHTML('beforeend', itemRowHTML(it, box.children.length + 1, '')); renumberItems(); }
-function collectItems() {
-  return $$('#o-items [data-row]').map((r) => {
+function renumberItems(box) { $$('[data-row]', box || $('#o-items') || document).forEach((r, k) => { r.querySelector('.o-n').textContent = String(k + 1); }); }
+function addItemRow(it = {}, sel = '#o-items') { const box = $(sel); if (!box) return; box.insertAdjacentHTML('beforeend', itemRowHTML(it, box.children.length + 1, '')); renumberItems(box); }
+function collectItems(box = '#o-items') {
+  return $$(box + ' [data-row]').map((r) => {
     const qtyRaw = r.querySelector('[data-f="qty"]').value.trim();
     const qty = /^\d+([.,]\d+)?$/.test(qtyRaw) ? parseAmount(qtyRaw) : qtyRaw.slice(0, 12);
     const pr = r.querySelector('[data-f="price"]');
     const price = pr && pr.value.trim() ? parseAmount(pr.value) : null;
-    return { qty, unit: r.querySelector('[data-f="unit"]').value.trim().slice(0, 20), desc: r.querySelector('[data-f="desc"]').value.trim().slice(0, 160), price: isNum(price) && price >= 0 ? round2(price) : null };
+    return { qty, unit: r.querySelector('[data-f="unit"]').value.trim().slice(0, 20), desc: r.querySelector('[data-f="desc"]').value.trim().slice(0, 160), price: isNum(price) && price >= 0 ? round2(price) : null, ...(pr && pr.dataset.src && isNum(price) ? { priceSrc: pr.dataset.src } : {}) };
   }).filter((x) => x.desc || x.qty !== '');
 }
 async function saveOrder(thenPdf) {
@@ -5038,7 +5541,19 @@ function onClick(e) {
     case 'new-order': openOrder(null); break;
     case 'open-order': openOrder(id); break;
     case 'order-add-item': { addItemRow(); const rows = $$('#o-items [data-row]'); const last = rows[rows.length - 1]; if (last) last.querySelector('[data-f="qty"]').focus(); if (S.sheet) S.sheet.dirty = true; break; }
-    case 'order-rm-item': { const row = t.closest('[data-row]'); if (row) { row.remove(); renumberItems(); if (S.sheet) S.sheet.dirty = true; } break; }
+    case 'order-rm-item': { const row = t.closest('[data-row]'); if (row) { const box = row.parentElement; row.remove(); renumberItems(box); if (S.sheet) S.sheet.dirty = true; if (box && box.id === 't-items') trFormRefresh(); } break; }
+    case 'tr-new': closeSheet(); openTraslado(null); break;
+    case 'tr-open': openTraslado(id); break;
+    case 'tr-add-item': { addItemRow({}, '#t-items'); const rows = $$('#t-items [data-row]'); const last = rows[rows.length - 1]; if (last) last.querySelector('[data-f="qty"]').focus(); if (S.sheet) S.sheet.dirty = true; break; }
+    case 'tr-pdf': trPdfAction(); break;
+    case 'tr-signed': $('#signed-input').click(); break;
+    case 'tr-view-signed': { const x = S.traslados.find((y) => y.id === id); if (x && x.signedFileId) showFile({ title: trNo(x) + ' firmado', fileId: x.signedFileId, fileType: x.signedFileType }); break; }
+    case 'tr-del': deleteTr(id); break;
+    case 'tr-acc': openTrAccount(t.dataset.a, t.dataset.b); break;
+    case 'tr-pay': openTrPago(t.dataset.from || '', t.dataset.to || '', null); break;
+    case 'tr-projf': S.trProject = t.dataset.p; renderAll(); break;
+    case 'tr-xlsx': trExcel(); break;
+    case 'tr-go-proj': closeSheet(); S.tab = 'traslados'; S.trProject = id; S.paymentId = null; S.payDel = false; renderAll(); window.scrollTo(0, 0); break;
     case 'order-pdf': orderPdfAction(); break;
     case 'order-signed': $('#signed-input').click(); break;
     case 'order-view-signed': { const o = S.orders.find((x) => x.id === id); if (o && o.signedFileId) showFile({ title: orderNo(o) + ' firmada', fileId: o.signedFileId, fileType: o.signedFileType }); break; }
@@ -5139,6 +5654,9 @@ async function hintCreate(id, btn) {
 function onChange(e) {
   const t = e.target;
   if (t.id === 'f-proj') { $('#f-newproj-wrap').hidden = t.value !== '__new'; if (t.value === '__new') $('#f-newproj').focus(); }
+  if (t.dataset && t.dataset.f === 'desc' && t.closest && t.closest('#t-items')) trFillPrice(t);
+  if (t.id === 't-from' || t.id === 't-to') trFormRefresh();
+  if (t.id === 'tp-from' || t.id === 'tp-to') tpRefresh();
   if (t.dataset && t.dataset.wf) saveWorkerField(t);
   if ((t.id === 'att-in' || t.id === 'att-out') && S.attSheet) write(() => db.doc('asistencia/' + S.attSheet).update({ [t.id === 'att-in' ? 'entryLimit' : 'exitFrom']: t.value.trim().slice(0, 8) }), 'Guardado');
   if (t.id === 'att-ptime' && S.attSheet) { const sh = S.asistencia.find((x) => x.id === S.attSheet); const v = t.value.replace(/^0(\d)/, '$1'); if (sh) attEdit(sh, (m, sp) => { if (v) sp[S.attDay] = v; else delete sp[S.attDay]; }); }
@@ -5183,6 +5701,9 @@ function onInput(e) {
   if (t.id === 'f-search') { S.search = t.value; renderAll(); return; }
   if (t.id === 'o-search') { S.orderSearch = t.value; renderAll(); return; }
   if (t.id === 'c-search') { S.condSearch = t.value; renderAll(); return; }
+  if (t.id === 't-search') { S.trSearch = t.value; renderAll(); return; }
+  if (S.sheet && S.sheet.type === 'tr' && t.closest && t.closest('#tr-form')) { S.sheet.dirty = true; if (t.dataset && t.dataset.f === 'price') delete t.dataset.src; if (t.closest('#t-items')) trFormRefresh(); }
+  if (t.id === 'tp-amt') tpRefresh();
   if (t.id === 'pay-ret-note' && S.payRet) S.payRet.note = t.value;
   if (t.id === 'o-link-q') { const r = $('#o-link-results'); if (r) r.innerHTML = orderLinkResultsHTML(t.dataset.order, t.value); return; }
   if (S.sheet && S.sheet.type === 'order' && t.closest && t.closest('#order-form') && t.id !== 'o-msg') S.sheet.dirty = true;
@@ -5200,6 +5721,8 @@ function onSubmit(e) {
   else if (f.id === 'att-rules-form') saveAttRules();
   else if (f.id === 'cond-form') saveConduce(f);
   else if (f.id === 'order-form') saveOrder(false);
+  else if (f.id === 'tr-form') saveTraslado(false);
+  else if (f.id === 'tp-form') saveTrPago();
   else if (f.id === 'pick-form') {
     const ids = $$('#sheet-root input[data-pick="inv"]').filter((b) => b.checked).map((b) => b.value);
     if (!ids.length) return;
@@ -5249,7 +5772,7 @@ function bind() {
   document.addEventListener('keydown', onKeys);
   $('#file-input').addEventListener('change', (e) => { const files = [...e.target.files]; e.target.value = ''; if (files.length) addFiles(files); });
   $('#restore-input').addEventListener('change', (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) restoreBackup(f); });
-  $('#signed-input').addEventListener('change', (e) => { const f = e.target.files[0]; e.target.value = ''; if (f && S.sheet && S.sheet.type === 'order' && S.sheet.id) attachSigned(S.sheet.id, f); });
+  $('#signed-input').addEventListener('change', (e) => { const f = e.target.files[0]; e.target.value = ''; if (f && S.sheet && S.sheet.type === 'order' && S.sheet.id) attachSigned(S.sheet.id, f); else if (f && S.sheet && S.sheet.type === 'tr' && S.sheet.id) attachTrSigned(S.sheet.id, f); });
   $('#page-input').addEventListener('change', (e) => { const files = [...e.target.files]; e.target.value = ''; const inv = pageTarget; pageTarget = null; if (files.length && inv) addPages(inv, files); });
   $('#cond-input').addEventListener('change', (e) => { const files = [...e.target.files]; e.target.value = ''; const inv = condTarget; condTarget = null; if (files.length) addConduceFiles(files, inv); });
   $('#fill-photo-input').addEventListener('change', (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) fillOrderFromMessage(null, f); });
@@ -5312,8 +5835,8 @@ function subscribe() {
   db.doc('settings/asistencia').onSnapshot((snap) => { S.attRules = (snap.exists && snap.data()) || {}; scheduleRender(); }, (err) => console.warn(err));
   db.doc('settings/respaldos').onSnapshot((snap) => { S.bk = (snap.exists && snap.data()) || {}; scheduleRender(); }, (err) => console.warn(err));
   db.doc('settings/digitacion').onSnapshot((snap) => { S.digi = (snap.exists && snap.data()) || {}; scheduleRender(); }, (err) => console.warn(err));
-  const done = () => { if (S.got.projects && S.got.invoices && S.got.payments && S.got.orders && S.got.conduces && S.got.workers && S.got.asistencia && S.got.suppliers && S.got.envios && S.got.papelera && S.dbState === 'loading') { S.dbState = 'ready'; setTimeout(retryOffline, 1500); setTimeout(() => { fixCreditSigns().catch((e) => console.warn(e)); fixAttRules().catch((e) => console.warn(e)); scheduleLink(); purgeTrash(false).catch((e) => console.warn(e)); measureStorage(); }, 2500); } };
-  for (const name of ['projects', 'invoices', 'payments', 'orders', 'conduces', 'workers', 'asistencia', 'suppliers', 'envios', 'papelera']) {
+  const done = () => { if (S.got.projects && S.got.invoices && S.got.payments && S.got.orders && S.got.conduces && S.got.workers && S.got.asistencia && S.got.suppliers && S.got.envios && S.got.papelera && S.got.traslados && S.dbState === 'loading') { S.dbState = 'ready'; setTimeout(retryOffline, 1500); setTimeout(() => { fixCreditSigns().catch((e) => console.warn(e)); fixAttRules().catch((e) => console.warn(e)); scheduleLink(); purgeTrash(false).catch((e) => console.warn(e)); measureStorage(); }, 2500); } };
+  for (const name of ['projects', 'invoices', 'payments', 'orders', 'conduces', 'workers', 'asistencia', 'suppliers', 'envios', 'papelera', 'traslados']) {
     db.collection(name).onSnapshot((snap) => {
       S[name] = snap.docs.map((d) => ({ ...d.data(), id: d.id }));
       S.got[name] = true;

@@ -49,6 +49,7 @@ Cada prueba dice `OK` o `FALLA` en cada revisión, y al final `correr.js` dice c
 | `conduces.js` | Conduces: lectura, enlace solo a su factura, conduces esperando factura, PDF y Excel; órdenes por proyecto. |
 | `notas-credito-cruce-fechas.js` | Notas de crédito que restan, avisos del cruce orden-conduce-factura, filtro por fecha y listas largas. |
 | `pase-de-lista.js` | Obreros, marcas de entrada, pase sorpresa y salida, reglas de la empresa (la tardanza descuenta medio día y el sábado es día entero), resumen, Excel y PDF de la planilla. |
+| `traslados.js` | Traslados de materiales entre obras: la hoja con materiales, precios (escritos a mano o sacados de una orden) y quiénes, el PDF para firmar, la hoja firmada, la cuenta entre obras con el traslado al revés y el pago, lo que cuesta cada obra, el Excel, la papelera y la vista de computadora. |
 | `medio-dia.js` | Día entero o medio día en cada día de la planilla: lo que cuenta cada marca, el toque para ponerlo también en las otras obras, el sábado de día entero, el resumen, el Excel y el PDF con el ½. |
 | `paginas-y-grapa.js` | Factura y orden engrapadas en un PDF, agregar página, «Es otra página» y separar páginas. |
 | `proveedores-presupuesto.js` | Ficha de proveedores, vencimientos, banco en el pago, precio estimado y presupuesto por obra. |

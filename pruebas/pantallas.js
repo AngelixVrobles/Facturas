@@ -79,7 +79,7 @@ async function seed(page) {
   await tp.click('.tabs [data-act="more-menu"]');
   await tp.waitForSelector('.menu-list');
   const menu = await tp.$$eval('.menu-row b', (bs) => bs.map((b) => b.textContent.trim()));
-  check(menu.join('|') === 'Pase de lista|Proyectos|Proveedores|Digitadora|Papelera|Ajustes', '«Más» tiene: ' + menu.join(', '));
+  check(menu.join('|') === 'Pase de lista|Proyectos|Traslados de materiales|Proveedores|Digitadora|Papelera|Ajustes', '«Más» tiene: ' + menu.join(', '));
   await tp.screenshot({ path: path.join(OUT, 'mas.png') });
   await tp.click('.menu-row[data-go="asistencia"]');
   await tp.waitForSelector('#sheet-root', { state: 'hidden' });

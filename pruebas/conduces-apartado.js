@@ -61,7 +61,7 @@ const at = (hhmm) => new Date(`2026-11-06T${hhmm}:00-04:00`);
   await page.click('[data-act="backup-later"]').catch(() => {});
 
   // 1) El apartado Conduces.
-  check((await page.$$('.tabs [data-tab]')).length === 6 && /Conduces/.test(await txt(page, '.tabs')), 'la barra de abajo tiene la pestaña Conduces');
+  check((await page.$$('.tabs [data-tab]')).length === 7 && /Conduces/.test(await txt(page, '.tabs')), 'la barra de abajo tiene la pestaña Conduces');
   check(/8 conduces esperando su factura/.test(await txt(page, '#todo')), '«Para hacer»: 8 conduces esperando su factura');
   await page.click('#todo [data-act="cond-list"]');
   await page.waitForSelector('#c-list .cond-row');

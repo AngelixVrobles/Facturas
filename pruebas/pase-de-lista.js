@@ -59,7 +59,7 @@ const val = async (page, name) => (await rowOf(page, name).locator('.att-val').t
     return p.id;
   });
   await page.click('[data-act="backup-later"]').catch(() => {});
-  check((await page.$$('.tabs [data-tab]')).length === 6 && /Asistencia/.test(await page.textContent('.tabs')) && /Conduces/.test(await page.textContent('.tabs')), 'la barra de abajo tiene las pestañas Conduces y Asistencia');
+  check((await page.$$('.tabs [data-tab]')).length === 7 && /Asistencia/.test(await page.textContent('.tabs')) && /Conduces/.test(await page.textContent('.tabs')), 'la barra de abajo tiene las pestañas Conduces y Asistencia');
   await page.evaluate(() => document.querySelector('.tabs [data-tab="asistencia"]').click());
   await page.waitForSelector('#v-asistencia .empty');
   check(/Anota los obreros de esta obra/.test(await page.textContent('#v-asistencia')) && (await page.textContent('#title')) === 'Pase de lista', 'sin obreros: invita a anotarlos');
