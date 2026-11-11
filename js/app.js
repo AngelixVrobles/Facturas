@@ -10,7 +10,7 @@ const LIB = {
   qrgen: 'js/qr.js',
 };
 const PDF_CREATOR = 'Facturas de Proyectos';
-const APP_VERSION = '1.22.0';
+const APP_VERSION = '1.23.0';
 const SVG = (d) => `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ICON = {
   lock: SVG('<rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>'),
@@ -842,6 +842,7 @@ function invTags(i, D, opts = {}) {
   const minor = []; // lo que casi todas tienen o es solo informativo: va al final, como texto suave
   if (i.fiscal === 'qr' || i.fiscal === 'xml') minor.push(`<span class="pill official minor">${i.fiscal === 'xml' ? 'XML' : 'QR'} DGII</span>`);
   if (isCreditNcf(i.number)) tags.push('<span class="pill nc">Nota de crédito</span>');
+  if (i.changeOf) minor.push('<span class="pill nooc minor" title="Factura por el cambio de otra factura">Cambio</span>');
   if (((i.struck || []).length || i.struckFixed) && !struckPending(i)) minor.push('<span class="pill nooc minor" title="Artículos tachados (devueltos o cambiados), ya revisada">Con tachados</span>');
   if (reading) tags.push('<span class="pill reading">Leyendo…</span>');
   if (D.orders.length && (i.order || !isCreditNcf(i.number))) {
@@ -2768,13 +2769,13 @@ function runAI() {
     (job.condId ? readConduceWithAI(job.condId, job.input) : readWithAI(job.invId, job.input)).catch((e) => { console.error(e); return 'failed'; }).then((r) => { aiRunning--; aiActive.delete(key); job.res(r); runAI(); });
   }
 }
-const AI_FIELDS = ['es_factura', 'tipo_documento', 'proveedor', 'rnc_proveedor', 'ncf', 'ncf_vence', 'fecha', 'itbis', 'total', 'total_corregido', 'tachados', 'moneda', 'concepto', 'proyecto', 'rnc_cliente', 'referencia', 'conduces', 'conduce_numero', 'material', 'cantidad', 'viajes'];
+const AI_FIELDS = ['es_factura', 'tipo_documento', 'proveedor', 'rnc_proveedor', 'ncf', 'ncf_vence', 'fecha', 'itbis', 'total', 'total_corregido', 'tachados', 'cambio_de', 'moneda', 'concepto', 'proyecto', 'rnc_cliente', 'referencia', 'conduces', 'conduce_numero', 'material', 'cantidad', 'viajes'];
 const AI_SCHEMA = {
   type: 'object',
   properties: {
     es_factura: { type: 'boolean' }, proveedor: { type: 'string' }, rnc_proveedor: { type: 'string' }, ncf: { type: 'string' }, ncf_vence: { type: 'string' },
     fecha: { type: 'string' }, itbis: { type: 'string' }, total: { type: 'string' }, moneda: { type: 'string', enum: ['DOP', 'USD', 'EUR', ''] },
-    total_corregido: { type: 'string' },
+    total_corregido: { type: 'string' }, cambio_de: { type: 'string' },
     tachados: { type: 'array', items: { type: 'object', properties: { descripcion: { type: 'string' }, monto: { type: 'string' } }, required: ['descripcion', 'monto'], additionalProperties: false } },
     concepto: { type: 'string' }, proyecto: { type: 'string' }, rnc_cliente: { type: 'string' }, referencia: { type: 'string' },
     tipo_documento: { type: 'string', enum: ['factura', 'conduce', 'otro'] }, conduces: { type: 'string' }, conduce_numero: { type: 'string' },
@@ -2803,6 +2804,7 @@ function buildPrompt(text, withImage) {
     '- itbis: total de ITBIS facturado, solo el número con punto decimal (ej. 2880.00).',
     '- total: el total de la factura que aparece al pie (Total DOP, Total RD$ o Total a pagar), solo el número con punto decimal. No uses "Balance" ni "Saldo": ese es el saldo de la cuenta del cliente, no el total de esta factura. Aunque el total esté corregido a mano, aquí va el impreso.',
     '- tachados: los renglones (artículos) que están tachados a mano, con una raya encima, porque se devolvieron o se cambiaron por otra cosa. Pon cada uno con su descripción y su importe (el monto de ese renglón, solo el número con punto decimal; "" si no se lee). Si no hay ninguno tachado, deja la lista vacía. Un renglón solo subrayado, marcado con un cotejo o con una nota al lado no está tachado.',
+    '- cambio_de: si esta factura es por un cambio o una devolución de otra factura (dice cambio, sustitución o reemplazo, o menciona la factura original), el número o NCF de esa factura original; si no, "".',
     '- total_corregido: si el total se corrigió a mano (tachado y escrito otro, por renglones devueltos, cambiados o agregados a mano), el total nuevo escrito a mano, solo el número; si no, "".',
     '- moneda: "DOP" si está en pesos (RD$), "USD" si está en dólares (US$).',
     '- concepto: qué se está cobrando, máximo 80 caracteres.',
@@ -2862,6 +2864,15 @@ function parseAI(out, inv) {
   if (tach.length || hasFix) {
     upd.struck = tach; upd.struckOk = false; upd.struckFixed = hasFix; upd.printedTotal = printed;
     if (hasFix && !keep('amount')) upd.amount = round2(fixed);
+  }
+  // Si dice que es por el cambio de otra factura, se enlaza con ella (primero las del mismo proveedor).
+  const cref = s(o.cambio_de, 60);
+  if (cref && inv && !inv.changeOf) {
+    const n = RD.normNcf(cref), dg = cref.replace(/\D/g, '');
+    const sup = upd.supplier || inv.supplier || '', rn = upd.rnc || inv.rnc || '';
+    const hits = S.invoices.filter((x) => x.id !== inv.id && x.number && (RD.normNcf(x.number) === n || (dg.length >= 4 && RD.normNcf(x.number).replace(/\D/g, '').endsWith(dg))));
+    const hit = hits.find((x) => (rn && x.rnc && RD.normRnc(x.rnc) === RD.normRnc(rn)) || sameName(x.supplier, sup)) || (hits.length === 1 && RD.normNcf(hits[0].number) === n ? hits[0] : null);
+    if (hit) upd.changeOf = hit.id; else upd.changeRef = cref;
   }
   const crefs = (s(o.conduces, 300).match(/\d{3,12}/g) || []).slice(0, 40);
   if (crefs.length) upd.conduceRefs = crefs;
@@ -4177,9 +4188,35 @@ async function undoCrop(invId) {
 // Se anota qué se tachó y cuánto, el total impreso se guarda aparte y el monto a pagar queda rebajado.
 const struckSum = (i) => round2((i.struck || []).reduce((s, x) => s + (isNum(x.amount) ? x.amount : 0), 0));
 const struckPending = (i) => !!((i.struck || []).length || i.struckFixed) && !i.struckOk;
+// Cuando se cambia algo, en la factura lo tachan y dan otra factura con lo que se cambió: las dos quedan enlazadas.
+// La primera se paga sin lo tachado y la del cambio se paga completa.
+const changesOf = (i) => S.invoices.filter((x) => x.changeOf === i.id);
+const invShort = (x) => [x.supplier || 'Factura', x.number ? RD.normNcf(x.number) : '', isNum(x.amount) ? money(x.amount, x.currency) : ''].filter(Boolean).join(' · ');
+function tachChangeHTML(i, edit) {
+  let h = '';
+  if (i.changeOf) {
+    const parent = S.invoices.find((x) => x.id === i.changeOf);
+    h += `<div class="msg hint"><span>Es la factura del cambio de ${parent ? `<button type="button" class="link" data-act="open-inv" data-id="${esc(parent.id)}">${esc(invShort(parent))}</button>` : 'una factura que ya no está'}: lo que se cambió se paga en esta, y lo tachado en aquella no se paga.</span>${edit ? `<button type="button" class="btn sm" data-act="tc-unlink" data-id="${esc(i.id)}">Quitar el enlace</button>` : ''}</div>`;
+  }
+  const kids = changesOf(i);
+  if (kids.length) {
+    const ks = round2(kids.reduce((s, k) => s + (isNum(k.amount) ? k.amount : 0), 0)), st = struckSum(i), d = round2(ks - st);
+    h += `<div class="msg ok">${ICON.check}<span>Lo cambiado vino en ${kids.map((k) => `<button type="button" class="link" data-act="open-inv" data-id="${esc(k.id)}">${esc(invShort(k))}</button>`).join(', ')}.${st && ks ? ` Se tachó ${esc(money(st, i.currency))} y lo cambiado costó ${esc(money(ks, i.currency))}${Math.abs(d) >= 0.01 ? ` (${esc(money(Math.abs(d), i.currency))} ${d > 0 ? 'más' : 'menos'})` : ''}.` : ''}</span></div>`;
+  }
+  if (edit && !i.changeOf && ((i.struck || []).length || i.struckFixed)) {
+    const same = (x) => (i.rnc && x.rnc && RD.normRnc(x.rnc) === RD.normRnc(i.rnc)) || sameName(x.supplier, i.supplier);
+    const cands = S.invoices.filter((x) => x.id !== i.id && !x.changeOf && !x.notInvoice && same(x) && (!i.date || !x.date || x.date >= addDays(i.date, -3)))
+      .sort((a, b) => String(a.date || '').localeCompare(String(b.date || ''))).slice(0, 20);
+    h += cands.length
+      ? `<div class="field"><label for="tc-chg">¿Te dieron otra factura con lo que se cambió? Enlázala</label><div class="tc-link"><select id="tc-chg"><option value="">Elige la factura</option>${cands.map((x) => `<option value="${esc(x.id)}">${esc([x.number ? RD.normNcf(x.number) : 'Sin NCF', fmtDate(x.date), isNum(x.amount) ? money(x.amount, x.currency) : ''].filter(Boolean).join(' · '))}</option>`).join('')}</select><button type="button" class="btn sm" data-act="tc-link" data-id="${esc(i.id)}">Enlazar</button></div></div>`
+      : '<p class="hint">Si por lo cambiado te dan otra factura, cuando la agregues enlázala aquí. Si esa factura dice que es por el cambio de esta, se enlaza sola.</p>';
+  }
+  return h;
+}
 function tachHTML(i, edit) {
   const list = i.struck || [];
-  if (!list.length && !i.struckFixed && !edit) return '';
+  const linked = !!i.changeOf || changesOf(i).length > 0;
+  if (!list.length && !i.struckFixed && !edit && !linked) return '';
   const cur = i.currency;
   const sum = struckSum(i);
   const official = i.fiscal === 'qr' || i.fiscal === 'xml';
@@ -4197,8 +4234,8 @@ function tachHTML(i, edit) {
     : list.length || i.struckFixed ? `<p class="usage">Monto revisado.</p>` : '';
   const add = edit ? `<div class="ab-add"><input id="tc-desc" maxlength="120" placeholder="Qué se tachó (ej. 2 codos de 1/2)" aria-label="Artículo tachado"><input id="tc-amt" class="mono" inputmode="decimal" maxlength="18" placeholder="Monto" aria-label="Monto del artículo"><button type="button" class="btn sm" data-act="tc-add" data-id="${esc(i.id)}">${ICON.plus} Anotar</button></div>` : '';
   const note = edit ? `<div class="field"><label for="tc-note">Quién lo devolvió o lo cambió, y por qué</label><input id="tc-note" maxlength="120" value="${esc(i.struckNote || '')}" placeholder="Ej. el plomero los cambió por codos de 3/4"></div>` : i.struckNote ? `<p class="usage">${esc(i.struckNote)}</p>` : '';
-  const sumTxt = list.length ? ` · ${list.length} · ${money(sum, cur)}` : i.struckFixed ? ' · total corregido a mano' : '';
-  return `<details class="edit" id="inv-tach"${list.length || i.struckFixed ? ' open' : ''}><summary>Artículos tachados (devueltos o cambiados)${esc(sumTxt)}</summary><div class="ab-box">${rows || (i.struckFixed ? '' : '<p class="hint">Si en la factura tacharon algo porque se devolvió o se cambió por otra cosa, anótalo aquí: no se paga lo tachado.</p>')}${state}${calc}${add}${note}</div></details>`;
+  const sumTxt = (list.length ? ` · ${list.length} · ${money(sum, cur)}` : i.struckFixed ? ' · total corregido a mano' : '') + (i.changeOf ? ' · es un cambio' : changesOf(i).length ? ' · con la factura del cambio' : '');
+  return `<details class="edit" id="inv-tach"${list.length || i.struckFixed || linked ? ' open' : ''}><summary>Artículos tachados (devueltos o cambiados)${esc(sumTxt)}</summary><div class="ab-box">${rows || (i.struckFixed || i.changeOf ? '' : '<p class="hint">Si en la factura tacharon algo porque se devolvió o se cambió por otra cosa, anótalo aquí: no se paga lo tachado.</p>')}${state}${calc}${tachChangeHTML(i, edit)}${i.changeOf ? '' : add + note}</div></details>`;
 }
 function refreshTach(invId) {
   setTimeout(() => {
@@ -5686,6 +5723,8 @@ function onClick(e) {
     case 'digi-undo-one': digiUndoOne(id); break;
     case 'ab-add': addAbono(id); break;
     case 'tc-add': addTach(id); break;
+    case 'tc-link': { const v = ($('#tc-chg') || {}).value; if (!v) { toast('Elige la factura del cambio.'); break; } write(() => db.doc('invoices/' + v).update({ changeOf: id, changeRef: '' }), 'Enlazada: es la factura del cambio').then((ok) => { if (ok) refreshTach(id); }); break; }
+    case 'tc-unlink': write(() => db.doc('invoices/' + id).update({ changeOf: null }), 'Enlace quitado').then((ok) => { if (ok) refreshTach(id); }); break;
     case 'tc-rm': removeTach(id, Number(t.dataset.k)); break;
     case 'tc-apply': applyTach(id, Number(t.dataset.v)); break;
     case 'tc-ok': write(() => db.doc('invoices/' + id).update({ struckOk: true }), 'Listo: monto revisado').then((ok) => { if (ok) refreshTach(id); }); break;

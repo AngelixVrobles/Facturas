@@ -93,6 +93,20 @@ const answers = [];
   await page.waitForSelector('#sheet-root', { state: 'hidden', timeout: 5000 }).catch(() => {});
   check(!(await page.isVisible('#sheet-root')), 'la factura se cierra sin pedir guardar (lo de los tachados se guarda solo)');
 
+  // 1b) Dieron otra factura con lo que se cambió, y dice que es por el cambio de la primera: se enlaza sola.
+  const ch = await upload('cambio.png', { proveedor: 'Ferretería Ochoa', rnc_proveedor: '131023452', ncf: 'B0100000888', fecha: '2026-11-10', itbis: '', total: '1,200.00', proyecto: 'Caperuza 2', cambio_de: 'Factura B0100000555' });
+  check(ch && ch.changeOf === a.id, 'la factura del cambio que menciona la primera se enlaza sola');
+  check(JSON.stringify(calls[calls.length - 1].messages || '').includes('cambio_de'), 'la lectura pregunta si la factura es por el cambio de otra');
+  await settle(page, 300);
+  check(/Cambio/.test(await txt(page, `#f-list [data-id="${ch.id}"]`)), 'la factura del cambio lleva la etiqueta «Cambio»');
+  await page.click(`#f-list [data-act="open-inv"][data-id="${a.id}"]`);
+  await page.waitForSelector('#inv-tach[open]');
+  check(/Lo cambiado vino en Ferretería Ochoa · B0100000888 · RD\$1,200\.00/.test(await txt(page, '#inv-tach')) && /Se tachó RD\$1,000\.00 y lo cambiado costó RD\$1,200\.00 \(RD\$200\.00 más\)/.test(await txt(page, '#inv-tach')), 'la primera dice en qué factura vino lo cambiado y compara los montos');
+  await page.click('#inv-tach [data-act="open-inv"]');
+  await page.waitForSelector('#inv-tach');
+  check(/Es la factura del cambio de Ferretería Ochoa · B0100000555/.test(await txt(page, '#inv-tach')), 'la del cambio dice de cuál factura es');
+  await page.click('.sheet-h [data-act="sheet-close"]');
+
   // 2) Total corregido a mano: ese es el que se paga; queda para revisar.
   let b = await upload('corregida.png', { proveedor: 'Bloques del Cibao', rnc_proveedor: '131555777', ncf: 'B0100000666', fecha: '2026-11-09', itbis: '', total: '3,500.00', total_corregido: '3,200.00', proyecto: 'Caperuza 2' });
   check(b && b.amount === 3200 && b.printedTotal === 3500 && b.struckFixed === true && b.struckOk === false, 'con el total corregido a mano, se paga el corregido (3,200) y el impreso (3,500) queda aparte');
@@ -106,6 +120,7 @@ const answers = [];
 
   // 3) Sin lectura: se anotan a mano.
   let c = await upload('sin-tachar.png', { proveedor: 'Ferretería Ochoa', rnc_proveedor: '131023452', ncf: 'B0100000777', fecha: '2026-11-10', total: '2,000.00', proyecto: 'Caperuza 2' });
+  const dd = await upload('otra.png', { proveedor: 'Ferretería Ochoa', rnc_proveedor: '131023452', ncf: 'B0100000999', fecha: '2026-11-11', total: '300.00', proyecto: 'Caperuza 2' });
   check(c && !c.struck && c.amount === 2000, 'una factura sin tachados queda igual');
   await page.click(`#f-list [data-act="open-inv"][data-id="${c.id}"]`);
   await page.waitForSelector('#inv-tach');
@@ -116,6 +131,19 @@ const answers = [];
   await settle(page, 500);
   c = (await docs(page, 'invoices')).find((i) => i.id === c.id);
   check(c.struck.length === 1 && c.struck[0].amount === 300 && c.printedTotal === 2000 && c.struckOk === false && /= RD\$1,700\.00/.test(await txt(page, '#inv-tach')), 'anotado a mano: guarda el impreso y propone RD$1,700');
+  // Enlazarla a mano con la factura del cambio, y quitar el enlace desde esa.
+  await page.selectOption('#tc-chg', dd.id);
+  await page.click('[data-act="tc-link"]');
+  await settle(page, 600);
+  check((await docs(page, 'invoices')).find((i) => i.id === dd.id).changeOf === c.id && /Lo cambiado vino en/.test(await txt(page, '#inv-tach')), 'se enlaza a mano la factura del cambio');
+  await page.click('#inv-tach [data-act="open-inv"]');
+  await page.waitForSelector('[data-act="tc-unlink"]');
+  await page.click('[data-act="tc-unlink"]');
+  await settle(page, 600);
+  check(!(await docs(page, 'invoices')).find((i) => i.id === dd.id).changeOf, 'y se quita el enlace');
+  await page.click('.sheet-h [data-act="sheet-close"]');
+  await page.click(`#f-list [data-act="open-inv"][data-id="${c.id}"]`);
+  await page.waitForSelector('#inv-tach[open]');
   await page.click('[data-act="tc-rm"]');
   await settle(page, 500);
   c = (await docs(page, 'invoices')).find((i) => i.id === c.id);

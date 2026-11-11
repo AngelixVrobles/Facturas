@@ -1,6 +1,6 @@
 /* Service worker: guarda la app para que abra sin internet
    y sirve las fotos y PDF guardados en el teléfono (rutas ./_blob/<id>). */
-const VERSION = 'facturas-1.22.0';
+const VERSION = 'facturas-1.23.0';
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest',
   'js/rd.js', 'js/qr.js', 'js/xlsx-zip.js', 'js/runtime.js', 'js/app.js',
