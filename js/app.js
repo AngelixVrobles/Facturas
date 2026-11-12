@@ -10,7 +10,7 @@ const LIB = {
   qrgen: 'js/qr.js',
 };
 const PDF_CREATOR = 'Facturas de Proyectos';
-const APP_VERSION = '1.23.0';
+const APP_VERSION = '1.23.1';
 const SVG = (d) => `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ICON = {
   lock: SVG('<rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>'),
@@ -2448,6 +2448,8 @@ async function nubeConnect(btn) {
   const url = code ? code.url : raw;
   const key = code ? code.key : $('#nb-key').value.trim();
   const email = $('#nb-email').value.trim(), password = $('#nb-pass').value;
+  if (!code && /facturas-nube/i.test(raw)) { msg.textContent = 'El código se dañó al pegarlo (pasa a veces al copiarlo de WhatsApp o de Notas). Cópialo otra vez entero, o en Datos de conexión pon solo la URL del proyecto (https://….supabase.co) y en Clave pública la clave que empieza con sb_publishable_.'; return; }
+  if (!code && url && !/^(https?:\/\/)?[a-z0-9-]+(\.[a-z0-9-]+)+(:\d+)?(\/\S*)?$/i.test(url) && !/^[a-z0-9]{20}$/i.test(url)) { msg.textContent = 'Eso no parece la URL del proyecto. Debe ser como https://abcdefghijklmnopqrst.supabase.co (está en supabase.com, en el botón Connect del proyecto), o el código FACTURAS-NUBE que te mandaron.'; return; }
   if (!url || !key || !email || !password) { msg.textContent = 'Faltan datos: el código (o la URL y la clave), el correo y la contraseña.'; return; }
   btn.disabled = true;
   msg.textContent = 'Conectando…';
@@ -2455,7 +2457,7 @@ async function nubeConnect(btn) {
     await RT.sync.connect({ url, key, email, password });
     toast('Conectado. Los datos se están poniendo al día.');
   } catch (e) {
-    if (msg.isConnected) msg.textContent = { auth: 'El correo o la contraseña no son correctos, o falta crear ese usuario en la nube.', offline: 'No se pudo llegar a la nube. Revisa el internet y la URL.', bad_input: 'Faltan datos.' }[e && e.code] || 'No se pudo conectar. Revisa la URL y la clave.';
+    if (msg.isConnected) msg.textContent = { auth: 'El correo o la contraseña no son correctos, o falta crear ese usuario en la nube.', offline: 'No se pudo llegar a la nube. Revisa el internet (prueba también con datos móviles) y la URL. Si en tus otros aparatos la nube dice «En pausa» o «Sin conexión», entra a supabase.com, abre el proyecto y toca «Restore».', bad_input: 'Faltan datos.' }[e && e.code] || 'No se pudo conectar. Revisa la URL y la clave.';
     btn.disabled = false;
   }
 }

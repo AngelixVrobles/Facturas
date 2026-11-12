@@ -169,6 +169,26 @@ const at = (hhmm) => new Date(`2026-11-06T${hhmm}:00-04:00`);
   await page.waitForFunction(() => { const t = document.querySelector('#nb-msg')?.textContent || ''; return t.length > 5 && !/Conectando/.test(t); }, null, { timeout: 10000 }).catch(() => {});
   check(/^https:\/\/abcdefghijklmnopqrst\.supabase\.co\/auth\/v1\/token/.test(asked) && /no son correctos/.test(await txt(page, '#nb-msg')), 'con la dirección del panel, la app llama a la del proyecto (' + (asked || 'no llamó') + ')');
 
+  // 6) El código que el teléfono cambió al pegarlo (minúsculas, saltos de línea) igual sirve; uno dañado o una URL que no es, lo dice claro.
+  const goodCode = 'FACTURAS-NUBE:' + Buffer.from(JSON.stringify({ url: 'https://abcdefghijklmnopqrst.supabase.co', key: 'sb_publishable_prueba' })).toString('base64');
+  const mangled = goodCode.replace('FACTURAS-NUBE:', 'facturas-nube: ').replace(/^(.{40})/, '$1\n');
+  asked = '';
+  await page.fill('#nb-code', mangled);
+  await page.fill('#nb-key', '');
+  await page.click('[data-act="nube-connect"]');
+  await page.waitForFunction(() => { const t = document.querySelector('#nb-msg')?.textContent || ''; return t.length > 5 && !/Conectando/.test(t); }, null, { timeout: 10000 }).catch(() => {});
+  check(/^https:\/\/abcdefghijklmnopqrst\.supabase\.co\/auth\/v1\/token/.test(asked) && /no son correctos/.test(await txt(page, '#nb-msg')), 'el código pegado en minúsculas y partido en dos líneas igual se entiende');
+  asked = '';
+  await page.fill('#nb-code', 'facturas-nube:eyJ1cmwiOiJodHRwczovL3Z3Y3N1a3Zq');
+  await page.click('[data-act="nube-connect"]');
+  await settle(page, 300);
+  check(!asked && /El código se dañó al pegarlo/.test(await txt(page, '#nb-msg')), 'un código dañado: lo dice y explica qué hacer (sin intentar conectar)');
+  await page.fill('#nb-code', 'hola esto no es');
+  await page.fill('#nb-key', 'sb_publishable_prueba');
+  await page.click('[data-act="nube-connect"]');
+  await settle(page, 300);
+  check(!asked && /Eso no parece la URL del proyecto/.test(await txt(page, '#nb-msg')), 'algo que no es la URL del proyecto: lo dice');
+
   console.log('problemas:', problems.length ? problems : 'ninguno');
   await browser.close();
   server.close();

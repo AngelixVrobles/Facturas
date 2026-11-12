@@ -545,10 +545,11 @@
   }
   // Código para conectar otro teléfono (URL y clave pública; sin la contraseña).
   const shareCode = () => (nube ? 'FACTURAS-NUBE:' + btoa(JSON.stringify({ url: nube.url, key: nube.key })) : '');
+  // El código se acepta aunque al pegarlo el teléfono le cambie las mayúsculas del principio o le meta espacios o saltos de línea.
   function parseShareCode(text) {
-    const m = /FACTURAS-NUBE:([A-Za-z0-9+/=]+)/.exec(String(text || ''));
+    const m = /facturas-nube\s*:\s*([A-Za-z0-9+/=\s]+)/i.exec(String(text || ''));
     if (!m) return null;
-    try { const o = JSON.parse(atob(m[1])); return o && o.url && o.key ? { url: String(o.url), key: String(o.key) } : null; } catch (e) { return null; }
+    try { const o = JSON.parse(atob(m[1].replace(/\s+/g, ''))); return o && o.url && o.key ? { url: String(o.url), key: String(o.key) } : null; } catch (e) { return null; }
   }
   setInterval(() => { if (nube && document.visibilityState === 'visible') syncNow(); }, 30000);
   window.addEventListener('online', () => scheduleSync(500));
