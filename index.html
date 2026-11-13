@@ -428,6 +428,20 @@ body.locked .toast { top: calc(14px + env(safe-area-inset-top, 0px)); bottom: au
 .tr-lines { margin: 6px 0 10px; padding-left: 18px; }
 .tr-lines li + li { margin-top: 3px; }
 .field[hidden] { display: none; }
+/* Lo que le falta a cada factura, en una línea; los pasos de la factura; los filtros guardados en el teléfono. */
+.falta { flex-basis: 100%; font-size: 13px; line-height: 1.35; color: var(--ink); }
+.falta b { font-weight: 650; color: var(--pend); }
+.falta.rev b { color: var(--warn); }
+.falta.ok { color: var(--paid); font-weight: 600; }
+.steps { display: flex; flex-wrap: wrap; gap: 6px; }
+.steps .st { display: inline-flex; align-items: center; gap: 4px; font: 650 12.5px/1 var(--font-body); padding: 6px 10px; border-radius: 999px; }
+.steps .st svg { width: 13px; height: 13px; }
+.steps .st.ok { color: var(--paid); background: var(--paid-bg); }
+.steps .st.todo { color: var(--pend); background: var(--pend-bg); }
+.steps .st.na { color: var(--muted); background: var(--surface-2); }
+.filt-btn { align-self: flex-start; border: 0; background: none; color: var(--accent); font: 650 14px var(--font-body); padding: 2px 0; text-decoration: underline; text-underline-offset: 3px; }
+@media (max-width: 959px) { .f-filters:not(.open) { display: none; } }
+@media (min-width: 960px) { .filt-btn { display: none; } }
 .tc-link { display: flex; gap: 6px; }
 .rep-g { display: flex; flex-direction: column; gap: 6px; padding: 10px 0; border-top: 1px solid var(--line); }
 .rep-card h2 + .hint + .rep-g { border-top: 0; }
@@ -746,17 +760,18 @@ input[type="date"]::-webkit-calendar-picker-indicator { margin: 0 0 0 4px; paddi
 
   <section id="v-facturas" class="view">
     <div id="todo" hidden></div>
-    <div class="seg" id="f-seg" role="group" aria-label="Estado de las facturas"></div>
-    <div class="f-filters" id="f-filters">
-      <div class="chips" id="f-chips" role="group" aria-label="Proyecto"></div>
-      <div class="chips" id="f-ochips" role="group" aria-label="Orden de compra" hidden></div>
-      <div class="date-row" id="f-dates" hidden></div>
-    </div>
+    <div class="seg seg3" id="f-seg" role="group" aria-label="Facturas pendientes o listas"></div>
     <label class="search-box">
       <span class="sr">Buscar facturas</span>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>
       <input id="f-search" type="search" placeholder="Buscar proveedor, NCF, RNC u obra" autocomplete="off" enterkeyhint="search">
     </label>
+    <button type="button" class="filt-btn" id="f-filt" data-act="filters" aria-controls="f-filters" aria-expanded="false">Filtrar por proyecto, orden o fecha</button>
+    <div class="f-filters" id="f-filters">
+      <div class="chips" id="f-chips" role="group" aria-label="Proyecto"></div>
+      <div class="chips" id="f-ochips" role="group" aria-label="Orden de compra" hidden></div>
+      <div class="date-row" id="f-dates" hidden></div>
+    </div>
     <div id="queue" class="queue" hidden aria-live="polite"></div>
     <div id="f-sum"></div>
     <div id="f-list"><p class="loading">Cargando tus facturas…</p></div>

@@ -10,7 +10,7 @@ const LIB = {
   qrgen: 'js/qr.js',
 };
 const PDF_CREATOR = 'Facturas de Proyectos';
-const APP_VERSION = '1.27.0';
+const APP_VERSION = '1.28.0';
 const SVG = (d) => `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ICON = {
   lock: SVG('<rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>'),
@@ -75,7 +75,7 @@ const errList = () => { try { return JSON.parse(lsGet(ERR_KEY) || '[]'); } catch
 const PAY_LABEL = { armando: 'Por presentar', presentado: 'Presentado', pagado: 'Pagado' };
 const INV_LABEL = { pendiente: 'Pendiente', enpago: 'En pago', presentada: 'Presentada', pagada: 'Pagada' };
 const GROUP_OF = { pendiente: 'pendientes', enpago: 'tramite', presentada: 'tramite', pagada: 'pagadas' };
-const SEGS = [['pendientes', 'Pendientes'], ['tramite', 'En trámite'], ['pagadas', 'Pagadas'], ['todas', 'Todas']];
+const SEGS = [['pendientes', 'Pendientes'], ['listas', 'Listas'], ['todas', 'Todas']];
 // Cómo se paga una factura: en un pago de la app (a crédito, lo normal), ya se pagó (al contado al comprar, o por fuera
 // de la app) o se pagó al contado y hay que reponérselo a quien pagó (de su bolsillo o de la caja chica).
 const PAY_METHODS = ['Efectivo', 'Transferencia', 'Tarjeta', 'Cheque'];
@@ -655,7 +655,7 @@ function visibleList(D) {
   const q = norm(S.search);
   let list = D.invoices.filter((i) => inProject(i) && (!!S.focus || inDates(i)));
   if (S.focus) list = list.filter((i) => i.status !== 'pagada' && (FOCUS[S.focus] || FOCUS.sinorden)(i, D));
-  else list = list.filter((i) => S.filter === 'todas' || GROUP_OF[i.status] === S.filter);
+  else list = list.filter((i) => S.filter === 'todas' || invGroup(i, D) === S.filter);
   if (!S.focus && D.orders.length && S.invOrder !== 'all') list = list.filter((i) => (S.invOrder === 'con' ? !!i.order : !i.order));
   if (q) list = list.filter((i) => norm([i.supplier, i.number, i.rnc, i.concept, i.ref, i.project && i.project.name, i.fileName, (i.orders || []).map(orderNo).join(' '), (i.conduces || []).map((c) => c.number).join(' ')].join(' ')).includes(q));
   return list.sort(sortByDateDesc);
@@ -912,15 +912,38 @@ function thumbHTML(i) {
   return `<span class="thumb">${inner}${i.status === 'pagada' ? '<span class="stamp pagado">Pagada</span>' : ''}</span>`;
 }
 // Las etiquetas de una factura (proyecto, estado, orden, conduces, digitadora, avisos…).
+// Lo que le falta a una factura para terminar su proceso (datos, orden de compra, digitadora y pago) y lo que hay que
+// revisarle. La pantalla principal muestra las que tienen algo pendiente; las demás están «Listas».
+function invMissing(i, D) {
+  const falta = [], revisar = [];
+  if (i.ai === 'pending') return { falta, revisar, reading: true, done: false };
+  for (const f of reviewFlags(i, D)) { if (f === 'Sin orden') continue; if (/^Falta /.test(f)) falta.push(f.slice(6)); else revisar.push(f); }
+  if (needsOrder(i, D)) falta.push('orden de compra');
+  if (!i.envio && !i.notInvoice) falta.push('mandarla a la digitadora');
+  if (i.status === 'pendiente') falta.push(i.payMode === 'reponer' ? `reponerle a ${i.paidBy || 'quien pagó'}` : 'pagarla');
+  else if (i.status === 'enpago') falta.push('presentar su pago');
+  else if (i.status === 'presentada') falta.push('que la paguen');
+  return { falta, revisar, done: !falta.length && !revisar.length };
+}
+const invGroup = (i, D) => (invMissing(i, D).done ? 'listas' : 'pendientes');
+// Los cuatro pasos de la factura, en una línea.
+function invStepsHTML(i, D) {
+  const flags = reviewFlags(i, D).filter((f) => f !== 'Sin orden');
+  const st = (cls, label, title) => `<span class="st ${cls}" title="${esc(title)}">${cls === 'ok' ? ICON.check : ''}${esc(label)}</span>`;
+  return `<div class="steps" id="inv-steps">${[
+    flags.length ? st('todo', 'Datos', 'Revisar: ' + flags.join(', ')) : st('ok', 'Datos', 'Datos completos'),
+    i.order ? st(i.orders.every((o) => o.status === 'autorizada') ? 'ok' : 'todo', 'Orden', i.orders.map((o) => orderNo(o) + ' ' + (ORDER_LABEL[o.status] || '').toLowerCase()).join(', ')) : needsOrder(i, D) ? st('todo', 'Orden', 'Falta la orden de compra') : st('na', 'Sin orden', 'No lleva orden de compra'),
+    i.notInvoice ? '' : i.envio ? st('ok', 'Digitadora', 'Ya se le mandó a la digitadora') : st('todo', 'Digitadora', 'Falta mandarla a la digitadora'),
+    i.status === 'pagada' ? st('ok', 'Pago', 'Pagada') : st('todo', 'Pago', INV_LABEL[i.status]),
+  ].join('')}</div>`;
+}
 function invTags(i, D, opts = {}) {
   const tags = [], reading = i.ai === 'pending';
   if (!opts.hideProject && i.project) tags.push(`<span class="proj"><i class="dot" style="--c:${i.project.color}"></i><span>${esc(i.project.name)}</span></span>`);
-  if (!opts.hideStatus) tags.push(`<span class="pill ${i.status}">${INV_LABEL[i.status]}</span>`);
+  if (!opts.hideStatus && i.status !== 'pendiente') tags.push(`<span class="pill ${i.status}">${INV_LABEL[i.status]}</span>`);
   const minor = []; // lo que casi todas tienen o es solo informativo: va al final, como texto suave
-  if (i.fiscal === 'qr' || i.fiscal === 'xml') minor.push(`<span class="pill official minor">${i.fiscal === 'xml' ? 'XML' : 'QR'} DGII</span>`);
   if (isCreditNcf(i.number)) tags.push('<span class="pill nc">Nota de crédito</span>');
-  if (i.payMode === 'reponer') tags.push(`<span class="pill enpago" title="Se pagó al contado: hay que reponérselo">Reponer a ${esc(i.paidBy || '…')}</span>`);
-  else if (i.payMode === 'directo' && !i.pay) minor.push(`<span class="pill nooc minor" title="${esc(payText(i))}">${esc(i.payMethod || 'Pagada aparte')}</span>`);
+  if (i.payMode === 'directo' && !i.pay) minor.push(`<span class="pill nooc minor" title="${esc(payText(i))}">${esc(i.payMethod || 'Pagada aparte')}</span>`);
   if (i.changeOf) minor.push('<span class="pill nooc minor" title="Factura por el cambio de otra factura">Cambio</span>');
   if (((i.struck || []).length || i.struckFixed) && !struckPending(i)) minor.push('<span class="pill nooc minor" title="Artículos tachados (devueltos o cambiados), ya revisada">Con tachados</span>');
   if (reading) tags.push('<span class="pill reading">Leyendo…</span>');
@@ -932,17 +955,18 @@ function invTags(i, D, opts = {}) {
         tags.push(`<span class="pill oc ${cls}" title="Orden de compra ${esc(orderNo(o))}: ${esc(ORDER_LABEL[st] || '')}"><b>${esc(orderNo(o))}</b>${st === 'autorizada' ? '' : `<span> ${esc((ORDER_LABEL[st] || '').toLowerCase())}</span>`}</span>`);
       }
     }
-    else if (i.noOrder) minor.push('<span class="pill nooc minor">No lleva orden</span>');
-    else if (!needsOrder(i, D)) minor.push('<span class="pill nooc minor">Sin orden</span>');
   }
   const nc = (i.conduces || []).length;
   if (nc) minor.push(`<span class="pill cond minor">${nc === 1 ? (i.conduces[0].number ? 'Conduce <b>' + esc(i.conduces[0].number) + '</b>' : 'Conduce') : nc + ' conduces'}</span>`);
-  if (!i.envio && !i.notInvoice && !opts.hideDigi) minor.push('<span class="pill digi minor" title="Todavía no se ha mandado a la digitadora">Por digitar</span>');
   if (i.abonado > 0 && i.status !== 'pagada') tags.push(`<span class="pill pendiente">Balance ${esc(money(i.toPay, i.currency))}</span>`);
   const di = dueInfo(i);
   if (di && (di.overdue || di.days <= 7)) tags.push(`<span class="pill ${di.overdue ? 'warn' : 'pendiente'}">${dueText(di)}</span>`);
-  for (const r of reviewFlags(i, D)) tags.push(`<span class="pill warn">${esc(r)}</span>`);
-  return [...tags, ...minor];
+  const m = invMissing(i, D), out = [...tags, ...minor];
+  if (m.revisar.length) out.push(`<span class="falta rev"><b>Revisar:</b> ${esc(m.revisar.join(' · '))}</span>`);
+  if (opts.brief) return out;
+  if (m.falta.length) out.push(`<span class="falta"><b>Le falta:</b> ${esc(m.falta.join(' · '))}</span>`);
+  else if (m.done) out.push('<span class="falta ok">Lista: no le falta nada</span>');
+  return out;
 }
 function cardHTML(i, D, opts = {}) {
   const reading = i.ai === 'pending';
@@ -979,7 +1003,7 @@ function invTableHTML(items, D, gk = 'g', opts = {}) {
   const pick = canEdit() && !opts.noPick, rm = !!opts.rm;
   const rows = sortRows('inv', items, invVal).map((i) => {
     const name = i.supplier || (i.ai === 'pending' ? 'Leyendo factura…' : 'Factura sin datos');
-    return `<tr data-act="open-inv" data-id="${esc(i.id)}"${S.sel.has(i.id) ? ' class="sel"' : ''}>${pick ? `<td class="c-sel" data-act="sel-cell"><input type="checkbox" data-act="sel" data-sel="inv" data-g="${esc(gk)}" value="${esc(i.id)}" aria-label="Elegir"${S.sel.has(i.id) ? ' checked' : ''}></td>` : ''}<td class="c-main"><span class="c-th">${thumbHTML(i)}</span><button type="button" class="row-btn${i.supplier ? '' : ' muted'}" data-act="open-inv" data-id="${esc(i.id)}">${esc(name)}</button></td><td class="mono">${esc(i.number ? RD.normNcf(i.number) : '—')}</td><td>${esc(fmtDate(i.date) || '—')}</td><td><span class="pill ${i.status}">${INV_LABEL[i.status]}</span></td><td class="c-tags">${invTags(i, D, { hideProject: true, hideStatus: true }).join('')}</td><td class="r mono">${esc(money(i.amount, i.currency))}</td>${rm ? `<td class="c-rm"><button type="button" class="icon-btn sm" data-act="pay-rm" data-id="${esc(i.id)}" aria-label="Quitar del pago" title="Quitar del pago">${ICON.close}</button></td>` : ''}</tr>`;
+    return `<tr data-act="open-inv" data-id="${esc(i.id)}"${S.sel.has(i.id) ? ' class="sel"' : ''}>${pick ? `<td class="c-sel" data-act="sel-cell"><input type="checkbox" data-act="sel" data-sel="inv" data-g="${esc(gk)}" value="${esc(i.id)}" aria-label="Elegir"${S.sel.has(i.id) ? ' checked' : ''}></td>` : ''}<td class="c-main"><span class="c-th">${thumbHTML(i)}</span><button type="button" class="row-btn${i.supplier ? '' : ' muted'}" data-act="open-inv" data-id="${esc(i.id)}">${esc(name)}</button></td><td class="mono">${esc(i.number ? RD.normNcf(i.number) : '—')}</td><td>${esc(fmtDate(i.date) || '—')}</td><td><span class="pill ${i.status}">${INV_LABEL[i.status]}</span></td><td class="c-tags">${invTags(i, D, { hideProject: true, hideStatus: true, brief: !!opts.noPick }).join('')}</td><td class="r mono">${esc(money(i.amount, i.currency))}</td>${rm ? `<td class="c-rm"><button type="button" class="icon-btn sm" data-act="pay-rm" data-id="${esc(i.id)}" aria-label="Quitar del pago" title="Quitar del pago">${ICON.close}</button></td>` : ''}</tr>`;
   }).join('');
   return `<table class="tbl inv-tbl"><colgroup>${pick ? '<col class="w-sel">' : ''}<col class="w-main"><col class="w-ncf"><col class="w-date"><col class="w-st"><col><col class="w-amt">${rm ? '<col class="w-rm">' : ''}</colgroup><thead><tr>${pick ? `<th class="c-sel"><input type="checkbox" data-act="sel" data-sel="all" data-g="${esc(gk)}" aria-label="Elegir todas"></th>` : ''}${thHTML('inv', 'supplier', 'Proveedor')}${thHTML('inv', 'number', 'NCF')}${thHTML('inv', 'date', 'Fecha')}${thHTML('inv', 'status', 'Estado')}${thHTML('inv', '', 'Etiquetas')}${thHTML('inv', 'amount', 'Monto', 'r')}${rm ? '<th class="c-rm"></th>' : ''}</tr></thead><tbody>${rows}</tbody></table>`;
 }
@@ -1055,8 +1079,10 @@ function renderFacturas(D) {
   renderTodo(D);
   if (S.projectFilter !== 'all' && S.projectFilter !== 'none' && !D.projById.has(S.projectFilter) && S.got.projects) S.projectFilter = 'all';
   const base = D.invoices.filter((i) => inProject(i) && inDates(i));
-  const counts = { pendientes: 0, tramite: 0, pagadas: 0, todas: base.length };
-  for (const i of base) counts[GROUP_OF[i.status]]++;
+  if (!SEGS.some(([k]) => k === S.filter)) S.filter = 'pendientes';
+  const counts = { pendientes: 0, listas: 0, todas: base.length };
+  for (const i of base) counts[invGroup(i, D)]++;
+  { const nf = (S.projectFilter !== 'all') + (S.invOrder !== 'all') + !!S.dateFilter, fb = $('#f-filt'); if (fb) { fb.textContent = S.showFilters ? 'Ocultar los filtros' : nf ? `Filtros (${nf} puesto${nf === 1 ? '' : 's'})` : 'Filtrar por proyecto, orden o fecha'; fb.setAttribute('aria-expanded', String(!!S.showFilters)); } $('#f-filters').classList.toggle('open', !!S.showFilters); }
   $('#f-seg').innerHTML = SEGS.map(([k, label]) => `<button type="button" data-act="filter" data-f="${k}" aria-pressed="${S.filter === k}"><span>${label}</span><span class="n">${counts[k]}</span></button>`).join('');
   const noneN = D.invoices.filter((i) => !i.project).length;
   const chips = [`<button type="button" class="chip" data-act="projf" data-p="all" aria-pressed="${S.projectFilter === 'all'}"><span>Todos los proyectos</span></button>`];
@@ -1065,7 +1091,7 @@ function renderFacturas(D) {
   $('#f-chips').innerHTML = chips.join('');
   const och = $('#f-ochips');
   if (D.orders.length && !S.focus) {
-    const pool = base.filter((i) => S.filter === 'todas' || GROUP_OF[i.status] === S.filter);
+    const pool = base.filter((i) => S.filter === 'todas' || invGroup(i, D) === S.filter);
     const con = pool.filter((i) => i.order).length;
     och.hidden = false;
     och.innerHTML = [['all', 'Todas', pool.length], ['con', 'Con orden', con], ['sin', 'Sin orden', pool.length - con]]
@@ -1089,7 +1115,7 @@ function renderFacturas(D) {
   const list = visibleList(D);
   const sum = $('#f-sum');
   if (S.got.invoices && base.length) {
-    const canMake = !S.focus && S.filter === 'pendientes' && list.length && canEdit();
+    const canMake = !S.focus && S.filter === 'pendientes' && list.some((i) => i.status === 'pendiente') && canEdit();
     const acts = (list.length ? `<button type="button" class="btn sm" data-act="list-xlsx">${ICON.sheet} Excel</button>` : '') + (canMake ? `<button type="button" class="btn sm" data-act="new-pay-from">Armar pago con estas ${ICON.right}</button>` : '');
     const focusLine = S.focus ? `<div class="focus-line"><span class="grow">Mostrando: <b>${FOCUS_LABEL[S.focus] || FOCUS_LABEL.sinorden}</b></span><button type="button" class="btn sm" data-act="focus-off">Ver todas</button></div>` : '';
     sum.innerHTML = `${focusLine}<div class="sumline"><span>${plural(list.length, 'factura', 'facturas')} · <b class="mono">${esc(totalStr(list, 'toPay'))}</b></span>${acts ? `<span class="acts">${acts}</span>` : ''}</div>`;
@@ -1178,7 +1204,7 @@ function renderTodo(D) {
   // Lo urgente arriba; si son muchas, se ven las primeras y «Ver todo».
   const RANK = { now: 0, warn: 1, ok: 2 };
   const ranked = rows.map((h, k) => ({ h, k, r: (RANK[(/class="todo-row ([a-z]*)/.exec(h) || [])[1]] ?? 3) })).sort((a, b) => a.r - b.r || a.k - b.k).map((x) => x.h);
-  const LIMIT = 4, shown = S.todoAll || ranked.length <= LIMIT + 1 ? ranked : ranked.slice(0, LIMIT);
+  const LIMIT = 3, shown = S.todoAll || ranked.length <= LIMIT + 1 ? ranked : ranked.slice(0, LIMIT);
   const more = ranked.length > LIMIT + 1 ? `<div class="todo-more"><button type="button" class="link" data-act="todo-all">${S.todoAll ? 'Ver menos' : `Ver todo (${ranked.length})`}</button></div>` : '';
   el.innerHTML = rows.length ? `<div class="todo"><h2>Para hacer</h2>${shown.join('')}${more}</div>` : '';
 }
@@ -1266,7 +1292,7 @@ function renderPayDetail(D, pay) {
   const warnN = invs.filter((i) => reviewFlags(i, D).some((f) => f !== 'Sin orden')).length;
   const noOrd = invs.filter((i) => needsOrder(i, D)).length;
   const unsignedOrd = new Set(invs.filter((i) => i.order && i.order.status !== 'autorizada').map((i) => i.order.id)).size;
-  const listHTML = groups.map((g) => `<section class="group"><h2 class="group-h">${dot(g)}<span class="gname">${esc(g.name)}</span><span class="gmeta">${g.items.length} · ${esc(totalStr(g.items, 'toPay'))}</span></h2>${wide() ? invTableHTML(g.items.sort(sortByDateDesc), D, 'pay', { noPick: true, rm: canRemove }) : `<div class="list">${g.items.sort(sortByDateDesc).map((i) => (canRemove ? `<div class="rowx">${cardHTML(i, D, { hideProject: true, hideStatus: true })}<button type="button" class="icon-btn" data-act="pay-rm" data-id="${esc(i.id)}" aria-label="Quitar del pago">${ICON.close}</button></div>` : cardHTML(i, D, { hideProject: true, hideStatus: true }))).join('')}</div>`}</section>`).join('');
+  const listHTML = groups.map((g) => `<section class="group"><h2 class="group-h">${dot(g)}<span class="gname">${esc(g.name)}</span><span class="gmeta">${g.items.length} · ${esc(totalStr(g.items, 'toPay'))}</span></h2>${wide() ? invTableHTML(g.items.sort(sortByDateDesc), D, 'pay', { noPick: true, rm: canRemove }) : `<div class="list">${g.items.sort(sortByDateDesc).map((i) => (canRemove ? `<div class="rowx">${cardHTML(i, D, { hideProject: true, hideStatus: true })}<button type="button" class="icon-btn" data-act="pay-rm" data-id="${esc(i.id)}" aria-label="Quitar del pago">${ICON.close}</button></div>` : cardHTML(i, D, { hideProject: true, hideStatus: true, brief: true }))).join('')}</div>`}</section>`).join('');
   $('#pd-body').innerHTML = `
     <ol class="steps" aria-label="Avance del pago"><li class="${stepCls('armando')}">Por presentar</li><li class="${stepCls('presentado')}">Presentado</li><li class="${stepCls('pagado')}">Pagado</li></ol>
     <div class="bigtotal"><span>Total del pago · ${plural(invs.length, 'factura', 'facturas')}</span><b>${esc(totalStr(invs, 'toPay'))}</b><span>ITBIS incluido: ${esc(totalStr(invs, 'itbis'))}</span>${dates ? `<span>${esc(dates)}</span>` : ''}</div>
@@ -2206,20 +2232,20 @@ function openInvoice(id, keepScroll) {
   const tid = i.thumbId || (i.fileType && i.fileType.startsWith('image/') ? i.fileId : null);
   const kind = i.fileType === 'application/pdf' ? 'PDF' : i.fileType === 'application/xml' ? 'XML' : 'Foto';
   const preview = `<button type="button" class="preview" data-act="inv-view" data-id="${esc(i.id)}" aria-label="Ver archivo completo">${tid ? `<img src="${esc(assetUrl(tid))}" alt="">` : `<span class="ph">${kind.toUpperCase()}</span>`}<span class="preview-tag">${kind === 'PDF' ? `PDF · ${plural(i.pages || 1, 'página', 'páginas')}` : kind} · Ver</span></button>`;
-  const msgs = [];
+  const msgs = [], info = [];
   const ncf = RD.parseNcf(i.number);
   const rnc = RD.rncInfo(i.rnc);
   if (i.fiscal === 'qr' || i.fiscal === 'xml') {
     const verify = RD.isDgiiUrl(i.qrUrl) ? ` <a class="link" href="${esc(i.qrUrl)}" target="_blank" rel="noopener noreferrer">Verificar en la DGII</a>` : '';
-    msgs.push(`<div class="msg ok">${ICON.shield}<span>e-NCF, RNC, fecha y monto tomados ${i.fiscal === 'xml' ? 'del XML de la factura electrónica' : 'del código QR de la DGII'}.${verify}</span></div>`);
+    info.push(`<div class="msg ok">${ICON.shield}<span>e-NCF, RNC, fecha y monto tomados ${i.fiscal === 'xml' ? 'del XML de la factura electrónica' : 'del código QR de la DGII'}.${verify}</span></div>`);
   }
   const aiLink = edit && i.ai !== 'pending' ? ` <button type="button" class="link" data-act="inv-ai" data-id="${esc(i.id)}">${i.ai === 'done' ? 'Leer otra vez' : 'Leer automáticamente'}</button>` : '';
   if (i.ai === 'pending') msgs.push(`<div class="msg ok">${ICON.spark}<span>Leyendo la factura… Los datos aparecen aquí en unos segundos.</span></div>`);
-  else if (i.ai === 'done') msgs.push(`<div class="msg ok">${ICON.spark}<span>Datos leídos automáticamente. Revisa que estén bien.${aiLink}</span></div>`);
+  else if (i.ai === 'done') info.push(`<div class="msg ok">${ICON.spark}<span>Datos leídos automáticamente. Revisa que estén bien.${aiLink}</span></div>`);
   else if (i.ai === 'failed') msgs.push(`<div class="msg warn">${ICON.alert}<span>No se pudo leer automáticamente. Llena los datos o intenta otra vez.${aiLink}</span></div>`);
-  else if (i.fileType !== 'application/xml' && edit) msgs.push(`<div class="msg">${ICON.spark}<span>${ai.hasKey() ? '¿Quieres que la app lea los datos de esta factura?' : 'Para que la app llene los datos sola, agrega tu clave de API en Ajustes.'}${ai.hasKey() ? aiLink : ' <button type="button" class="link" data-act="settings">Abrir Ajustes</button>'}</span></div>`);
+  else if (i.fileType !== 'application/xml' && edit) (ai.hasKey() ? msgs : info).push(`<div class="msg">${ICON.spark}<span>${ai.hasKey() ? '¿Quieres que la app lea los datos de esta factura?' : 'Para que la app llene los datos sola, agrega tu clave de API en Ajustes.'}${ai.hasKey() ? aiLink : ' <button type="button" class="link" data-act="settings">Abrir Ajustes</button>'}</span></div>`);
   if (ncf.ok && ncf.consumo) msgs.push(`<div class="msg warn">${ICON.alert}<span>Es una factura de <b>consumo</b> (${ncf.electronic ? 'E32' : 'B02'}): no sirve para crédito fiscal ni para sustentar costos. Pide al proveedor una de crédito fiscal.</span></div>`);
-  if (ncf.ok && (ncf.code === '04' || ncf.code === '34')) msgs.push(`<div class="msg ok">${ICON.check}<span>Es una <b>nota de crédito</b>: su monto resta del total del pago y de lo que se le paga al proveedor.</span></div>`);
+  if (ncf.ok && (ncf.code === '04' || ncf.code === '34')) info.push(`<div class="msg ok">${ICON.check}<span>Es una <b>nota de crédito</b>: su monto resta del total del pago y de lo que se le paga al proveedor.</span></div>`);
   if (ncfExpired(i)) msgs.push(`<div class="msg warn">${ICON.alert}<span>El NCF venció el ${esc(fmtDate(i.ncfExpiry))} y la factura es del ${esc(fmtDate(i.date))}: no sirve para crédito fiscal. Pide al proveedor que la reemita.</span></div>`);
   if (i.number && !ncf.ok) msgs.push(`<div class="msg warn">${ICON.alert}<span>El NCF no tiene el formato correcto: debe ser B + 10 dígitos (ej. B0100004521) o, si es electrónica, E + 12 dígitos (ej. E310000000123).</span></div>`);
   if (rnc.kind === 'rnc' && rnc.checkOk === false) msgs.push(`<div class="msg warn">${ICON.alert}<span>El dígito verificador del RNC no cuadra. Revisa que esté bien escrito.</span></div>`);
@@ -2228,7 +2254,7 @@ function openInvoice(id, keepScroll) {
   if (i.dup) msgs.push(`<div class="msg warn">${ICON.alert}<span>Puede estar repetida: hay otra factura del mismo proveedor con el mismo NCF.</span></div>`);
   if (i.projectHint && !i.project && edit) msgs.push(`<div class="msg hint"><span>La factura dice que es del proyecto <b>${esc(i.projectHint)}</b>, que no está en tu lista.</span><button type="button" class="link" data-act="hint-create" data-id="${esc(i.id)}">Crear “${esc(i.projectHint)}” y asignarla</button></div>`);
   if (edit && !i.number && !i.fiscal && !i.pay && i.ai !== 'pending' && !(i.conduces || []).length) msgs.push(`<div class="msg"><span>¿Este archivo no es una factura sino un conduce (la nota de entrega del material) o la otra página de una factura? <button type="button" class="link" data-act="inv-to-cond" data-id="${esc(i.id)}">Es un conduce</button> <button type="button" class="link" data-act="inv-to-page" data-id="${esc(i.id)}">Es otra página</button></span></div>`);
-  if (i.xmlId && i.fileType !== 'application/xml') msgs.push(`<div class="msg">${ICON.check}<span>También tiene su XML de factura electrónica. <button type="button" class="link" data-act="xml-view" data-id="${esc(i.id)}">Ver XML</button></span></div>`);
+  if (i.xmlId && i.fileType !== 'application/xml') info.push(`<div class="msg">${ICON.check}<span>También tiene su XML de factura electrónica. <button type="button" class="link" data-act="xml-view" data-id="${esc(i.id)}">Ver XML</button></span></div>`);
   const where = i.pay
     ? `<span class="pill ${i.status}">${INV_LABEL[i.status]}</span><span>En <button type="button" class="link" data-act="open-pay" data-id="${esc(i.pay.id)}">${esc(i.pay.name || 'Pago')}</button></span>`
     : '<span class="pill pendiente">Pendiente</span><span>Todavía no está en ningún pago.</span>';
@@ -2240,17 +2266,17 @@ function openInvoice(id, keepScroll) {
   if (cand.length) msgs.push(`<div class="msg hint"><span>Hay ${cand.length === 1 ? 'una orden' : 'órdenes'} de este proveedor${i.projectId ? ' para esta obra' : ''}.</span>${cand.slice(0, 3).map((o) => `<button type="button" class="link" data-act="link-order" data-id="${esc(i.id)}" data-order="${esc(o.id)}">Asignar ${esc(orderNo(o))}${!i.projectId && o.project ? ' (' + esc(o.project.name) + ')' : ''}</button>`).join(' ')}${needsOrder(i, D) ? noOrdBtn : ''}</div>`);
   else if (needsOrder(i, D)) msgs.push(`<div class="msg warn">${ICON.alert}<span>Esta factura no tiene orden de compra. Debe presentarse con su orden firmada y sellada.${noOrdBtn}</span></div>`);
   if (i.order && i.orderAuto) msgs.push(`<div class="msg hint"><span>Se enlazó sola a la orden <b>${esc(orderNo(i.order))}</b>: es la única abierta de este proveedor. Si no es, cámbiala en «Orden de compra».</span></div>`);
-  if (!i.order && i.noOrder) msgs.push(`<div class="msg"><span>Marcada como factura que no lleva orden de compra.${edit ? ` <button type="button" class="link" data-act="no-order-undo" data-id="${esc(i.id)}">Deshacer</button>` : ''}</span></div>`);
+  if (!i.order && i.noOrder) info.push(`<div class="msg"><span>Marcada como factura que no lleva orden de compra.${edit ? ` <button type="button" class="link" data-act="no-order-undo" data-id="${esc(i.id)}">Deshacer</button>` : ''}</span></div>`);
   for (const o of (i.orders || []).filter((x) => x.status !== 'autorizada')) msgs.push(`<div class="msg warn">${ICON.alert}<span>La orden ${esc(orderNo(o))} todavía no tiene la copia firmada y sellada.</span></div>`);
   msgs.push(crossMsgsHTML(i, D, edit));
   if (i.termsCheck && !i.payMode && !i.pay) msgs.push(`<div class="msg warn">${ICON.alert}<span>La factura dice que es <b>de contado</b>. ¿Ya se pagó?</span>${edit ? `<span class="acts"><button type="button" class="btn sm primary" data-act="pm-yes" data-id="${esc(i.id)}">Sí, ya se pagó</button><button type="button" class="btn sm" data-act="pm-reponer" data-id="${esc(i.id)}">Hay que reponérselo a quien pagó</button><button type="button" class="btn sm ghost" data-act="pm-no" data-id="${esc(i.id)}">No, va en un pago</button></span>` : ''}</div>`);
-  else if (i.payMode && !i.pay) msgs.push(`<div class="msg${i.payMode === 'reponer' ? '' : ' ok'}">${i.payMode === 'reponer' ? '' : ICON.check}<span>${esc(payText(i))}.${i.payMode === 'reponer' ? ' Va en un pago como reposición a esa persona.' : ''}</span></div>`);
-  if (i.envio) msgs.push(`<div class="msg">${ICON.check}<span>Se le mandó a la digitadora el ${esc(fmtDate(i.envio.date))}, ${esc(ENVIO_LABEL[i.envio.method] || '')}${i.envio.to ? ', a ' + esc(i.envio.to) : ''}. <button type="button" class="link" data-act="envio-view" data-id="${esc(i.envio.id)}">Ver envío ${esc(String(i.envio.number || ''))}</button>${edit ? ` <button type="button" class="link" data-act="digi-undo-one" data-id="${esc(i.id)}">No se la mandé</button>` : ''}</span></div>`);
+  else if (i.payMode && !i.pay) (i.payMode === 'reponer' ? msgs : info).push(`<div class="msg${i.payMode === 'reponer' ? '' : ' ok'}">${i.payMode === 'reponer' ? '' : ICON.check}<span>${esc(payText(i))}.${i.payMode === 'reponer' ? ' Va en un pago como reposición a esa persona.' : ''}</span></div>`);
+  if (i.envio) info.push(`<div class="msg">${ICON.check}<span>Se le mandó a la digitadora el ${esc(fmtDate(i.envio.date))}, ${esc(ENVIO_LABEL[i.envio.method] || '')}${i.envio.to ? ', a ' + esc(i.envio.to) : ''}. <button type="button" class="link" data-act="envio-view" data-id="${esc(i.envio.id)}">Ver envío ${esc(String(i.envio.number || ''))}</button>${edit ? ` <button type="button" class="link" data-act="digi-undo-one" data-id="${esc(i.id)}">No se la mandé</button>` : ''}</span></div>`);
   else if (!i.notInvoice) msgs.push(`<div class="msg"><span>Todavía no se la has mandado a la digitadora.${edit ? ` <button type="button" class="link" data-act="digi-open">Mandar</button> <button type="button" class="link" data-act="digi-one" data-id="${esc(i.id)}">Ya se la mandé</button>` : ''}</span></div>`);
   if (i.sup) {
     const di = dueInfo(i);
     const cred = isNum(i.sup.creditDays) && i.sup.creditDays > 0 ? `crédito de ${i.sup.creditDays} días${i.due ? ', vence el ' + esc(fmtDate(i.due)) : ''}` : 'de contado';
-    msgs.push(`<div class="msg${di && di.overdue ? ' warn' : ''}"><span><b>${esc(i.sup.name)}</b>: ${cred}${di && di.overdue ? ` (${esc(dueText(di).toLowerCase())})` : ''}${i.sup.bank || i.sup.account ? ' · ' + esc([i.sup.bank, i.sup.account].filter(Boolean).join(' ')) : ''}. <button type="button" class="link" data-act="sup-open" data-id="${esc(i.sup.id)}">Ver ficha</button></span></div>`);
+    (di && di.overdue ? msgs : info).push(`<div class="msg${di && di.overdue ? ' warn' : ''}"><span><b>${esc(i.sup.name)}</b>: ${cred}${di && di.overdue ? ` (${esc(dueText(di).toLowerCase())})` : ''}${i.sup.bank || i.sup.account ? ' · ' + esc([i.sup.bank, i.sup.account].filter(Boolean).join(' ')) : ''}. <button type="button" class="link" data-act="sup-open" data-id="${esc(i.sup.id)}">Ver ficha</button></span></div>`);
   } else if (edit && i.supplier && D.invoices.filter((x) => x.id !== i.id && sameName(x.supplier, i.supplier)).length) {
     msgs.push(`<div class="msg"><span>¿Este proveedor te da crédito o le pagas por transferencia? <button type="button" class="link" data-act="sup-new" data-name="${esc(i.supplier)}" data-rnc="${esc(RD.normRnc(i.rnc))}">Crear su ficha</button></span></div>`);
   }
@@ -2263,8 +2289,10 @@ function openInvoice(id, keepScroll) {
     <div class="sheet-b">
       ${preview}
       ${pagesLineHTML(i, edit)}
+      ${invStepsHTML(i, D)}
       <div class="status-line">${where}</div>
       ${msgs.join('')}
+      ${info.length ? `<details class="edit" id="inv-info"><summary>Más sobre esta factura (${info.length})</summary><div class="ab-box">${info.join('')}</div></details>` : ''}
       <div class="fields">
         <div class="field full"><label for="f-proj">Proyecto</label><select id="f-proj" ${dis}><option value="">Sin proyecto</option>${opts}${edit ? '<option value="__new">+ Proyecto nuevo…</option>' : ''}</select></div>
         <div class="field full" id="f-newproj-wrap" hidden><label for="f-newproj">Nombre del proyecto nuevo</label><input id="f-newproj" maxlength="80" placeholder="Ej. Torre Piantini" value="${esc(i.projectHint || '')}"></div>
@@ -2752,7 +2780,7 @@ function addFiles(files) {
   const projectId = S.projectFilter !== 'all' && S.projectFilter !== 'none' ? S.projectFilter : null;
   for (const f of list) S.queue.push({ key: ++qKey, file: f, name: f.name || 'archivo', state: 'espera', msg: '', invId: null, done: false, projectId });
   if (S.tab !== 'facturas') { S.tab = 'facturas'; S.paymentId = null; }
-  if (S.filter === 'pagadas' || S.filter === 'tramite') S.filter = 'pendientes';
+  if (S.filter === 'listas') S.filter = 'pendientes';
   renderAll();
   renderQueue();
   if (!persistAsked) { persistAsked = true; RT.persist(); }
@@ -5827,6 +5855,7 @@ function onClick(e) {
   switch (a) {
     case 'tab': if (S.tab === 'asistencia') flushAtt(); S.tab = t.dataset.tab; if (S.tab !== 'pagos') S.paymentId = null; S.payDel = false; renderAll(); window.scrollTo(0, 0); break;
     case 'filter': S.filter = t.dataset.f; S.focus = null; renderAll(); break;
+    case 'filters': S.showFilters = !S.showFilters; renderAll(); break;
     case 'invorder': S.invOrder = t.dataset.o; renderAll(); break;
     case 'projf': S.projectFilter = t.dataset.p; renderAll(); break;
     case 'add': pickFiles(); break;
