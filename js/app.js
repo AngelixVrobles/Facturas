@@ -10,7 +10,7 @@ const LIB = {
   qrgen: 'js/qr.js',
 };
 const PDF_CREATOR = 'Facturas de Proyectos';
-const APP_VERSION = '1.25.0';
+const APP_VERSION = '1.26.0';
 const SVG = (d) => `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ICON = {
   lock: SVG('<rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>'),
@@ -1172,6 +1172,8 @@ function renderTodo(D) {
   const trBad = S.traslados.filter((t) => trState(t) === 'diferencia'), trWait = S.traslados.filter((t) => trState(t) === 'porrecibir');
   if (trBad.length) rows.push(row(trBad.length, plural(trBad.length, 'traslado llegó con diferencia (no llegó lo mismo que salió)', 'traslados llegaron con diferencia (no llegó lo mismo que salió)'), b('tab', 'Ver', ' data-tab="traslados"'), 'warn'));
   if (trWait.length) rows.push(row(trWait.length, plural(trWait.length, 'traslado por recibir: falta anotar lo que llegó', 'traslados por recibir: falta anotar lo que llegó'), b('tab', 'Ver', ' data-tab="traslados"')));
+  const repPend = D.invoices.filter((i) => i.payMode === 'reponer' && i.status === 'pendiente');
+  if (repPend.length) { const who = uniqList(repPend.map((i) => i.paidBy || '')); rows.push(row(repPend.length, `${plural(repPend.length, 'factura', 'facturas')} por reponer${who.length === 1 ? ' a ' + esc(who[0]) : ` a ${who.length} personas`} · <b class="mono">${esc(totalStr(repPend, 'toPay'))}</b>`, b('tab', 'Ver', ' data-tab="pagos"'))); }
   el.hidden = !rows.length;
   // Lo urgente arriba; si son muchas, se ven las primeras y «Ver todo».
   const RANK = { now: 0, warn: 1, ok: 2 };
@@ -1191,6 +1193,28 @@ function renderQueue() {
   el.innerHTML = `<div class="q-head"><b>${left ? `Procesando ${left} de ${q.length}…` : `Listo: ${plural(q.length, 'archivo', 'archivos')}`}</b>${left ? '' : '<button type="button" class="btn sm ghost" data-act="queue-clear">Ocultar</button>'}</div><ul class="q-list">${q.map((x) => `<li class="${cls[x.state]}"><span class="q-dot"></span><span class="q-name">${esc(x.name)}</span><span class="q-state">${esc(Q_LABEL[x.state] + (x.msg ? ': ' + x.msg : ''))}</span></li>`).join('')}</ul>`;
 }
 
+// Por reponer: lo que se pagó al contado y hay que devolverle a quien pagó (de su bolsillo o de la caja chica), por persona.
+function reponerGroups(D) {
+  const m = new Map();
+  for (const i of D.invoices) {
+    if (i.payMode !== 'reponer' || i.status === 'pagada') continue;
+    const who = String(i.paidBy || 'Sin nombre').trim(), k = norm(who);
+    if (!m.has(k)) m.set(k, { who, pend: [], inPay: [] });
+    (i.status === 'pendiente' ? m.get(k).pend : m.get(k).inPay).push(i);
+  }
+  return [...m.values()].sort((a, b) => b.pend.length - a.pend.length || a.who.localeCompare(b.who));
+}
+function reponerHTML(D) {
+  const gs = reponerGroups(D);
+  if (!gs.length) return '';
+  const edit = canEdit();
+  return `<div class="card rep-card" id="rep-card"><h2>Por reponer</h2><p class="hint">Lo que se pagó al contado y hay que devolverle a quien pagó, por persona. «Armar la reposición» hace el pago con lo que le falta.</p>${gs.map((g) => {
+    const rows = [...g.pend, ...g.inPay].sort(sortByDateDesc).map((i) => `<button type="button" class="o-inv rep-inv" data-act="open-inv" data-id="${esc(i.id)}"><span class="grow">${esc([i.supplier || 'Factura', i.number ? RD.normNcf(i.number) : '', fmtDate(i.date), i.project ? i.project.name : ''].filter(Boolean).join(' · '))}${i.status !== 'pendiente' ? `<small>${esc(INV_LABEL[i.status])}${i.pay ? ' en «' + esc(i.pay.name || 'Pago') + '»' : ''}</small>` : ''}</span><b class="mono">${esc(money(i.toPay, i.currency))}</b></button>`).join('');
+    const sub = [g.pend.length ? `${plural(g.pend.length, 'factura', 'facturas')} por reponer: ${totalStr(g.pend, 'toPay')}` : '', g.inPay.length ? `${plural(g.inPay.length, 'factura', 'facturas')} ya en un pago: ${totalStr(g.inPay, 'toPay')}` : ''].filter(Boolean).join(' · ');
+    return `<div class="rep-g"><div class="rep-top"><b>${esc(g.who)}</b><b class="mono">${esc(totalStr(g.pend.length ? g.pend : g.inPay, 'toPay'))}</b></div><small class="rep-sub">${esc(sub)}</small><div class="rep-list">${rows}</div>${edit && g.pend.length ? `<div><button type="button" class="btn sm primary" data-act="rep-pay" data-who="${esc(g.who)}">Armar la reposición</button></div>` : ''}</div>`;
+  }).join('')}</div>`;
+}
+
 function renderPagos(D, pay) {
   $('#pl').hidden = !!pay;
   $('#pd').hidden = !pay;
@@ -1202,11 +1226,12 @@ function renderPagos(D, pay) {
   const pays = [...S.payments].sort((a, b) => (order[a.status] ?? 0) - (order[b.status] ?? 0) || String(b.date || '').localeCompare(String(a.date || '')) || String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
   const pendN = D.invoices.filter((i) => i.status === 'pendiente').length;
   const head = canEdit() ? `<button type="button" class="btn primary block" data-act="new-pay">${ICON.plus} Nuevo pago</button><p class="hint">Un pago junta las facturas que vas a presentar juntas. ${pendN ? `Tienes ${plural(pendN, 'factura pendiente', 'facturas pendientes')} de acomodar.` : 'Ahorita no tienes facturas pendientes.'}</p>` : '';
+  const rep = reponerHTML(D);
   if (!pays.length) {
-    el.innerHTML = head + '<div class="empty"><h2>Todavía no hay pagos</h2><p>Cuando te toque presentar facturas, crea un pago, elige cuáles entran y comparte el PDF o el Excel. Después lo marcas como presentado y, cuando paguen, como pagado.</p></div>';
+    el.innerHTML = head + rep + '<div class="empty"><h2>Todavía no hay pagos</h2><p>Cuando te toque presentar facturas, crea un pago, elige cuáles entran y comparte el PDF o el Excel. Después lo marcas como presentado y, cuando paguen, como pagado.</p></div>';
     return;
   }
-  el.innerHTML = head + `<div class="list">${pays.map((p) => {
+  el.innerHTML = head + rep + `<div class="list">${pays.map((p) => {
     const invs = payInvoices(p, D);
     const projN = new Set(invs.map((i) => (i.project ? i.project.id : 'none'))).size;
     const st = PAY_LABEL[p.status] ? p.status : 'armando';
@@ -5810,6 +5835,7 @@ function onClick(e) {
     case 'sel-digi': closeSheet(); openDigi(new Set(S.sel)); syncDigi(); break;
     case 'sel-xlsx': exportListExcel(new Set(S.sel)); break;
     case 'sel-paid': markPaidDirect([...S.sel]); break;
+    case 'rep-pay': { const g = reponerGroups(derive()).find((x) => x.who === t.dataset.who); if (g && g.pend.length) createPayment('Reposición a ' + g.who, todayISO(), g.pend.map((i) => i.id)); break; }
     case 'pm-yes': { const raw = S.invoices.find((x) => x.id === id); if (raw) write(() => db.doc('invoices/' + id).update({ payMode: 'directo', termsCheck: false, paidDate: raw.paidDate || raw.date || todayISO(), hist: histAdd(raw, histEntry('Marcada como ya pagada (al contado)')) }), 'Marcada como ya pagada'); break; }
     case 'pm-reponer': write(() => db.doc('invoices/' + id).update({ payMode: 'reponer', termsCheck: false })).then((ok) => { if (ok) toast('Escribe a quién hay que reponérselo y toca Guardar.'); }); break;
     case 'pm-no': write(() => db.doc('invoices/' + id).update({ termsCheck: false }), 'Queda para pagarla en un pago'); break;

@@ -67,13 +67,14 @@ const answers = [];
     for (const [k, sup, rnc, ncf, amt] of [['a', 'Ferretería Ochoa', '131023452', 'B0100000101', 1500], ['b', 'Bloques del Cibao', '131555777', 'B0100000102', 2300], ['c', 'Pinturas Tropical', '130111222', 'B0100000103', 900], ['d', 'Arenera del Este', '130333444', 'B0100000104', 4000]]) {
       const r = RT.db.collection('invoices').doc(); await r.set({ ...base, supplier: sup, rnc, number: ncf, date: '2026-11-10', amount: amt }); ids[k] = r.id;
     }
+    const r5 = RT.db.collection('invoices').doc(); await r5.set({ ...base, supplier: 'Plomería Central', rnc: '130555666', number: 'B0100000105', date: '2026-11-11', amount: 850, payMode: 'reponer', paidBy: 'Caja chica', payMethod: 'Efectivo', paidDate: '2026-11-11' }); ids.e = r5.id;
     const pay = RT.db.collection('payments').doc(); await pay.set({ name: 'Pago semana 46', date: '2026-11-12', status: 'armando', invoiceIds: [ids.d], createdAt: '2026-11-12T10:00:00.000Z' });
     return { ...ids, pay: pay.id, proj: p.id };
   });
   await page.reload();
   await page.waitForSelector('#f-list [data-act="open-inv"]');
   await page.click('[data-act="backup-later"]').catch(() => {});
-  check(await segN(page, 'pendientes') === 3 && await segN(page, 'tramite') === 1, 'al principio: 3 pendientes y 1 en trámite');
+  check(await segN(page, 'pendientes') === 4 && await segN(page, 'tramite') === 1, 'al principio: 4 pendientes (una es para reponer) y 1 en trámite');
 
   // 1) Ya se pagó al contado: sale de pendientes y pasa a pagadas.
   await page.click(`#f-list [data-act="open-inv"][data-id="${I.a}"]`);
@@ -88,7 +89,7 @@ const answers = [];
   await settle(page);
   let a = await inv(page, I.a);
   check(a.payMode === 'directo' && a.payMethod === 'Efectivo' && a.paidBy === 'Caja chica' && a.paidDate === '2026-11-10' && a.hist.some((h) => /ya pagada/.test(h.what)), 'queda guardado: ya pagada, en efectivo, el 10 de noviembre, por la caja chica (y en el historial)');
-  check(await segN(page, 'pendientes') === 2 && await segN(page, 'pagadas') === 1 && !(await page.$(`#f-list [data-id="${I.a}"]`)), 'sale de pendientes (la principal) y pasa a pagadas');
+  check(await segN(page, 'pendientes') === 3 && await segN(page, 'pagadas') === 1 && !(await page.$(`#f-list [data-id="${I.a}"]`)), 'sale de pendientes (la principal) y pasa a pagadas');
   await page.click('#f-seg [data-f="pagadas"]');
   await settle(page, 300);
   check(/Efectivo/.test(await txt(page, `#f-list [data-id="${I.a}"]`)), 'en pagadas dice cómo se pagó');
@@ -106,7 +107,24 @@ const answers = [];
   await page.click('#inv-save');
   await page.waitForSelector('#sheet-root', { state: 'hidden' });
   await settle(page);
-  check((await inv(page, I.b)).payMode === 'reponer' && /Reponer a Ing\. Pérez/.test(await txt(page, `#f-list [data-id="${I.b}"]`)) && await segN(page, 'pendientes') === 2, 'sigue en pendientes, con «Reponer a Ing. Pérez»');
+  check((await inv(page, I.b)).payMode === 'reponer' && /Reponer a Ing\. Pérez/.test(await txt(page, `#f-list [data-id="${I.b}"]`)) && await segN(page, 'pendientes') === 3, 'sigue en pendientes, con «Reponer a Ing. Pérez»');
+  const todoRep = async () => { const more = await page.$('#todo [data-act="todo-all"]'); if (more && /Ver todo/.test(await more.textContent())) { await more.click(); await settle(page, 150); } return txt(page, '#todo'); };
+  check(/2 facturas por reponer a 2 personas · RD\$3,150\.00/.test(await todoRep()), '«Para hacer»: 2 facturas por reponer a 2 personas, RD$3,150');
+  // El apartado «Por reponer», en Pagos: por persona, y con un toque se arma la reposición.
+  await page.evaluate(() => document.querySelector('.tabs [data-tab="pagos"]').click());
+  await page.waitForSelector('#rep-card');
+  const rc = await txt(page, '#rep-card');
+  check(/Ing\. Pérez\s*RD\$2,300\.00/.test(rc) && /Caja chica\s*RD\$850\.00/.test(rc) && /Bloques del Cibao/.test(rc) && /Plomería Central/.test(rc) && (await page.$$('#rep-card [data-act="rep-pay"]')).length === 2, 'Por reponer: cada persona con lo que se le debe y sus facturas');
+  await page.screenshot({ path: path.join(OUT, 'por-reponer.png') });
+  await page.click('#rep-card [data-act="rep-pay"][data-who="Caja chica"]');
+  await settle(page, 600);
+  const rp = (await docs(page, 'payments')).find((p) => p.name === 'Reposición a Caja chica');
+  check(rp && rp.invoiceIds.length === 1 && rp.invoiceIds[0] === I.e && await page.isVisible('#pd'), '«Armar la reposición» hace el pago «Reposición a Caja chica» con su factura');
+  await page.click('[data-act="back"]').catch(() => {});
+  await settle(page, 300);
+  check(/1 factura ya en un pago: RD\$850\.00/.test(await txt(page, '#rep-card')), 'y en el apartado sale que ya está en un pago');
+  await page.evaluate(() => document.querySelector('.tabs [data-tab="facturas"]').click());
+  await settle(page, 300);
 
   // 3) Una que está en un pago no se puede marcar «ya se pagó» sin quitarla del pago.
   await page.click('#f-seg [data-f="tramite"]');
