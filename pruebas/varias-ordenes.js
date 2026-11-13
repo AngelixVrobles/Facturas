@@ -134,7 +134,7 @@ const answers = [];
   await page.click(`#f-list [data-act="open-inv"][data-id="${e.id}"]`);
   await page.waitForSelector('#f-order');
   await page.selectOption('#f-order', I.o2);
-  check(/Esta orden ya tiene la factura Ferretería Ochoa · B0100000301/.test(await txt(page, '#f-order-prev')), 'si la orden escogida ya tiene otra factura, lo avisa');
+  check(/Esta orden también tiene la factura Ferretería Ochoa · B0100000301/.test(await txt(page, '#f-order-prev')), 'si la orden escogida ya tiene otra factura, lo avisa');
   await page.click('.sheet-h [data-act="sheet-close"]');
 
   // 6) Excel: las órdenes de cada factura.
