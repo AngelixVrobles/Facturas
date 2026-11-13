@@ -24,6 +24,7 @@ async function docs(page, coll) {
   return page.evaluate((c) => new Promise((r) => { const un = RT.db.collection(c).onSnapshot((s) => { un(); r(s.docs.map((d) => ({ id: d.id, ...d.data() }))); }); }), coll);
 }
 const settle = (page, ms = 500) => page.waitForTimeout(ms);
+async function waitUntil(fn, ms = 5000, step = 150) { const t0 = Date.now(); for (;;) { const v = await fn(); if (v) return v; if (Date.now() - t0 > ms) return v; await new Promise((r) => setTimeout(r, step)); } }
 const txt = async (page, sel) => ((await page.textContent(sel)) || '').replace(/\s+/g, ' ').trim();
 const groupsOf = (page) => page.$$eval('#c-list .group-h', (hs) => hs.map((h) => [h.querySelector('.gname').textContent.trim(), h.querySelector('.gmeta').textContent.trim()]));
 const at = (hhmm) => new Date(`2026-11-06T${hhmm}:00-04:00`);
@@ -135,7 +136,7 @@ const at = (hhmm) => new Date(`2026-11-06T${hhmm}:00-04:00`);
   for (let t = 0; t < 20; t++) { const cs = await docs(page, 'conduces'); if (cs.filter((c) => c.invoiceId === invA).length === 2) break; await settle(page, 250); }
   conds = await docs(page, 'conduces');
   check(byId('A1').invoiceId === invA && byId('A3').invoiceId === invA && byId('A1').auto === false && !byId('A2').invoiceId, 'se adjuntaron los 2 marcados; el otro sigue esperando');
-  await settle(page, 500);
+  await waitUntil(async () => (await page.$$('#inv-conds .cond-list .cond-row')).length === 2);
   check((await page.$$('#inv-conds .cond-list .cond-row')).length === 2, 'la factura ya los muestra');
   await page.click('.sheet-h [data-act="sheet-close"]');
   await page.waitForSelector('#sheet-root', { state: 'hidden' });
@@ -144,10 +145,11 @@ const at = (hhmm) => new Date(`2026-11-06T${hhmm}:00-04:00`);
   // 4) El apartado ya los muestra con su factura.
   await page.click('[data-tab="conduces"]');
   await page.waitForSelector('#c-list');
+  await waitUntil(async () => /Con factura\s*5/.test(await txt(page, '#c-seg')));
   const seg2 = await txt(page, '#c-seg');
   check(/Sin factura\s*3/.test(seg2) && /Con factura\s*5/.test(seg2), 'ahora: 3 esperando y 5 con factura');
   await page.click('[data-act="cfilter"][data-f="confactura"]');
-  await settle(page, 300);
+  await waitUntil(async () => (await page.$$('#c-list .cond-row')).length === 5);
   const cl = await txt(page, '#c-list');
   check(/Factura B0100000901/.test(cl) && /Factura B0100000902/.test(cl) && (await page.$$('#c-list .cond-row')).length === 5, '«Con factura»: cada conduce dice de qué factura es');
   await page.screenshot({ path: path.join(OUT, 'con-factura.png') });
