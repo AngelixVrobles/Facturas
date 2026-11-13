@@ -98,6 +98,21 @@ const answers = [];
 
   // 3) En Órdenes, la OC-0002 ya tiene su factura.
   await page.click('[data-tab="ordenes"]');
+  await page.waitForSelector('#o-seg button');
+  const segs = await page.$$eval('#o-seg button', (b) => b.map((x) => x.textContent));
+  check(segs.join('|') === 'Sin factura1|Con factura2|Todas3', 'Órdenes: 1 sin factura y 2 con factura (' + segs.join(' | ') + ')');
+  await page.click('[data-act="ofilter"][data-f="sinfactura"]');
+  await settle(page, 300);
+  const sf = await txt(page, '#o-list');
+  check(/Estas son las facturas que te faltan: 1 orden no tiene factura/.test(sf) && /Ferretería Ochoa/.test(sf) && /OC-0003/.test(sf) && /5 Galón Pintura blanca/.test(sf) && /sin factura, hace \d+ días/.test(sf) && !/OC-0001/.test(sf), '«Sin factura»: por proveedor, con lo que se pidió y hace cuánto');
+  await page.click('[data-act="ask-inv"]');
+  await page.waitForSelector('#ask-text');
+  const msg = await page.inputValue('#ask-text');
+  check(/Nos falta la factura de este pedido/.test(msg) && /OC-0003 del 5 nov de 2026 \(Caperuza 2\): 5 Galón Pintura blanca/.test(msg) && /SUCRE B\. LANTIGUA/.test(msg), '«Pedirle la factura» arma el mensaje con la orden, la fecha, la obra y lo pedido');
+  await page.screenshot({ path: path.join(OUT, 'pedir.png') });
+  await page.click('.sheet-h [data-act="sheet-close"]');
+  await page.click('[data-act="ofilter"][data-f="todas"]');
+  await settle(page, 300);
   await page.click(`[data-act="open-order"][data-id="${I.o2}"]`);
   await page.waitForSelector('#o-invs');
   check(/B0100000301/.test(await txt(page, '#o-invs')), 'la orden OC-0002 muestra la factura');

@@ -339,6 +339,8 @@ body.locked .toast { top: calc(14px + env(safe-area-inset-top, 0px)); bottom: au
 .ord-top b { font-size: 16px; font-weight: 600; }
 .ord-sup { font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ord-meta { color: var(--muted); font-size: 13px; }
+.ord-what { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.o-note { margin: 0; }
 .pill.o-borrador { color: var(--muted); background: var(--surface-2); }
 .pill.o-enviada { color: var(--pend); background: var(--pend-bg); }
 .pill.o-autorizada { color: var(--paid); background: var(--paid-bg); }
@@ -774,7 +776,7 @@ input[type="date"]::-webkit-calendar-picker-indicator { margin: 0 0 0 4px; paddi
 
   <section id="v-ordenes" class="view" hidden>
     <button type="button" class="btn primary block" data-act="new-order" id="o-new">Nueva orden de compra</button>
-    <div class="seg" id="o-seg" role="group" aria-label="Estado de las órdenes"></div>
+    <div class="seg seg3" id="o-seg" role="group" aria-label="Órdenes con o sin factura"></div>
     <div class="chips" id="o-chips" role="group" aria-label="Proyecto" hidden></div>
     <label class="search-box">
       <span class="sr">Buscar órdenes</span>
