@@ -279,6 +279,21 @@ function orderMentionIn(text, projectId) {
   while ((m = re.exec(t))) { const o = orderByNumberText(m[1], projectId); if (o) return o; }
   return null;
 }
+// Al escoger la orden de una factura: en la lista, qué se pidió; y al escogerla, su ficha para reconocerla.
+const itemLine = (it) => [it.qty !== '' && it.qty != null ? fmtQty(it.qty) : '', it.unit || '', it.desc || ''].filter(Boolean).join(' ');
+function orderOptLabel(o) {
+  const its = (o.items || []).filter((x) => x && (x.desc || x.qty));
+  const what = its.length ? itemLine(its[0]) + (its.length > 1 ? ` y ${plural(its.length - 1, 'más', 'más')}` : '') : '';
+  return [orderNo(o), what, fmtDate(o.date), o.project ? o.project.name : '', orderEst(o) ? money(orderEst(o)) : ''].filter(Boolean).join(' · ');
+}
+function orderPreviewHTML(o, D, invId) {
+  if (!o) return '';
+  const its = (o.items || []).filter((x) => x && (x.desc || x.qty));
+  const others = (D.invByOrder.get(o.id) || []).filter((x) => x.id !== invId);
+  const head = [ORDER_LABEL[o.status] || '', o.date ? 'del ' + fmtDate(o.date) : '', o.project ? o.project.name : '', o.supplier || '', o.requestedBy ? 'la pidió ' + o.requestedBy : ''].filter(Boolean).join(' · ');
+  const list = its.slice(0, 8).map((it) => `<li>${esc(itemLine(it))}${isNum(it.price) ? ` <small>· ${esc(money(it.price))} c/u</small>` : ''}</li>`).join('') + (its.length > 8 ? `<li><small>y ${plural(its.length - 8, 'artículo más', 'artículos más')}</small></li>` : '');
+  return `<div class="o-prev"><div><b class="mono">${esc(orderNo(o))}</b> <small>${esc(head)}</small></div>${list ? `<ul>${list}</ul>` : '<p class="usage">La orden no tiene artículos anotados.</p>'}${orderEst(o) ? `<p class="usage">Estimado: ${esc(money(orderEst(o)))} sin ITBIS.</p>` : ''}${o.notes ? `<p class="usage">${esc(o.notes)}</p>` : ''}${others.length ? `<div class="msg warn">${ICON.alert}<span>Esta orden ya tiene ${others.length === 1 ? 'la factura' : 'las facturas'} ${esc(others.map(invShort).join('; '))}. Revisa que sea la orden correcta.</span></div>` : ''}</div>`;
+}
 // Pedidos separados (cada uno con su orden) que la ferretería mandó juntos en una sola factura: la factura tiene su orden
 // principal y las demás en moreOrders. Cada orden cuenta como facturada, y lo estimado se compara con todas juntas.
 const orderIdsOf = (i) => [i.orderId, ...(Array.isArray(i.moreOrders) ? i.moreOrders : [])].filter((x, k, a) => x && a.indexOf(x) === k);
@@ -292,7 +307,7 @@ function moreOrdersHTML(i, D, edit) {
   const ests = (i.orders || []).map(orderEst);
   const sub = isNum(i.amount) ? round2(i.amount - (isNum(i.itbis) ? i.itbis : 0)) : null;
   const sum = more.length && ests.every((e) => e) && sub != null ? `<p class="usage">Las ${i.orders.length} órdenes suman ${esc(money(round2(ests.reduce((a, b) => a + b, 0))))} estimado (sin ITBIS); la factura, ${esc(money(sub, i.currency))} sin ITBIS.</p>` : '';
-  const add = cands.length ? `<div class="tc-link"><select id="mo-add" aria-label="Otra orden"><option value="">Elige la otra orden</option>${cands.map((o) => `<option value="${esc(o.id)}">${esc([orderNo(o), fmtDate(o.date), o.project ? o.project.name : '', orderEst(o) ? money(orderEst(o)) : ''].filter(Boolean).join(' · '))}</option>`).join('')}</select><button type="button" class="btn sm" data-act="mo-add" data-id="${esc(i.id)}">${ICON.plus} Agregar</button></div>` : '';
+  const add = cands.length ? `<div class="tc-link"><select id="mo-add" aria-label="Otra orden"><option value="">Elige la otra orden</option>${cands.map((o) => `<option value="${esc(o.id)}">${esc(orderOptLabel(o))}</option>`).join('')}</select><button type="button" class="btn sm" data-act="mo-add" data-id="${esc(i.id)}">${ICON.plus} Agregar</button></div><div id="mo-prev"></div>` : '';
   return `<div class="field full" id="inv-more-orders"><label${add ? ' for="mo-add"' : ''}>${more.length ? 'Otras órdenes que vinieron en esta factura' : '¿La ferretería mandó juntos otros pedidos en esta factura? Agrega sus órdenes'}</label>${rows}${add}${sum}</div>`;
 }
 function refreshMoreOrders(invId) {
@@ -563,7 +578,7 @@ function crossMsgsHTML(i, D, edit) {
   if (x.over) out.push(`<div class="msg warn">${ICON.alert}<span>La factura cobra <b>${esc(money(x.over.charged, i.currency))}</b>${x.over.sinItbis ? ' sin ITBIS' : ''} y sus conduces suman <b>${esc(money(x.over.sum, i.currency))}</b>: ${esc(money(x.over.diff, i.currency))} más.${ok('condOverOk')}</span></div>`);
   if (x.missing.length) out.push(`<div class="msg warn">${ICON.alert}<span>La factura menciona ${x.missing.length === 1 ? 'el conduce' : 'los conduces'} <b>${esc(x.missing.join(', '))}</b>, que no ${x.missing.length === 1 ? 'está adjunto' : 'están adjuntos'}.${edit ? ` <button type="button" class="link" data-act="cond-add" data-inv="${esc(i.id)}">Agregar conduce</button>` : ''}${ok('condRefsOk', 'No hace falta')}</span></div>`);
   if (x.qty.length) out.push(`<div class="msg warn">${ICON.alert}<span>${x.qty.map((q) => `Los conduces de la orden ${esc(orderNo(i.order))} traen <b>${esc(fmtQty(q.delivered))}${q.unit ? ' ' + esc(q.unit) : ''}</b> de ${esc(q.desc)} y la orden pidió ${esc(fmtQty(q.ordered))}.`).join(' ')}${ok('qtyOk')}</span></div>`);
-  if (x.est) { const ords = i.orders && i.orders.length ? i.orders : [i.order], several = ords.length > 1, nos = ords.map(orderNo).join(' y '); out.push(`<div class="msg warn">${ICON.alert}<span>${x.est.many ? (several ? 'Las facturas de las órdenes' : 'Las facturas de la orden') : several ? 'La factura de las órdenes' : 'La factura'} ${esc(nos)} ${x.est.many ? 'suman' : 'cobra'} <b>${esc(money(x.est.sub))}</b> sin ITBIS y ${several ? 'las órdenes estimaron' : 'la orden estimó'} <b>${esc(money(x.est.est))}</b>.${ok('estOk')}</span></div>`); }
+  if (x.est) { const ords = i.orders && i.orders.length ? i.orders : [i.order], several = ords.length > 1, nos = ords.map(orderNo).join(' y '); out.push(`<div class="msg warn">${ICON.alert}<span>${x.est.many ? (several ? 'Las facturas de las órdenes' : 'Las facturas de la orden') : several ? 'La factura de las órdenes' : 'La factura de la orden'} ${esc(nos)} ${x.est.many ? 'suman' : 'cobra'} <b>${esc(money(x.est.sub))}</b> sin ITBIS y ${several ? 'las órdenes estimaron' : 'la orden estimó'} <b>${esc(money(x.est.est))}</b>.${ok('estOk')}</span></div>`); }
   return out.join('');
 }
 /* ---------- fechas ---------- */
@@ -2149,7 +2164,7 @@ function openInvoice(id, keepScroll) {
     : '<span class="pill pendiente">Pendiente</span><span>Todavía no está en ningún pago.</span>';
   const opts = D.projects.map((p) => `<option value="${esc(p.id)}"${p.id === i.projectId ? ' selected' : ''}>${esc(p.name)}</option>`).join('');
   const ordList = D.orders.filter((o) => o.status !== 'anulada' || o.id === i.orderId).sort((a, b) => (b.projectId === i.projectId) - (a.projectId === i.projectId) || sameName(b.supplier, i.supplier) - sameName(a.supplier, i.supplier) || (Number(b.number) || 0) - (Number(a.number) || 0));
-  const orderOpts = ordList.map((o) => `<option value="${esc(o.id)}"${o.id === i.orderId ? ' selected' : ''}>${esc([orderNo(o), o.supplier, o.project && o.project.name].filter(Boolean).join(' · '))}</option>`).join('');
+  const orderOpts = ordList.map((o) => `<option value="${esc(o.id)}"${o.id === i.orderId ? ' selected' : ''}>${esc(orderOptLabel(o) + (sameName(o.supplier, i.supplier) || !o.supplier ? '' : ' · ' + o.supplier))}</option>`).join('');
   const cand = !i.order && !i.noOrder && edit ? orderCandidates(i, D) : [];
   const noOrdBtn = edit ? ` <button type="button" class="link" data-act="no-order" data-id="${esc(i.id)}">No lleva orden</button>` : '';
   if (cand.length) msgs.push(`<div class="msg hint"><span>Hay ${cand.length === 1 ? 'una orden' : 'órdenes'} de este proveedor${i.projectId ? ' para esta obra' : ''}.</span>${cand.slice(0, 3).map((o) => `<button type="button" class="link" data-act="link-order" data-id="${esc(i.id)}" data-order="${esc(o.id)}">Asignar ${esc(orderNo(o))}${!i.projectId && o.project ? ' (' + esc(o.project.name) + ')' : ''}</button>`).join(' ')}${needsOrder(i, D) ? noOrdBtn : ''}</div>`);
@@ -2192,6 +2207,7 @@ function openInvoice(id, keepScroll) {
         <div class="field"><label for="f-amt">Total a pagar</label><input id="f-amt" class="mono" inputmode="decimal" maxlength="20" placeholder="0.00" value="${esc(amountInput(i.amount))}" ${dis}></div>
         <div class="field full"><label for="f-con">Concepto</label><textarea id="f-con" maxlength="140" rows="2" ${dis}>${esc(i.concept || '')}</textarea></div>
         <div class="field full"><label for="f-order">Orden de compra</label><select id="f-order" ${dis}><option value="">Sin orden</option>${orderOpts}</select>${i.order ? `<button type="button" class="link" data-act="open-order" data-id="${esc(i.order.id)}">Abrir ${esc(orderNo(i.order))}</button>` : ''}</div>
+        <div class="field full" id="f-order-prev"${i.order ? '' : ' hidden'}>${i.order ? orderPreviewHTML(i.order, D, i.id) : ''}</div>
         ${moreOrdersHTML(i, D, edit)}
         <div class="field full"><label for="f-ref">Otra referencia (cubicación, contrato)</label><input id="f-ref" maxlength="60" placeholder="Opcional" value="${esc(i.ref || '')}" ${dis}></div>
         <div class="field full"><label for="f-paymode">Cómo se paga</label><select id="f-paymode" ${dis}>${Object.entries(PAY_MODE_LABEL).map(([k, l]) => `<option value="${k}"${(i.payMode || '') === k ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select></div>
@@ -5988,6 +6004,10 @@ async function hintCreate(id, btn) {
 function onChange(e) {
   const t = e.target;
   if (t.id === 'f-proj') { $('#f-newproj-wrap').hidden = t.value !== '__new'; if (t.value === '__new') $('#f-newproj').focus(); }
+  if (t.id === 'f-order' || t.id === 'mo-add') {
+    const box = $(t.id === 'f-order' ? '#f-order-prev' : '#mo-prev'), D = derive(), o = t.value ? D.orderById.get(t.value) : null;
+    if (box) { box.innerHTML = o ? orderPreviewHTML(o, D, S.sheet && S.sheet.id) : ''; if (t.id === 'f-order') box.hidden = !o; }
+  }
   if (t.id === 'f-paymode') { for (const w of ['#f-pm-how', '#f-pm-when', '#f-pm-who']) $(w).hidden = !t.value; const l = $('label[for="f-paidby"]'); if (l) l.textContent = t.value === 'reponer' ? 'A quién hay que reponérselo' : 'Quién lo pagó'; if (t.value === 'reponer') $('#f-paidby').focus(); }
   if (t.dataset && t.dataset.f === 'desc' && t.closest && t.closest('#t-items')) trFillPrice(t);
   if (t.id === 't-from' || t.id === 't-to') trFormRefresh();

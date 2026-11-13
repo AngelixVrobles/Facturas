@@ -426,7 +426,11 @@ body.locked .toast { top: calc(14px + env(safe-area-inset-top, 0px)); bottom: au
 .tr-lines { margin: 6px 0 10px; padding-left: 18px; }
 .tr-lines li + li { margin-top: 3px; }
 .field[hidden] { display: none; }
-.tc-link { display: flex; gap: 6px; } .tc-link select { flex: 1; min-width: 0; }
+.tc-link { display: flex; gap: 6px; }
+.o-prev { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: var(--surface-2); display: flex; flex-direction: column; gap: 6px; }
+.o-prev small { color: var(--muted); }
+.o-prev ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 2px; }
+#mo-prev:not(:empty) { margin-top: 8px; } .tc-link select { flex: 1; min-width: 0; }
 .tr-mvs { display: flex; flex-direction: column; }
 .tr-recv-rows { display: flex; flex-direction: column; gap: 6px; margin: 6px 0 10px; }
 .tr-recv-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--line); }

@@ -74,9 +74,15 @@ const answers = [];
   // 1) Con una sola orden, la factura pasa lo estimado.
   await page.click(`#f-list [data-act="open-inv"][data-id="${I.inv}"]`);
   await page.waitForSelector('#inv-more-orders');
-  check(/La factura OC-0001 cobra RD\$13,000\.00 sin ITBIS y la orden estimó RD\$6,000\.00/.test(await txt(page, '#sheet-root .sheet')) && /La ferretería mandó juntos otros pedidos/.test(await txt(page, '#inv-more-orders')), 'con una orden, avisa que pasa lo estimado y ofrece agregar otras órdenes');
+  check(/La factura de la orden OC-0001 cobra RD\$13,000\.00 sin ITBIS y la orden estimó RD\$6,000\.00/.test(await txt(page, '#sheet-root .sheet')) && /La ferretería mandó juntos otros pedidos/.test(await txt(page, '#inv-more-orders')), 'con una orden, avisa que pasa lo estimado y ofrece agregar otras órdenes');
   const opts = await page.$$eval('#mo-add option', (os) => os.map((o) => o.textContent));
   check(opts.some((t) => /OC-0002/.test(t)) && opts.some((t) => /OC-0003/.test(t)) && !opts.some((t) => /OC-0001/.test(t)), 'ofrece las otras órdenes abiertas del proveedor (no la que ya tiene)');
+  check(/OC-0001/.test(await txt(page, '#f-order-prev')) && /10 Saco Cemento gris/.test(await txt(page, '#f-order-prev')) && /Estimado: RD\$6,000\.00/.test(await txt(page, '#f-order-prev')), 'la orden de la factura se ve con lo que se pidió y su estimado');
+  const fo = await page.$$eval('#f-order option', (os) => os.map((o) => o.textContent));
+  check(fo.some((t) => /OC-0002 · 20 Varilla Varilla de 3\/8 · 5 nov/.test(t)), 'en la lista de órdenes, cada una dice qué se pidió y su fecha');
+  await page.selectOption('#mo-add', I.o3);
+  check(/5 Galón Pintura blanca/.test(await txt(page, '#mo-prev')), 'al escoger otra orden, se ve su ficha antes de agregarla');
+  await page.screenshot({ path: path.join(OUT, 'ficha.png') });
 
   // 2) Se agrega la otra orden: las dos quedan con esta factura y lo estimado cuadra.
   await page.selectOption('#mo-add', I.o2);
@@ -125,6 +131,11 @@ const answers = [];
   await page.setInputFiles('#file-input', foto);
   const e = await waitUntil(async () => (await docs(page, 'invoices')).find((i) => i.fileName === 'factura.png' && i.ai === 'done'), 25000);
   check(e && e.orderId === I.o3 && JSON.stringify(e.moreOrders) === JSON.stringify([I.o1]), 'la factura que dice «OC-0003 y OC-0001» queda con las dos órdenes');
+  await page.click(`#f-list [data-act="open-inv"][data-id="${e.id}"]`);
+  await page.waitForSelector('#f-order');
+  await page.selectOption('#f-order', I.o2);
+  check(/Esta orden ya tiene la factura Ferretería Ochoa · B0100000301/.test(await txt(page, '#f-order-prev')), 'si la orden escogida ya tiene otra factura, lo avisa');
+  await page.click('.sheet-h [data-act="sheet-close"]');
 
   // 6) Excel: las órdenes de cada factura.
   await page.click('#f-seg [data-f="todas"]');
