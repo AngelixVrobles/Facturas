@@ -10,7 +10,7 @@ const LIB = {
   qrgen: 'js/qr.js',
 };
 const PDF_CREATOR = 'Facturas de Proyectos';
-const APP_VERSION = '1.24.0';
+const APP_VERSION = '1.25.0';
 const SVG = (d) => `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ICON = {
   lock: SVG('<rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>'),
@@ -205,12 +205,12 @@ function derive() {
     let aiSt = i.ai || 'off';
     if (aiSt === 'pending' && !S.queue.some((q) => q.invId === i.id && !q.done) && !aiBusy(i.id) && now - (Date.parse(i.createdAt) || 0) > 120000) aiSt = 'failed';
     const k = dupKey(i);
-    return { ...i, ai: aiSt, pay, status, abonado, toPay, envio: envioOf.get(i.id) || null, project: projById.get(i.projectId) || null, order: orderById.get(i.orderId) || null, dup: k ? dups.get(k) > 1 : false, conduces: condByInv.get(i.id) || [], ...(() => { const sp = supFor(i); return { sup: sp, due: sp && isNum(sp.creditDays) && sp.creditDays > 0 && ymd(i.date) ? addDays(i.date, sp.creditDays) : '' }; })() };
+    return { ...i, ai: aiSt, pay, status, abonado, toPay, envio: envioOf.get(i.id) || null, project: projById.get(i.projectId) || null, ...(() => { const ords = orderIdsOf(i).map((x) => orderById.get(x)).filter(Boolean); return { order: ords[0] || null, orders: ords }; })(), dup: k ? dups.get(k) > 1 : false, conduces: condByInv.get(i.id) || [], ...(() => { const sp = supFor(i); return { sup: sp, due: sp && isNum(sp.creditDays) && sp.creditDays > 0 && ymd(i.date) ? addDays(i.date, sp.creditDays) : '' }; })() };
   });
   const invByOrder = new Map();
   const namesByRnc = new Map();
   for (const i of S.invoices) if (i.rnc && i.supplier) { const a = namesByRnc.get(i.rnc) || []; if (!a.includes(i.supplier)) a.push(i.supplier); namesByRnc.set(i.rnc, a); }
-  for (const i of invoices) if (i.order) { const a = invByOrder.get(i.order.id) || []; a.push(i); invByOrder.set(i.order.id, a); }
+  for (const i of invoices) for (const o of i.orders) { const a = invByOrder.get(o.id) || []; a.push(i); invByOrder.set(o.id, a); }
   return { projects: projects.map((p) => projById.get(p.id)), projById, invoices, orders, orderById, invByOrder, namesByRnc, firstOrderAt, conduces, condByInv, suppliers, supByRnc, supFor, envios, companyRnc: RD.normRnc(S.settings.companyRnc) };
 }
 function reviewFlags(i, D) {
@@ -279,6 +279,46 @@ function orderMentionIn(text, projectId) {
   while ((m = re.exec(t))) { const o = orderByNumberText(m[1], projectId); if (o) return o; }
   return null;
 }
+// Pedidos separados (cada uno con su orden) que la ferretería mandó juntos en una sola factura: la factura tiene su orden
+// principal y las demás en moreOrders. Cada orden cuenta como facturada, y lo estimado se compara con todas juntas.
+const orderIdsOf = (i) => [i.orderId, ...(Array.isArray(i.moreOrders) ? i.moreOrders : [])].filter((x, k, a) => x && a.indexOf(x) === k);
+function moreOrdersHTML(i, D, edit) {
+  if (!i.order) return '';
+  const more = (i.orders || []).slice(1);
+  const same = (o) => sameName(o.supplier, i.supplier) || sameName(o.supplier, i.order.supplier) || (!!i.rnc && (D.namesByRnc.get(i.rnc) || []).some((n) => sameName(o.supplier, n)));
+  const cands = edit ? D.orders.filter((o) => o.status !== 'anulada' && !(i.orders || []).some((x) => x.id === o.id) && !(D.invByOrder.get(o.id) || []).length && same(o)).sort((a, b) => (Number(b.number) || 0) - (Number(a.number) || 0)).slice(0, 20) : [];
+  if (!more.length && !cands.length) return '';
+  const rows = more.map((o) => `<div class="ab-row"><button type="button" class="link" data-act="open-order" data-id="${esc(o.id)}">${esc([orderNo(o), o.project ? o.project.name : '', orderEst(o) ? 'estimado ' + money(orderEst(o)) : ''].filter(Boolean).join(' · '))}</button>${edit ? `<button type="button" class="icon-btn plain" data-act="mo-rm" data-id="${esc(i.id)}" data-o="${esc(o.id)}" aria-label="Quitar esta orden">${ICON.close}</button>` : ''}</div>`).join('');
+  const ests = (i.orders || []).map(orderEst);
+  const sub = isNum(i.amount) ? round2(i.amount - (isNum(i.itbis) ? i.itbis : 0)) : null;
+  const sum = more.length && ests.every((e) => e) && sub != null ? `<p class="usage">Las ${i.orders.length} órdenes suman ${esc(money(round2(ests.reduce((a, b) => a + b, 0))))} estimado (sin ITBIS); la factura, ${esc(money(sub, i.currency))} sin ITBIS.</p>` : '';
+  const add = cands.length ? `<div class="tc-link"><select id="mo-add" aria-label="Otra orden"><option value="">Elige la otra orden</option>${cands.map((o) => `<option value="${esc(o.id)}">${esc([orderNo(o), fmtDate(o.date), o.project ? o.project.name : '', orderEst(o) ? money(orderEst(o)) : ''].filter(Boolean).join(' · '))}</option>`).join('')}</select><button type="button" class="btn sm" data-act="mo-add" data-id="${esc(i.id)}">${ICON.plus} Agregar</button></div>` : '';
+  return `<div class="field full" id="inv-more-orders"><label${add ? ' for="mo-add"' : ''}>${more.length ? 'Otras órdenes que vinieron en esta factura' : '¿La ferretería mandó juntos otros pedidos en esta factura? Agrega sus órdenes'}</label>${rows}${add}${sum}</div>`;
+}
+function refreshMoreOrders(invId) {
+  setTimeout(() => {
+    const box = $('#inv-more-orders');
+    if (!S.sheet || S.sheet.type !== 'inv' || S.sheet.id !== invId) return;
+    const D = derive(), i = D.invoices.find((x) => x.id === invId);
+    if (!i) return;
+    const html = moreOrdersHTML(i, D, canEdit());
+    if (box) box.outerHTML = html || '<div id="inv-more-orders" hidden></div>';
+  }, 150);
+}
+async function addMoreOrder(invId, orderId) {
+  const raw = S.invoices.find((x) => x.id === invId), o = S.orders.find((x) => x.id === orderId);
+  if (!raw || !o) return false;
+  if (!raw.orderId) return linkOrder(invId, orderId, 'Orden asignada');
+  const moreOrders = orderIdsOf({ moreOrders: [...(raw.moreOrders || []), orderId] }).filter((x) => x !== raw.orderId);
+  return write(() => db.doc('invoices/' + invId).update({ moreOrders, noOrder: false, hist: histAdd(raw, histEntry('Se le agregó la orden ' + orderNo(o))) }), `Agregada la orden ${orderNo(o)}`);
+}
+// Quitar una orden de la factura: si es la principal, la siguiente pasa a ser la principal.
+async function removeOrderFromInv(invId, orderId) {
+  const raw = S.invoices.find((x) => x.id === invId);
+  if (!raw) return false;
+  const ids = orderIdsOf(raw).filter((x) => x !== orderId);
+  return write(() => db.doc('invoices/' + invId).update({ orderId: ids[0] || null, moreOrders: ids.slice(1), orderAuto: false }), 'Orden quitada de la factura');
+}
 // La orden completa lo que la factura no trae (el QR no dice el nombre del proveedor ni la obra).
 function fillFromOrder(target, inv, o) {
   target.orderId = o.id;
@@ -326,6 +366,17 @@ function knownSupplier(rnc) {
   let best = null;
   for (const x of S.invoices) if (x.rnc === rnc && x.supplier && (!best || String(x.createdAt || '') > String(best.createdAt || ''))) best = x;
   return best ? best.supplier : '';
+}
+function matchOrderRefs(text, projectId) {
+  const t = String(text || '');
+  const pre = orderPrefix().trim();
+  if (!(/\b(o\s*\/\s*c|oc|ordenes|órdenes|orden)\b/i.test(t) || (pre && t.toUpperCase().includes(pre.toUpperCase())))) return [];
+  const out = [];
+  for (const n of (t.match(/\d+/g) || []).map(Number)) {
+    const o = S.orders.find((x) => Number(x.number) === n && x.status !== 'anulada' && (!projectId || !x.projectId || x.projectId === projectId));
+    if (o && !out.includes(o)) out.push(o);
+  }
+  return out;
 }
 function matchOrderRef(text, projectId) {
   const t = String(text || '');
@@ -457,13 +508,17 @@ const MAT_STOP = new Set(['para', 'con', 'sin', 'tipo', 'color', 'pulgadas', 'pu
 const matWords = (t) => norm(t).split(' ').map((w) => w.replace(/(es|s)$/, '')).filter((w) => w.length >= 4 && !MAT_STOP.has(w) && !/^\d/.test(w));
 // Lo que traen los conduces de las facturas de una orden, contra lo que pidió la orden (mismo material y unidad).
 function orderQtyIssues(o, D) {
-  const conds = (D.invByOrder.get(o.id) || []).flatMap((i) => i.conduces || []);
+  const oinvs = D.invByOrder.get(o.id) || [];
+  const conds = oinvs.flatMap((i) => i.conduces || []);
   if (!conds.length) return [];
+  const others = [...new Map(oinvs.flatMap((i) => i.orders || []).filter((x) => x.id !== o.id).map((x) => [x.id, x])).values()].flatMap((x) => x.items || []);
   const out = [];
   for (const it of o.items || []) {
-    const oq = qtyOf(it.qty, it.unit);
+    const oq0 = qtyOf(it.qty, it.unit);
     const words = matWords(it.desc);
-    if (!oq || !oq.n || !words.length) continue;
+    if (!oq0 || !oq0.n || !words.length) continue;
+    const extra = others.reduce((t, x) => { const q = qtyOf(x.qty, x.unit); return q && q.n && q.u === oq0.u && matWords(x.desc).some((w) => words.includes(w)) ? t + q.n : t; }, 0);
+    const oq = { ...oq0, n: oq0.n + extra };
     let sum = 0, any = false;
     for (const c of conds) {
       if (!matWords(c.material).some((w) => words.includes(w))) continue;
@@ -491,9 +546,10 @@ function invCross(i, D) {
   }
   if (i.order && !i.qtyOk) r.qty = orderQtyIssues(i.order, D);
   if (i.order && !i.estOk) {
-    const est = orderEst(i.order);
+    const ests = (i.orders || [i.order]).map(orderEst);
+    const est = ests.every((e) => e) ? round2(ests.reduce((a, b) => a + b, 0)) : null;
     if (est) {
-      const invs = D.invByOrder.get(i.order.id) || [i];
+      const invs = [...new Map((i.orders || [i.order]).flatMap((o) => D.invByOrder.get(o.id) || []).concat([i]).map((x) => [x.id, x])).values()];
       const sub = round2(invs.reduce((t, x) => t + (isNum(x.amount) ? x.amount - (isNum(x.itbis) ? x.itbis : 0) : 0), 0));
       if (sub > est * 1.05 + 1) r.est = { est, sub, many: invs.length > 1 };
     }
@@ -507,7 +563,7 @@ function crossMsgsHTML(i, D, edit) {
   if (x.over) out.push(`<div class="msg warn">${ICON.alert}<span>La factura cobra <b>${esc(money(x.over.charged, i.currency))}</b>${x.over.sinItbis ? ' sin ITBIS' : ''} y sus conduces suman <b>${esc(money(x.over.sum, i.currency))}</b>: ${esc(money(x.over.diff, i.currency))} más.${ok('condOverOk')}</span></div>`);
   if (x.missing.length) out.push(`<div class="msg warn">${ICON.alert}<span>La factura menciona ${x.missing.length === 1 ? 'el conduce' : 'los conduces'} <b>${esc(x.missing.join(', '))}</b>, que no ${x.missing.length === 1 ? 'está adjunto' : 'están adjuntos'}.${edit ? ` <button type="button" class="link" data-act="cond-add" data-inv="${esc(i.id)}">Agregar conduce</button>` : ''}${ok('condRefsOk', 'No hace falta')}</span></div>`);
   if (x.qty.length) out.push(`<div class="msg warn">${ICON.alert}<span>${x.qty.map((q) => `Los conduces de la orden ${esc(orderNo(i.order))} traen <b>${esc(fmtQty(q.delivered))}${q.unit ? ' ' + esc(q.unit) : ''}</b> de ${esc(q.desc)} y la orden pidió ${esc(fmtQty(q.ordered))}.`).join(' ')}${ok('qtyOk')}</span></div>`);
-  if (x.est) out.push(`<div class="msg warn">${ICON.alert}<span>${x.est.many ? 'Las facturas de la orden' : 'La factura'} ${esc(orderNo(i.order))} ${x.est.many ? 'suman' : 'cobra'} <b>${esc(money(x.est.sub))}</b> sin ITBIS y la orden estimó <b>${esc(money(x.est.est))}</b>.${ok('estOk')}</span></div>`);
+  if (x.est) { const ords = i.orders && i.orders.length ? i.orders : [i.order], several = ords.length > 1, nos = ords.map(orderNo).join(' y '); out.push(`<div class="msg warn">${ICON.alert}<span>${x.est.many ? (several ? 'Las facturas de las órdenes' : 'Las facturas de la orden') : several ? 'La factura de las órdenes' : 'La factura'} ${esc(nos)} ${x.est.many ? 'suman' : 'cobra'} <b>${esc(money(x.est.sub))}</b> sin ITBIS y ${several ? 'las órdenes estimaron' : 'la orden estimó'} <b>${esc(money(x.est.est))}</b>.${ok('estOk')}</span></div>`); }
   return out.join('');
 }
 /* ---------- fechas ---------- */
@@ -586,7 +642,7 @@ function visibleList(D) {
   if (S.focus) list = list.filter((i) => i.status !== 'pagada' && (FOCUS[S.focus] || FOCUS.sinorden)(i, D));
   else list = list.filter((i) => S.filter === 'todas' || GROUP_OF[i.status] === S.filter);
   if (!S.focus && D.orders.length && S.invOrder !== 'all') list = list.filter((i) => (S.invOrder === 'con' ? !!i.order : !i.order));
-  if (q) list = list.filter((i) => norm([i.supplier, i.number, i.rnc, i.concept, i.ref, i.project && i.project.name, i.fileName, i.order ? orderNo(i.order) : '', (i.conduces || []).map((c) => c.number).join(' ')].join(' ')).includes(q));
+  if (q) list = list.filter((i) => norm([i.supplier, i.number, i.rnc, i.concept, i.ref, i.project && i.project.name, i.fileName, (i.orders || []).map(orderNo).join(' '), (i.conduces || []).map((c) => c.number).join(' ')].join(' ')).includes(q));
   return list.sort(sortByDateDesc);
 }
 
@@ -855,9 +911,11 @@ function invTags(i, D, opts = {}) {
   if (reading) tags.push('<span class="pill reading">Leyendo…</span>');
   if (D.orders.length && (i.order || !isCreditNcf(i.number))) {
     if (i.order) {
-      const st = i.order.status;
-      const cls = st === 'autorizada' ? 'ok' : st === 'anulada' ? 'bad' : 'pend';
-      tags.push(`<span class="pill oc ${cls}" title="Orden de compra ${esc(orderNo(i.order))}: ${esc(ORDER_LABEL[st] || '')}"><b>${esc(orderNo(i.order))}</b>${st === 'autorizada' ? '' : `<span> ${esc((ORDER_LABEL[st] || '').toLowerCase())}</span>`}</span>`);
+      for (const o of i.orders || [i.order]) {
+        const st = o.status;
+        const cls = st === 'autorizada' ? 'ok' : st === 'anulada' ? 'bad' : 'pend';
+        tags.push(`<span class="pill oc ${cls}" title="Orden de compra ${esc(orderNo(o))}: ${esc(ORDER_LABEL[st] || '')}"><b>${esc(orderNo(o))}</b>${st === 'autorizada' ? '' : `<span> ${esc((ORDER_LABEL[st] || '').toLowerCase())}</span>`}</span>`);
+      }
     }
     else if (i.noOrder) minor.push('<span class="pill nooc minor">No lleva orden</span>');
     else if (!needsOrder(i, D)) minor.push('<span class="pill nooc minor">Sin orden</span>');
@@ -1925,7 +1983,7 @@ function closeSheet() { const root = $('#sheet-root'); const had = !!S.sheet; ro
 function lockBody() { document.body.classList.toggle('locked', !!S.sheet || !$('#viewer').hidden); }
 const sheetHead = (title) => `<div class="sheet-h"><h2>${title}</h2><button type="button" class="icon-btn plain" data-act="sheet-close" aria-label="Cerrar">${ICON.close}</button></div>`;
 
-function invSig(i, D) { return JSON.stringify([i.payMode, i.termsCheck, i.paidBy, i.payMethod, i.paidDate, i.orderId, i.orderAuto, i.noOrder, i.order && i.order.status, i.ncfExpiry, i.supplier, i.number, i.rnc, i.date, i.amount, i.itbis, i.currency, i.concept, i.ref, i.projectId, i.projectHint, i.ai, i.notInvoice, i.pay && i.pay.id, i.pay && i.pay.status, i.dup, i.fiscal, i.xmlId, i.fileId, i.origFileId, i.abonado, i.envio && [i.envio.id, i.envio.date, i.envio.number], i.pages, (i.extraPages || []).length, i.buyerRnc, i.condOverOk, i.condRefsOk, i.qtyOk, i.estOk, i.due, i.sup && [i.sup.id, i.sup.name, i.sup.creditDays, i.sup.bank, i.sup.account], orderEst(i.order), (i.conduceRefs || []).join(), (i.order && i.order.items || []).length, (i.conduces || []).map((c) => [c.id, c.number, c.date, c.total, c.material, c.qty, c.ai, c.auto, c.dup]), D ? D.conduces.filter((c) => !c.invoiceId).map((c) => c.id + c.ai).join() : '']); }
+function invSig(i, D) { return JSON.stringify([(i.moreOrders || []).join(','), i.payMode, i.termsCheck, i.paidBy, i.payMethod, i.paidDate, i.orderId, i.orderAuto, i.noOrder, i.order && i.order.status, i.ncfExpiry, i.supplier, i.number, i.rnc, i.date, i.amount, i.itbis, i.currency, i.concept, i.ref, i.projectId, i.projectHint, i.ai, i.notInvoice, i.pay && i.pay.id, i.pay && i.pay.status, i.dup, i.fiscal, i.xmlId, i.fileId, i.origFileId, i.abonado, i.envio && [i.envio.id, i.envio.date, i.envio.number], i.pages, (i.extraPages || []).length, i.buyerRnc, i.condOverOk, i.condRefsOk, i.qtyOk, i.estOk, i.due, i.sup && [i.sup.id, i.sup.name, i.sup.creditDays, i.sup.bank, i.sup.account], orderEst(i.order), (i.conduceRefs || []).join(), (i.order && i.order.items || []).length, (i.conduces || []).map((c) => [c.id, c.number, c.date, c.total, c.material, c.qty, c.ai, c.auto, c.dup]), D ? D.conduces.filter((c) => !c.invoiceId).map((c) => c.id + c.ai).join() : '']); }
 // En la computadora: el documento grande a la izquierda y los datos a la derecha, para revisarlos sin abrir y cerrar.
 const revCache = { key: '', node: null };
 function mountReviewDoc(i) {
@@ -2098,7 +2156,7 @@ function openInvoice(id, keepScroll) {
   else if (needsOrder(i, D)) msgs.push(`<div class="msg warn">${ICON.alert}<span>Esta factura no tiene orden de compra. Debe presentarse con su orden firmada y sellada.${noOrdBtn}</span></div>`);
   if (i.order && i.orderAuto) msgs.push(`<div class="msg hint"><span>Se enlazó sola a la orden <b>${esc(orderNo(i.order))}</b>: es la única abierta de este proveedor. Si no es, cámbiala en «Orden de compra».</span></div>`);
   if (!i.order && i.noOrder) msgs.push(`<div class="msg"><span>Marcada como factura que no lleva orden de compra.${edit ? ` <button type="button" class="link" data-act="no-order-undo" data-id="${esc(i.id)}">Deshacer</button>` : ''}</span></div>`);
-  if (i.order && i.order.status !== 'autorizada') msgs.push(`<div class="msg warn">${ICON.alert}<span>La orden ${esc(orderNo(i.order))} todavía no tiene la copia firmada y sellada.</span></div>`);
+  for (const o of (i.orders || []).filter((x) => x.status !== 'autorizada')) msgs.push(`<div class="msg warn">${ICON.alert}<span>La orden ${esc(orderNo(o))} todavía no tiene la copia firmada y sellada.</span></div>`);
   msgs.push(crossMsgsHTML(i, D, edit));
   if (i.termsCheck && !i.payMode && !i.pay) msgs.push(`<div class="msg warn">${ICON.alert}<span>La factura dice que es <b>de contado</b>. ¿Ya se pagó?</span>${edit ? `<span class="acts"><button type="button" class="btn sm primary" data-act="pm-yes" data-id="${esc(i.id)}">Sí, ya se pagó</button><button type="button" class="btn sm" data-act="pm-reponer" data-id="${esc(i.id)}">Hay que reponérselo a quien pagó</button><button type="button" class="btn sm ghost" data-act="pm-no" data-id="${esc(i.id)}">No, va en un pago</button></span>` : ''}</div>`);
   else if (i.payMode && !i.pay) msgs.push(`<div class="msg${i.payMode === 'reponer' ? '' : ' ok'}">${i.payMode === 'reponer' ? '' : ICON.check}<span>${esc(payText(i))}.${i.payMode === 'reponer' ? ' Va en un pago como reposición a esa persona.' : ''}</span></div>`);
@@ -2134,6 +2192,7 @@ function openInvoice(id, keepScroll) {
         <div class="field"><label for="f-amt">Total a pagar</label><input id="f-amt" class="mono" inputmode="decimal" maxlength="20" placeholder="0.00" value="${esc(amountInput(i.amount))}" ${dis}></div>
         <div class="field full"><label for="f-con">Concepto</label><textarea id="f-con" maxlength="140" rows="2" ${dis}>${esc(i.concept || '')}</textarea></div>
         <div class="field full"><label for="f-order">Orden de compra</label><select id="f-order" ${dis}><option value="">Sin orden</option>${orderOpts}</select>${i.order ? `<button type="button" class="link" data-act="open-order" data-id="${esc(i.order.id)}">Abrir ${esc(orderNo(i.order))}</button>` : ''}</div>
+        ${moreOrdersHTML(i, D, edit)}
         <div class="field full"><label for="f-ref">Otra referencia (cubicación, contrato)</label><input id="f-ref" maxlength="60" placeholder="Opcional" value="${esc(i.ref || '')}" ${dis}></div>
         <div class="field full"><label for="f-paymode">Cómo se paga</label><select id="f-paymode" ${dis}>${Object.entries(PAY_MODE_LABEL).map(([k, l]) => `<option value="${k}"${(i.payMode || '') === k ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select></div>
         <div class="field" id="f-pm-how"${i.payMode ? '' : ' hidden'}><label for="f-paymethod">Cómo se pagó</label><select id="f-paymethod" ${dis}><option value="">—</option>${PAY_METHODS.map((m) => `<option${i.payMethod === m ? ' selected' : ''}>${m}</option>`).join('')}</select></div>
@@ -2836,7 +2895,7 @@ function buildPrompt(text, withImage) {
     '- concepto: qué se está cobrando, máximo 80 caracteres.',
     '- proyecto: la obra o proyecto; suele venir en campos como Nota, Obra, Proyecto o Referencia (ej. "Nota: CAPERUZA 2"). Si coincide con uno de los proyectos que ya existen (aunque esté escrito distinto, por ejemplo "caperuza II" y "Caperuza 2"), escribe el nombre exactamente como está en la lista; si no, escríbelo tal cual.',
     '- rnc_cliente: RNC del cliente o comprador al que va dirigida la factura, solo números.',
-    '- referencia: número de orden de compra (OC), contrato o cubicación, si aparece, con su etiqueta (ej. "OC-0012" o "Cubicación 4").',
+    '- referencia: número de orden de compra (OC), contrato o cubicación, si aparece, con su etiqueta (ej. "OC-0012" o "Cubicación 4"). Si menciona varias órdenes, ponlas todas (ej. "OC-0012, OC-0013").',
     '- es_factura: false solo si el archivo claramente no es una factura, nota ni recibo.',
     '- tipo_documento: "conduce" si es un conduce (nota de entrega o despacho de material: suele decir CONDUCE, viajes, chofer, placa, despachado por y recibido por) y no una factura; "factura" si es una factura, nota o recibo; "otro" si no es ninguno.',
     '- conduce_numero, material, cantidad y viajes: solo si es un conduce: su número (ej. 39807), el material (ej. Grava), la cantidad con su unidad (ej. "5 m³") y la cantidad de viajes (solo el número). En un conduce, total es el total en dinero del conduce.',
@@ -2879,7 +2938,9 @@ function parseAI(out, inv) {
   // Si la factura menciona su orden de compra (ej. "OC-0012"), queda enlazada; si no tenía obra, toma la de la orden.
   const refx = s(o.referencia, 60);
   const pid = upd.projectId || (hasProject ? inv.projectId : null);
-  const ordRef = refx && !(inv && inv.orderId && !inv.orderAuto) ? matchOrderRef(refx, pid) : null;
+  const ordRefs = refx && !(inv && inv.orderId && !inv.orderAuto) ? matchOrderRefs(refx, pid) : [];
+  const ordRef = ordRefs[0] || null;
+  if (ordRefs.length > 1) upd.moreOrders = ordRefs.slice(1).map((x) => x.id);
   if (ordRef) { upd.orderId = ordRef.id; upd.orderAuto = false; if (!pid && ordRef.projectId) { upd.projectId = ordRef.projectId; upd.projectHint = ''; } if (!upd.supplier && !(inv && inv.supplier) && ordRef.supplier) upd.supplier = ordRef.supplier; }
   else if (refx && !(inv && inv.ref)) upd.ref = refx;
   // Renglones tachados a mano (se devolvieron o se cambiaron): se anotan, el impreso queda aparte y, si hay un total corregido a mano, ese es el que se paga.
@@ -3065,6 +3126,7 @@ async function saveInvoice(form) {
     if (upd.payMode === 'reponer' && !upd.paidBy) { toast('Escribe a quién hay que reponérselo.'); $('#f-paidby').focus(); btn.disabled = false; return; }
     if (upd.payMode && (inv.payMode || '') !== upd.payMode && S.payments.some((p) => (p.invoiceIds || []).includes(id))) { const p = S.payments.find((x) => (x.invoiceIds || []).includes(id)); toast(`Está en el pago «${p.name || 'Pago'}». Si ya se pagó aparte, primero quítala de ese pago.`); btn.disabled = false; return; }
     signAmounts(upd);
+    { const more = Array.isArray(inv.moreOrders) ? inv.moreOrders : []; if (more.length) { if (!upd.orderId) { upd.orderId = more[0]; upd.moreOrders = more.slice(1); } else upd.moreOrders = more.filter((x) => x !== upd.orderId); } }
     const ordSel = upd.orderId ? S.orders.find((x) => x.id === upd.orderId) : null;
     if (ordSel) { if (!upd.projectId && ordSel.projectId) upd.projectId = ordSel.projectId; if (!upd.supplier && ordSel.supplier) upd.supplier = ordSel.supplier; if (!upd.concept) upd.concept = itemsSummary(ordSel.items); }
     upd.orderAuto = false;
@@ -4790,7 +4852,7 @@ function orderLinkResultsHTML(orderId, q) {
   const same = (i) => sameName(o.supplier, i.supplier) || (!!i.rnc && (D.namesByRnc.get(i.rnc) || []).some((n) => sameName(o.supplier, n)));
   const score = (i) => (same(i) ? 2 : 0) + (o.projectId && i.projectId === o.projectId ? 1 : 0);
   const nq = norm(q);
-  let list = D.invoices.filter((i) => !i.orderId);
+  let list = D.invoices.filter((i) => !i.orderId || (same(i) && !(i.orders || []).some((x) => x.id === o.id)));
   if (nq) list = list.filter((i) => norm([i.supplier, i.number, i.rnc, i.concept, i.project && i.project.name, isNum(i.amount) ? String(i.amount) : ''].join(' ')).includes(nq));
   list.sort((a, b) => score(b) - score(a) || String(b.date || b.createdAt || '').localeCompare(String(a.date || a.createdAt || '')));
   const rows = list.slice(0, 30).map((i) => `<button type="button" class="o-pick" data-act="order-link-inv" data-id="${esc(i.id)}" data-order="${esc(o.id)}"><span><b>${esc(i.supplier || 'Factura sin datos')}</b><small>${esc([i.number ? 'NCF ' + RD.normNcf(i.number) : '', fmtDate(i.date), i.project ? i.project.name : 'Sin proyecto'].filter(Boolean).join(' · '))}</small></span><span class="num">${esc(money(i.amount, i.currency))}</span></button>`).join('');
@@ -4886,7 +4948,7 @@ function orderConfirm(text, act, label) {
 async function deleteOrder(id) {
   const o = S.orders.find((x) => x.id === id);
   if (!o) return;
-  if (S.invoices.some((i) => i.orderId === id)) { toast('Tiene facturas enlazadas; mejor anúlala.'); return; }
+  if (S.invoices.some((i) => orderIdsOf(i).includes(id))) { toast('Tiene facturas enlazadas; mejor anúlala.'); return; }
   if (!(await write(async () => { await toTrash('order', o, [orderNo(o), o.supplier].filter(Boolean).join(' · ')); await db.doc('orders/' + id).delete(); }))) return;
   closeSheet();
   toastAct('Orden movida a la papelera', 'Deshacer', () => undoTrash('order', id));
@@ -5262,7 +5324,7 @@ async function buildPackage(pay, D, onProgress) {
   ensure(70); T('Detalle', M, y, 11.5, bold); y -= 20; head();
   invs.forEach((i, n) => {
     ensure(20, head);
-    const vals = [String(n + 1), i.project ? i.project.name : 'Sin proyecto', i.supplier || 'Sin nombre', RD.normRnc(i.rnc) || '-', RD.normNcf(i.number) || '-', i.order ? orderNo(i.order) : !D.orders.length ? '-' : i.noOrder ? 'No lleva' : 'Sin OC', fmtDmy(i.date) || '-', isNum(i.itbis) ? money(i.itbis, i.currency) : '-', money(i.toPay, i.currency)];
+    const vals = [String(n + 1), i.project ? i.project.name : 'Sin proyecto', i.supplier || 'Sin nombre', RD.normRnc(i.rnc) || '-', RD.normNcf(i.number) || '-', i.order ? (i.orders || [i.order]).map(orderNo).join(', ') : !D.orders.length ? '-' : i.noOrder ? 'No lleva' : 'Sin OC', fmtDmy(i.date) || '-', isNum(i.itbis) ? money(i.itbis, i.currency) : '-', money(i.toPay, i.currency)];
     cols.forEach((c, k) => { const t = fit(vals[k], font, 8, c.w); if (c.xr) R(t, c.xr, y, 8); else T(t, c.x, y, 8); });
     y -= 7; hr(y, C.line, 0.5); y -= 12;
   });
@@ -5503,7 +5565,7 @@ function invoicesWorkbook({ heading, scope, invs, D, isPayment }) {
     { k: 'Vence', w: 11, v: (i) => Dt(i.due) },
     { k: 'Forma de pago', w: 26, v: (i) => ({ v: payText(i) }) },
     { k: 'Concepto', w: 36, v: (i) => ({ v: i.concept || '' }) },
-    { k: 'Orden de compra', w: 15, v: (i) => ({ v: i.order ? orderNo(i.order) : '' }) },
+    { k: 'Orden de compra', w: 15, v: (i) => ({ v: (i.orders || []).map(orderNo).join(', ') }) },
     { k: 'Estado de la orden', w: 16, v: (i) => (i.order ? { v: ORDER_LABEL[i.order.status] || '', s: i.order.status === 'autorizada' ? undefined : XS.warn } : !D.orders.length ? { v: '' } : i.noOrder ? { v: 'No lleva' } : { v: 'Sin orden', s: needsOrder(i, D) ? XS.warn : undefined }) },
     { k: 'Solicitado por', w: 20, v: (i) => ({ v: (i.order && i.order.requestedBy) || '' }) },
     { k: 'Referencia', w: 14, v: (i) => ({ v: i.ref || '' }) },
@@ -5766,6 +5828,8 @@ function onClick(e) {
     case 'digi-undo-one': digiUndoOne(id); break;
     case 'ab-add': addAbono(id); break;
     case 'tc-add': addTach(id); break;
+    case 'mo-add': { const v = ($('#mo-add') || {}).value; if (!v) { toast('Elige la otra orden.'); break; } addMoreOrder(id, v).then((ok) => { if (ok) refreshMoreOrders(id); }); break; }
+    case 'mo-rm': removeOrderFromInv(id, t.dataset.o).then((ok) => { if (ok) refreshMoreOrders(id); }); break;
     case 'tc-link': { const v = ($('#tc-chg') || {}).value; if (!v) { toast('Elige la factura del cambio.'); break; } write(() => db.doc('invoices/' + v).update({ changeOf: id, changeRef: '' }), 'Enlazada: es la factura del cambio').then((ok) => { if (ok) refreshTach(id); }); break; }
     case 'tc-unlink': write(() => db.doc('invoices/' + id).update({ changeOf: null }), 'Enlace quitado').then((ok) => { if (ok) refreshTach(id); }); break;
     case 'tc-rm': removeTach(id, Number(t.dataset.k)); break;
@@ -5836,8 +5900,8 @@ function onClick(e) {
     case 'order-fill-photo': $('#fill-photo-input').click(); break;
     case 'link-order': linkOrder(id, t.dataset.order); break;
     case 'order-link-open': openOrderLinkBox(id); break;
-    case 'order-link-inv': linkOrder(id, t.dataset.order, 'Factura enlazada a la orden').then(() => refreshOrderInvBox(t.dataset.order)); break;
-    case 'order-unlink-inv': write(() => db.doc('invoices/' + id).update({ orderId: null, orderAuto: false }), 'Factura quitada de la orden').then(() => refreshOrderInvBox(t.dataset.order)); break;
+    case 'order-link-inv': { const raw = S.invoices.find((x) => x.id === id); (raw && raw.orderId && raw.orderId !== t.dataset.order ? addMoreOrder(id, t.dataset.order) : linkOrder(id, t.dataset.order, 'Factura enlazada a la orden')).then(() => refreshOrderInvBox(t.dataset.order)); break; }
+    case 'order-unlink-inv': removeOrderFromInv(id, t.dataset.order).then(() => refreshOrderInvBox(t.dataset.order)); break;
     case 'nube-connect': nubeConnect(t); break;
     case 'nube-relogin': nubeRelogin(t); break;
     case 'nube-sync': RT.sync.syncNow(); break;
@@ -5981,7 +6045,7 @@ function onInput(e) {
   if (S.sheet && S.sheet.type === 'order' && t.closest && t.closest('#order-form') && t.id !== 'o-msg') S.sheet.dirty = true;
   if (t.closest && t.closest('#o-items') && $('#o-est')) $('#o-est').textContent = estText(collectItems());
   if (t.id === 'f-rnc' || t.id === 'f-num') liveHelp(t);
-  if (S.sheet && S.sheet.type === 'inv' && t.closest && t.closest('#inv-form') && !/^(ab|tc)-/.test(String(t.id || '')) && !(t.dataset && t.dataset.cpick)) S.sheet.dirty = true;
+  if (S.sheet && S.sheet.type === 'inv' && t.closest && t.closest('#inv-form') && !/^(ab|tc|mo)-/.test(String(t.id || '')) && !(t.dataset && t.dataset.cpick)) S.sheet.dirty = true;
   if (S.sheet && S.sheet.type === 'cond' && t.closest && t.closest('#cond-form')) S.sheet.dirty = true;
 }
 function onSubmit(e) {
