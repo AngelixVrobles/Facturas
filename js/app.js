@@ -10,7 +10,7 @@ const LIB = {
   qrgen: 'js/qr.js',
 };
 const PDF_CREATOR = 'Facturas de Proyectos';
-const APP_VERSION = '1.30.0';
+const APP_VERSION = '1.31.0';
 const SVG = (d) => `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ICON = {
   lock: SVG('<rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>'),
@@ -211,7 +211,16 @@ function derive() {
   const namesByRnc = new Map();
   for (const i of S.invoices) if (i.rnc && i.supplier) { const a = namesByRnc.get(i.rnc) || []; if (!a.includes(i.supplier)) a.push(i.supplier); namesByRnc.set(i.rnc, a); }
   for (const i of invoices) for (const o of i.orders) { const a = invByOrder.get(o.id) || []; a.push(i); invByOrder.set(o.id, a); }
-  return { projects: projects.map((p) => projById.get(p.id)), projById, invoices, orders, orderById, invByOrder, namesByRnc, firstOrderAt, conduces, condByInv, suppliers, supByRnc, supFor, envios, companyRnc: RD.normRnc(S.settings.companyRnc) };
+  // La orden de cada conduce: la suya (enlazada al conduce) o, si no tiene, la de su factura cuando esa factura tiene una sola.
+  const invById = new Map(invoices.map((i) => [i.id, i]));
+  const condByOrder = new Map();
+  for (const c of conduces) {
+    const own = c.orderId ? orderById.get(c.orderId) || null : null, inv = c.invoiceId ? invById.get(c.invoiceId) : null;
+    c.order = own || (inv && inv.orders.length === 1 ? inv.orders[0] : null);
+    c.orderVia = own ? 'conduce' : c.order ? 'factura' : '';
+    if (c.order) { const a = condByOrder.get(c.order.id) || []; a.push(c); condByOrder.set(c.order.id, a); }
+  }
+  return { projects: projects.map((p) => projById.get(p.id)), projById, invoices, orders, orderById, invByOrder, condByOrder, namesByRnc, firstOrderAt, conduces, condByInv, suppliers, supByRnc, supFor, envios, companyRnc: RD.normRnc(S.settings.companyRnc) };
 }
 function reviewFlags(i, D) {
   const r = [];
@@ -332,7 +341,7 @@ async function removeOrderFromInv(invId, orderId) {
   const raw = S.invoices.find((x) => x.id === invId);
   if (!raw) return false;
   const ids = orderIdsOf(raw).filter((x) => x !== orderId);
-  return write(() => db.doc('invoices/' + invId).update({ orderId: ids[0] || null, moreOrders: ids.slice(1), orderAuto: false }), 'Orden quitada de la factura');
+  return write(() => db.doc('invoices/' + invId).update({ orderId: ids[0] || null, moreOrders: ids.slice(1), orderAuto: false, ...(ids.length ? {} : { orderOff: true }) }), 'Orden quitada de la factura');
 }
 // La orden completa lo que la factura no trae (el QR no dice el nombre del proveedor ni la obra).
 function fillFromOrder(target, inv, o) {
@@ -522,9 +531,26 @@ function qtyOf(v, unit) {
 const MAT_STOP = new Set(['para', 'con', 'sin', 'tipo', 'color', 'pulgadas', 'pulgada', 'metros', 'metro', 'lavada', 'lavado']);
 const matWords = (t) => norm(t).split(' ').map((w) => w.replace(/(es|s)$/, '')).filter((w) => w.length >= 4 && !MAT_STOP.has(w) && !/^\d/.test(w));
 // Lo que traen los conduces de las facturas de una orden, contra lo que pidió la orden (mismo material y unidad).
+// Los conduces de una orden: los enlazados a ella y los de sus facturas (salvo los que dicen que son de otra orden).
+function orderConds(o, D) {
+  const m = new Map();
+  for (const c of D.condByOrder.get(o.id) || []) m.set(c.id, c);
+  for (const i of D.invByOrder.get(o.id) || []) for (const c of i.conduces || []) if (!c.orderId || c.orderId === o.id || !D.orderById.has(c.orderId)) m.set(c.id, c);
+  return [...m.values()].sort(condSort);
+}
+const COND_ORDER_WHY = { numero: 'el conduce menciona su número', unica: 'es la única orden abierta de este proveedor' };
+// Una sola orden abierta (por firmar o firmada, todavía sin factura) del proveedor del conduce, en su obra si la tiene,
+// y de antes del conduce: el conduce es de esa.
+function condSoleOrder(c, D) {
+  const names = [c.supplier, ...((c.rnc && D.namesByRnc.get(c.rnc)) || [])].filter(Boolean);
+  if (!names.length) return null;
+  const open = D.orders.filter((o) => (o.status === 'enviada' || o.status === 'autorizada') && !orderHasInv(o, D) && (!c.projectId || o.projectId === c.projectId)
+    && !(ymd(o.date) && ymd(c.date) && o.date > c.date) && names.some((n) => sameName(o.supplier, n)));
+  return open.length === 1 ? open[0] : null;
+}
 function orderQtyIssues(o, D) {
   const oinvs = D.invByOrder.get(o.id) || [];
-  const conds = oinvs.flatMap((i) => i.conduces || []);
+  const conds = orderConds(o, D);
   if (!conds.length) return [];
   const others = [...new Map(oinvs.flatMap((i) => i.orders || []).filter((x) => x.id !== o.id).map((x) => [x.id, x])).values()].flatMap((x) => x.items || []);
   const out = [];
@@ -1012,9 +1038,9 @@ function condTableHTML(items, D, invById) {
   const val = (c, k) => (k === 'total' ? (isNum(c.total) ? c.total : -Infinity) : k === 'date' ? c.date || '' : k === 'factura' ? invOf(c) : k === 'material' ? norm([c.material, c.qty].filter(Boolean).join(' ')) : String(c.number || ''));
   const rows = sortRows('cond', items, val).map((c) => {
     const p = c.projectId ? D.projById.get(c.projectId) : null, inv = invOf(c);
-    return `<tr data-act="open-cond" data-id="${esc(c.id)}"><td class="c-main"><span class="c-th">${condThumbHTML(c)}</span><button type="button" class="row-btn" data-act="open-cond" data-id="${esc(c.id)}">${esc(c.number || 'Sin número')}</button>${c.dup ? ' <span class="pill warn">¿Repetido?</span>' : ''}</td><td>${esc(fmtDate(c.date) || '—')}</td><td>${esc([c.material, c.qty].filter(Boolean).join(' ') || '—')}</td><td class="r mono">${isNum(c.trips) ? esc(String(c.trips)) : '—'}</td><td>${esc(p ? p.name : '—')}</td><td>${inv ? `<span class="mono">${esc(inv)}</span>` : '<span class="pill pendiente">Sin factura</span>'}</td><td class="r mono">${c.ai === 'pending' ? '<span class="pill reading">Leyendo…</span>' : isNum(c.total) ? esc(money(c.total, c.currency)) : '—'}</td></tr>`;
+    return `<tr data-act="open-cond" data-id="${esc(c.id)}"><td class="c-main"><span class="c-th">${condThumbHTML(c)}</span><button type="button" class="row-btn" data-act="open-cond" data-id="${esc(c.id)}">${esc(c.number || 'Sin número')}</button>${c.dup ? ' <span class="pill warn">¿Repetido?</span>' : ''}</td><td>${esc(fmtDate(c.date) || '—')}</td><td>${esc([c.material, c.qty].filter(Boolean).join(' ') || '—')}</td><td class="r mono">${isNum(c.trips) ? esc(String(c.trips)) : '—'}</td><td>${esc(p ? p.name : '—')}</td><td class="mono">${c.order ? esc(orderNo(c.order)) : '—'}</td><td>${inv ? `<span class="mono">${esc(inv)}</span>` : '<span class="pill pendiente">Sin factura</span>'}</td><td class="r mono">${c.ai === 'pending' ? '<span class="pill reading">Leyendo…</span>' : isNum(c.total) ? esc(money(c.total, c.currency)) : '—'}</td></tr>`;
   }).join('');
-  return `<table class="tbl cond-tbl"><colgroup><col class="w-cmain"><col class="w-date"><col><col class="w-trips"><col class="w-proj"><col class="w-ncf"><col class="w-amt"></colgroup><thead><tr>${thHTML('cond', 'number', 'Conduce')}${thHTML('cond', 'date', 'Fecha')}${thHTML('cond', 'material', 'Material')}${thHTML('cond', '', 'Viajes', 'r')}${thHTML('cond', '', 'Proyecto')}${thHTML('cond', 'factura', 'Factura')}${thHTML('cond', 'total', 'Total', 'r')}</tr></thead><tbody>${rows}</tbody></table>`;
+  return `<table class="tbl cond-tbl"><colgroup><col class="w-cmain"><col class="w-date"><col><col class="w-trips"><col class="w-proj"><col class="w-ord"><col class="w-ncf"><col class="w-amt"></colgroup><thead><tr>${thHTML('cond', 'number', 'Conduce')}${thHTML('cond', 'date', 'Fecha')}${thHTML('cond', 'material', 'Material')}${thHTML('cond', '', 'Viajes', 'r')}${thHTML('cond', '', 'Proyecto')}${thHTML('cond', '', 'Orden')}${thHTML('cond', 'factura', 'Factura')}${thHTML('cond', 'total', 'Total', 'r')}</tr></thead><tbody>${rows}</tbody></table>`;
 }
 function orderTableHTML(items, D) {
   const val = (o, k) => (k === 'est' ? orderEst(o) || -Infinity : k === 'date' ? o.date || '' : k === 'supplier' ? norm(o.supplier || '') : k === 'status' ? ORDER_LABEL[o.status] || '' : orderNo(o));
@@ -1327,8 +1353,9 @@ function missingBySupplier(list, D) {
 }
 function askInvoicesText(g, D) {
   const st = S.settings || {};
-  const conds = D.conduces.filter((c) => !c.invoiceId && sameName(c.supplier, g.name));
-  const lines = [...g.items].sort((a, b) => String(a.date || '').localeCompare(String(b.date || ''))).map((o) => `• ${orderNo(o)} del ${fmtDate(o.date) || 's/f'}${o.project ? ' (' + o.project.name + ')' : ''}: ${(o.items || []).filter((x) => x && (x.desc || x.qty)).map(itemLine).join('; ') || 'sin detalle'}`);
+  const inOrder = new Set(g.items.flatMap((o) => (D.condByOrder.get(o.id) || []).map((c) => c.id)));
+  const conds = D.conduces.filter((c) => !c.invoiceId && !inOrder.has(c.id) && sameName(c.supplier, g.name));
+  const lines = [...g.items].sort((a, b) => String(a.date || '').localeCompare(String(b.date || ''))).map((o) => { const cs = (D.condByOrder.get(o.id) || []).filter((c) => !c.invoiceId); return `• ${orderNo(o)} del ${fmtDate(o.date) || 's/f'}${o.project ? ' (' + o.project.name + ')' : ''}: ${(o.items || []).filter((x) => x && (x.desc || x.qty)).map(itemLine).join('; ') || 'sin detalle'}${cs.length ? ` (${cs.length === 1 ? 'conduce' : 'conduces'} ${cs.map((c) => c.number || 's/n').join(', ')})` : ''}`; });
   return [`Buenas. Le escribe ${st.preparedBy || 'el encargado de compras'}${st.company ? ' de ' + st.company : ''}${st.companyRnc ? ' (RNC ' + RD.fmtRnc(st.companyRnc) + ')' : ''}.`,
     `Nos ${g.items.length === 1 ? 'falta la factura de este pedido' : 'faltan las facturas de estos pedidos'}:`, ...lines,
     conds.length ? `También tenemos ${conds.length === 1 ? 'este conduce' : 'estos conduces'} sin su factura: ${conds.map((c) => c.number || 's/n').join(', ')}.` : '',
@@ -1355,7 +1382,7 @@ function orderCardHTML(o, D, opts = {}) {
   const n = (o.items || []).length;
   const its = (o.items || []).filter((x) => x && (x.desc || x.qty));
   const what = its.length ? itemLine(its[0]) + (n > 1 ? ` y ${n - 1} más` : '') : '';
-  const meta = [opts.hideProject ? '' : o.project ? o.project.name : 'Sin proyecto', fmtDate(o.date), orderEst(o) ? 'estimado ' + money(orderEst(o)) : '', invs.length ? plural(invs.length, 'factura', 'facturas') : o.status === 'anulada' ? '' : ['sin factura', agoText(o.date)].filter(Boolean).join(', ')].filter(Boolean).join(' · ');
+  const meta = [opts.hideProject ? '' : o.project ? o.project.name : 'Sin proyecto', fmtDate(o.date), orderEst(o) ? 'estimado ' + money(orderEst(o)) : '', invs.length ? plural(invs.length, 'factura', 'facturas') : o.status === 'anulada' ? '' : ['sin factura', agoText(o.date)].filter(Boolean).join(', '), (() => { const cs = D.condByOrder.get(o.id) || []; return cs.length ? (invs.length ? '' : 'llegó ') + plural(cs.length, 'conduce', 'conduces') : ''; })()].filter(Boolean).join(' · ');
   return `<button type="button" class="ord" data-act="open-order" data-id="${esc(o.id)}"><span class="ord-top"><b class="mono">${esc(orderNo(o))}</b><span class="pill o-${o.status}">${ORDER_LABEL[o.status]}</span></span><span class="ord-sup">${esc(opts.hideSupplier ? what || 'Sin detalle' : o.supplier || 'Sin proveedor')}</span>${!opts.hideSupplier && what ? `<span class="ord-what">${esc(what)}</span>` : ''}<span class="ord-meta">${esc(meta)}</span></button>`;
 }
 function renderOrdenes(D) {
@@ -2033,7 +2060,7 @@ function renderConduces(D) {
   const invById = new Map(D.invoices.map((i) => [i.id, i]));
   const q = norm(S.condSearch || '');
   let list = base.filter((c) => S.condFilter === 'todos' || (S.condFilter === 'esperando' ? !c.invoiceId : !!c.invoiceId));
-  if (q) list = list.filter((c) => { const inv = invById.get(c.invoiceId), p = D.projById.get(c.projectId); return norm([c.number, c.supplier, c.material, c.qty, p && p.name, inv && inv.supplier, inv && inv.number, fmtDate(c.date)].filter(Boolean).join(' ')).includes(q); });
+  if (q) list = list.filter((c) => { const inv = invById.get(c.invoiceId), p = D.projById.get(c.projectId); return norm([c.number, c.supplier, c.material, c.qty, p && p.name, inv && inv.supplier, inv && inv.number, c.order && orderNo(c.order), fmtDate(c.date)].filter(Boolean).join(' ')).includes(q); });
   list.sort((a, b) => condWhen(b).localeCompare(condWhen(a)));
   sum.innerHTML = list.length ? `<span>${plural(list.length, 'conduce', 'conduces')} · <b class="mono">${esc(totalStr(list, 'total'))}</b></span>` : '';
   if (!list.length) { el.innerHTML = `<div class="empty"><p>${q ? 'Nada coincide con tu búsqueda.' : S.condFilter === 'esperando' ? 'No hay conduces esperando factura.' : S.condFilter === 'confactura' ? 'Todavía no hay conduces con su factura.' : 'No hay conduces.'}</p></div>`; return; }
@@ -2046,7 +2073,7 @@ function renderConduces(D) {
   const more = (c) => {
     const p = S.condProject === 'all' && c.projectId ? D.projById.get(c.projectId) : null;
     const inv = c.invoiceId ? invById.get(c.invoiceId) : null;
-    return [p ? p.name : '', inv ? 'Factura ' + (inv.number ? RD.normNcf(inv.number) : inv.supplier || 'sin NCF') : S.condFilter === 'todos' ? 'esperando factura' : ''].filter(Boolean).join(' · ');
+    return [p ? p.name : '', c.order ? 'Orden ' + orderNo(c.order) : '', inv ? 'Factura ' + (inv.number ? RD.normNcf(inv.number) : inv.supplier || 'sin NCF') : S.condFilter === 'todos' ? 'esperando factura' : ''].filter(Boolean).join(' · ');
   };
   el.innerHTML = (S.condFilter === 'esperando' ? '<p class="hint c-hint">Cuando llegue la factura, se le adjuntan solos si la factura menciona sus números o si suman lo mismo que la factura. Si no, ábrela y marca los que son.</p>' : '')
     + [...groups.values()].map((g) => `<section class="group"><h2 class="group-h"><span class="gname">${esc(g.name)}</span><span class="gmeta">${g.items.length} · ${esc(totalStr(g.items, 'total'))}</span></h2>${wide() ? condTableHTML(g.items, D, invById) : `<div class="cond-list">${g.items.map((c) => condRowHTML(c, false, more(c))).join('')}</div>`}</section>`).join('')
@@ -2269,7 +2296,7 @@ function openInvoice(id, keepScroll) {
   const noOrdBtn = edit ? ` <button type="button" class="link" data-act="no-order" data-id="${esc(i.id)}">No lleva orden</button>` : '';
   if (cand.length) msgs.push(`<div class="msg hint"><span>Hay ${cand.length === 1 ? 'una orden' : 'órdenes'} de este proveedor${i.projectId ? ' para esta obra' : ''}.</span>${cand.slice(0, 3).map((o) => `<button type="button" class="link" data-act="link-order" data-id="${esc(i.id)}" data-order="${esc(o.id)}">Asignar ${esc(orderNo(o))}${!i.projectId && o.project ? ' (' + esc(o.project.name) + ')' : ''}</button>`).join(' ')}${needsOrder(i, D) ? noOrdBtn : ''}</div>`);
   else if (needsOrder(i, D)) msgs.push(`<div class="msg warn">${ICON.alert}<span>Esta factura no tiene orden de compra. Debe presentarse con su orden firmada y sellada.${noOrdBtn}</span></div>`);
-  if (i.order && i.orderAuto) msgs.push(`<div class="msg hint"><span>Se enlazó sola a la orden <b>${esc(orderNo(i.order))}</b>: es la única abierta de este proveedor. Si no es, cámbiala en «Orden de compra».</span></div>`);
+  if (i.order && i.orderAuto) msgs.push(`<div class="msg hint"><span>Se enlazó sola a la orden <b>${esc(orderNo(i.order))}</b>: ${i.orderWhy === 'conduce' && (i.conduces || []).some((c) => c.orderId === i.order.id) ? 'sus conduces son de esa orden' : 'es la única abierta de este proveedor'}. Si no es, cámbiala en «Orden de compra».</span></div>`);
   if (!i.order && i.noOrder) msgs.push(`<div class="msg"><span>Marcada como factura que no lleva orden de compra.${edit ? ` <button type="button" class="link" data-act="no-order-undo" data-id="${esc(i.id)}">Deshacer</button>` : ''}</span></div>`);
   for (const o of (i.orders || []).filter((x) => x.status !== 'autorizada')) msgs.push(`<div class="msg warn">${ICON.alert}<span>La orden ${esc(orderNo(o))} todavía no tiene la copia firmada y sellada.</span></div>`);
   msgs.push(crossMsgsHTML(i, D, edit));
@@ -2414,7 +2441,12 @@ function refreshInvCondBox(invId) {
     if (i) card.outerHTML = invCondBoxHTML(i, D, canEdit());
   }, 150);
 }
-function condSig(c) { return JSON.stringify([c.number, c.date, c.supplier, c.rnc, c.total, c.currency, c.material, c.qty, c.trips, c.invoiceId, c.projectId, c.projectHint, c.ai, c.auto, c.fileId, c.thumbId, c.dup]); }
+function condSig(c) { return JSON.stringify([c.number, c.date, c.supplier, c.rnc, c.total, c.currency, c.material, c.qty, c.trips, c.invoiceId, c.projectId, c.projectHint, c.ai, c.auto, c.fileId, c.thumbId, c.dup, c.orderId, c.orderAuto, c.order && c.order.id]); }
+// Las órdenes para elegir en el conduce: primero las del mismo proveedor y la misma obra, y las que no tienen factura.
+function condOrderOptions(c, D) {
+  const sup = (o) => (c.supplier && sameName(o.supplier, c.supplier) ? 2 : 0) + (c.projectId && o.projectId === c.projectId ? 1 : 0) + (orderHasInv(o, D) ? 0 : 1);
+  return D.orders.filter((o) => o.status !== 'anulada' || (c.order && o.id === c.order.id)).sort((a, b) => (c.order && b.id === c.order.id) - (c.order && a.id === c.order.id) || sup(b) - sup(a) || (Number(b.number) || 0) - (Number(a.number) || 0)).slice(0, 300);
+}
 function openConduce(id, keepScroll) {
   const D = derive();
   const c = D.conduces.find((x) => x.id === id);
@@ -2434,6 +2466,9 @@ function openConduce(id, keepScroll) {
   if (c.dup) msgs.push(`<div class="msg warn">${ICON.alert}<span>Hay otro conduce de este proveedor con el mismo número. Si es la misma foto dos veces, elimina uno para que no se pague doble.</span></div>`);
   if (inv && c.auto) msgs.push(`<div class="msg hint"><span>Se adjuntó solo a esta factura: ${esc(AUTO_WHY[c.autoWhy] || 'es del mismo proveedor')}. Si no es, elige otra en «Factura».</span></div>`);
   if (c.projectHint && !c.project) msgs.push(`<div class="msg hint"><span>El conduce dice que es del proyecto <b>${esc(c.projectHint)}</b>, que no está en tu lista.</span></div>`);
+  if (c.order && c.orderVia === 'conduce' && c.orderAuto) msgs.push(`<div class="msg hint"><span>Se enlazó solo a la orden <b>${esc(orderNo(c.order))}</b>: ${esc(COND_ORDER_WHY[c.orderWhy] || 'es del mismo proveedor')}. Si no es, cámbiala en «Orden de compra».</span></div>`);
+  if (c.order && c.orderVia === 'conduce' && inv && inv.orders.length && !inv.orders.some((o) => o.id === c.order.id)) msgs.push(`<div class="msg warn">${ICON.alert}<span>Este conduce es de la orden <b>${esc(orderNo(c.order))}</b>, pero su factura está enlazada a ${esc(inv.orders.map(orderNo).join(', '))}. Revisa cuál es la correcta.</span></div>`);
+  const ordOpts = condOrderOptions(c, D).map((o) => `<option value="${esc(o.id)}"${c.order && o.id === c.order.id ? ' selected' : ''}>${esc(orderOptLabel(o) + (o.supplier ? ' · ' + o.supplier : ''))}</option>`).join('');
   const where = inv
     ? `<span class="pill cond">Conduce</span><span>De la factura <button type="button" class="link" data-act="open-inv" data-id="${esc(inv.id)}">${esc([inv.supplier || 'Factura', inv.number ? RD.normNcf(inv.number) : '', money(inv.amount, inv.currency)].filter(Boolean).join(' · '))}</button></span>`
     : '<span class="pill warn">Sin factura</span><span>Esperando su factura.</span>';
@@ -2449,6 +2484,7 @@ function openConduce(id, keepScroll) {
       ${msgs.join('')}
       <div class="fields">
         <div class="field full"><label for="c-inv">Factura</label><select id="c-inv" ${dis}><option value="">Sin factura (esperando)</option>${invOpts}</select></div>
+        <div class="field full"><label for="c-ord">Orden de compra</label><select id="c-ord" ${dis}><option value="">Sin orden</option>${ordOpts}</select>${c.orderVia === 'factura' ? '<small class="usage">Es la orden de su factura.</small>' : ''}<div id="c-oprev">${c.order ? orderPreviewHTML(c.order, D, '') : ''}</div></div>
         <div class="field"><label for="c-num">No. de conduce</label><input id="c-num" class="mono" maxlength="30" value="${esc(c.number || '')}" ${dis}></div>
         <div class="field"><label for="c-date">Fecha</label><input id="c-date" type="date" value="${esc(c.date || '')}" ${dis}></div>
         <div class="field full"><label for="c-sup">Proveedor</label><input id="c-sup" maxlength="120" list="dl-csups" value="${esc(c.supplier || '')}" ${dis}></div>
@@ -3251,6 +3287,7 @@ async function saveInvoice(form) {
     const ordSel = upd.orderId ? S.orders.find((x) => x.id === upd.orderId) : null;
     if (ordSel) { if (!upd.projectId && ordSel.projectId) upd.projectId = ordSel.projectId; if (!upd.supplier && ordSel.supplier) upd.supplier = ordSel.supplier; if (!upd.concept) upd.concept = itemsSummary(ordSel.items); }
     upd.orderAuto = false;
+    if (!upd.orderId && orderIdsOf(inv).length) upd.orderOff = true; else if (upd.orderId) upd.orderOff = false;
     if (upd.projectId) upd.projectHint = '';
     if (inv.ai === 'pending' || inv.ai === 'failed') upd.ai = 'off';
     const ch = histDiff(inv, upd), pmCh = (inv.payMode || '') !== upd.payMode;
@@ -3335,11 +3372,11 @@ async function addConduceFiles(files, invId) {
   toast(inv ? (n === 1 ? 'Conduce agregado a la factura' : `${n} conduces agregados a la factura`) : (n === 1 ? 'Conduce guardado; espera su factura' : `${n} conduces guardados; esperan su factura`));
   if (inv) refreshInvCondBox(inv.id); else scheduleLink();
 }
-const COND_FIELDS = ['numero', 'fecha', 'proveedor', 'rnc_proveedor', 'proyecto', 'material', 'cantidad', 'viajes', 'total', 'moneda'];
+const COND_FIELDS = ['numero', 'fecha', 'proveedor', 'rnc_proveedor', 'proyecto', 'orden', 'material', 'cantidad', 'viajes', 'total', 'moneda'];
 const COND_SCHEMA = {
   type: 'object',
   properties: {
-    numero: { type: 'string' }, fecha: { type: 'string' }, proveedor: { type: 'string' }, rnc_proveedor: { type: 'string' }, proyecto: { type: 'string' },
+    numero: { type: 'string' }, fecha: { type: 'string' }, proveedor: { type: 'string' }, rnc_proveedor: { type: 'string' }, proyecto: { type: 'string' }, orden: { type: 'string' },
     material: { type: 'string' }, cantidad: { type: 'string' }, viajes: { type: 'string' }, total: { type: 'string' }, moneda: { type: 'string', enum: ['DOP', 'USD', 'EUR', ''] },
   },
   required: COND_FIELDS,
@@ -3359,6 +3396,7 @@ function buildCondPrompt(text, withImage) {
     '- proveedor: el nombre de la empresa que despacha (la del membrete), no el del cliente.',
     '- rnc_proveedor: el RNC de esa empresa si aparece, solo números.',
     '- proyecto: el proyecto u obra; si coincide con uno de la lista (aunque esté escrito distinto), escríbelo exactamente como en la lista.',
+    '- orden: el número de la orden de compra si el conduce la menciona (ej. "OC-0012" u "Orden 12"), como está escrito; "" si no la menciona.',
     '- material: el material o servicio (ej. Grava, Arena lavada, Relleno).',
     '- cantidad: la cantidad con su unidad, como está escrita (ej. "5 m³").',
     '- viajes: la cantidad de viajes, solo el número.',
@@ -3374,6 +3412,7 @@ function parseCondAI(out, c, force) {
   let f = s(o.fecha, 10); if (!ymd(f)) f = RD.dmyToIso(f); if (ymd(f) && (force || !c.date)) upd.date = f;
   const sup = s(o.proveedor, 120); if (sup && (force || !c.supplier)) upd.supplier = sup;
   const rnc = RD.normRnc(o.rnc_proveedor); if ((rnc.length === 9 || rnc.length === 11) && (force || !c.rnc)) upd.rnc = rnc;
+  const oref = s(o.orden, 40); if (oref) upd.orderRef = oref;
   const mat = s(o.material, 60); if (mat) upd.material = mat;
   const qty = s(o.cantidad, 30); if (qty) upd.qty = qty;
   const tr = parseAmount(s(o.viajes, 10)); if (isNum(tr) && tr > 0 && tr < 1000) upd.trips = tr;
@@ -3431,7 +3470,7 @@ async function convertToConduce(inv, out) {
     fileId: inv.fileId, fileType: inv.fileType, thumbId: inv.thumbId || null, pages: inv.pages || 1, fileName: inv.fileName || '',
     createdAt: inv.createdAt || new Date().toISOString(), ai: 'off', aiErr: '', auto: false, fromInvoice: true,
   };
-  if (out) Object.assign(c, parseCondAI({ numero: out.conduce_numero, fecha: out.fecha, proveedor: out.proveedor, rnc_proveedor: out.rnc_proveedor, proyecto: out.proyecto, material: out.material, cantidad: out.cantidad, viajes: out.viajes, total: out.total, moneda: out.moneda }, c, true));
+  if (out) Object.assign(c, parseCondAI({ numero: out.conduce_numero, fecha: out.fecha, proveedor: out.proveedor, rnc_proveedor: out.rnc_proveedor, proyecto: out.proyecto, orden: out.referencia, material: out.material, cantidad: out.cantidad, viajes: out.viajes, total: out.total, moneda: out.moneda }, c, true));
   const ref = db.collection('conduces').doc();
   await dbw(async () => { await ref.set(c); await db.doc('invoices/' + inv.id).delete(); });
   convertedTo.set(inv.id, ref.id);
@@ -3479,6 +3518,7 @@ async function saveConduce(form) {
   if ((totRaw && tot == null) || (trRaw && tr == null)) { toast('Revisa el total y los viajes: escribe solo números.'); btn.disabled = false; return; }
   const date = $('#c-date').value;
   const invoiceId = $('#c-inv').value || null;
+  const ordNow = $('#c-ord') ? $('#c-ord').value || null : null, ordWas = (derive().conduces.find((x) => x.id === id) || {}).order;
   const upd = {
     invoiceId, number: $('#c-num').value.trim().slice(0, 30), date: ymd(date) ? date : '', supplier: $('#c-sup').value.trim().slice(0, 120), projectId: $('#c-proj').value || null,
     material: $('#c-mat').value.trim().slice(0, 60), qty: $('#c-qty').value.trim().slice(0, 30), trips: tr == null ? null : tr, total: tot == null ? null : round2(tot),
@@ -3486,6 +3526,8 @@ async function saveConduce(form) {
   if (upd.projectId) upd.projectHint = '';
   // Si se cambió (o se quitó) la factura a mano, la app no lo vuelve a enlazar sola.
   if (invoiceId !== (c.invoiceId || null)) { upd.auto = false; upd.noAuto = !invoiceId; }
+  // La orden, solo si se cambió a mano (si se quitó, la app no le pone otra sola).
+  if ($('#c-ord') && ordNow !== (ordWas ? ordWas.id : null)) { upd.orderId = ordNow; upd.orderAuto = false; upd.noOrderAuto = !ordNow; const o = ordNow ? S.orders.find((x) => x.id === ordNow) : null; if (o && !upd.projectId && o.projectId) upd.projectId = o.projectId; }
   if (c.ai === 'pending' || c.ai === 'failed') upd.ai = 'off';
   const inv = invoiceId ? S.invoices.find((x) => x.id === invoiceId) : null;
   const ok = await write(async () => {
@@ -3533,6 +3575,41 @@ async function linkPendingConduces() {
     const q = S.queue.find((x) => x.condId === c.id);
     if (q) { q.msg = `adjuntado a la factura de ${m.inv.supplier || 'su proveedor'}`; renderQueue(); }
   }
+  await linkCondOrders();
+}
+// Cada conduce sin orden: la que menciona su número o la única abierta de su proveedor. Y la factura sin orden toma la
+// de sus conduces.
+async function linkCondOrders() {
+  let D = derive();
+  for (const c of D.conduces) {
+    if (c.order || c.noOrderAuto || c.ai === 'pending') continue;
+    const byRef = c.orderRef ? matchOrderRefs('orden ' + c.orderRef, c.projectId).filter((o) => o.status !== 'anulada') : [];
+    const o = byRef.length === 1 ? byRef[0] : condSoleOrder(c, D);
+    if (!o) continue;
+    const upd = { orderId: o.id, orderAuto: true, orderWhy: byRef.length === 1 ? 'numero' : 'unica' };
+    if (!c.projectId && o.projectId) { upd.projectId = o.projectId; upd.projectHint = ''; }
+    if (!c.supplier && o.supplier) upd.supplier = o.supplier;
+    await dbw(() => db.doc('conduces/' + c.id).update(upd));
+  }
+  D = derive();
+  for (const i of D.invoices) {
+    if (i.orders.length || i.noOrder || i.orderOff || i.status === 'pagada' || isCreditNcf(i.number)) continue;
+    const ids = [...new Set((i.conduces || []).map((c) => c.orderId).filter((x) => x && D.orderById.has(x) && D.orderById.get(x).status !== 'anulada'))];
+    if (!ids.length) continue;
+    const raw = S.invoices.find((x) => x.id === i.id);
+    const upd = fillFromOrder({}, raw, S.orders.find((x) => x.id === ids[0]));
+    Object.assign(upd, { moreOrders: ids.slice(1), orderAuto: true, orderWhy: 'conduce', noOrder: false });
+    await dbw(() => db.doc('invoices/' + i.id).update(upd));
+  }
+}
+async function setCondOrder(condId, orderId) {
+  const c = S.conduces.find((x) => x.id === condId), o = orderId ? S.orders.find((x) => x.id === orderId) : null;
+  if (!c) return false;
+  const upd = { orderId: o ? o.id : null, orderAuto: false, noOrderAuto: !o };
+  if (o && !c.projectId && o.projectId) { upd.projectId = o.projectId; upd.projectHint = ''; }
+  const ok = await write(() => db.doc('conduces/' + condId).update(upd), o ? `Conduce enlazado a la orden ${orderNo(o)}` : 'Conduce quitado de la orden');
+  if (ok) scheduleLink();
+  return ok;
 }
 
 /* ---------- pase de lista (asistencia) ---------- */
@@ -4892,7 +4969,31 @@ function itemRowHTML(it, n, dis) {
   return `<div class="o-row" data-row><span class="o-n mono">${n}</span><input data-f="qty" class="mono" inputmode="decimal" maxlength="12" placeholder="Cant." aria-label="Cantidad" value="${esc(it.qty != null ? String(it.qty) : '')}" ${dis}><input data-f="unit" list="dl-units" maxlength="20" placeholder="Unidad" aria-label="Unidad" value="${esc(it.unit || '')}" ${dis}><input data-f="price" class="mono" inputmode="decimal" maxlength="12" placeholder="Precio" aria-label="Precio por unidad" value="${esc(isNum(it.price) ? String(it.price) : '')}"${it.priceSrc ? ` data-src="${esc(it.priceSrc)}"` : ''} ${dis}><input data-f="desc" list="dl-items" maxlength="160" placeholder="Descripción y especificaciones" aria-label="Descripción" value="${esc(it.desc || '')}" ${dis}>${dis ? '' : `<button type="button" class="icon-btn plain" data-act="order-rm-item" aria-label="Quitar artículo">${ICON.close}</button>`}</div>`;
 }
 function uniqList(list) { const seen = new Set(); const out = []; for (const v of list) { const s = String(v || '').trim(); const k = norm(s); if (s && !seen.has(k)) { seen.add(k); out.push(s); } } return out; }
-function orderSig(o, D) { return JSON.stringify([o.status, o.signedFileId, o.signedAt, o.updatedAt, o.number, (D.invByOrder.get(o.id) || []).map((i) => [i.id, i.supplier, i.number, i.amount, (i.conduces || []).map((c) => [c.id, c.material, c.qty, c.trips])])]); }
+function orderSig(o, D) { return JSON.stringify([o.status, o.signedFileId, o.signedAt, o.updatedAt, o.number, (D.invByOrder.get(o.id) || []).map((i) => [i.id, i.supplier, i.number, i.amount, (i.conduces || []).map((c) => [c.id, c.material, c.qty, c.trips])]), orderConds(o, D).map((c) => [c.id, c.number, c.material, c.qty, c.trips, c.total, c.invoiceId, c.orderVia])]); }
+// Los conduces de la orden (lo que ya llegó), y enlazar uno que llegó sin decir de qué orden es.
+function orderCondBoxHTML(o, D, edit) {
+  const cs = orderConds(o, D);
+  const waiting = edit ? D.conduces.filter((c) => !c.order && c.ai !== 'pending') : [];
+  if (!cs.length && !waiting.length) return '';
+  const rows = cs.map((c) => `<div class="o-cond">${condRowHTML(c, false, c.invoiceId ? 'con factura' : 'sin factura')}${edit && c.orderVia === 'conduce' ? `<button type="button" class="btn ghost sm" data-act="order-unlink-cond" data-id="${esc(c.id)}" data-order="${esc(o.id)}">Quitar</button>` : ''}</div>`).join('');
+  const sum = cs.length ? `<p class="usage">${esc(plural(cs.length, 'conduce', 'conduces'))}${cs.some((c) => isNum(c.total)) ? ' · ' + esc(totalStr(cs, 'total')) : ''}${cs.some((c) => !c.invoiceId) ? ' · ' + esc(plural(cs.filter((c) => !c.invoiceId).length, 'espera', 'esperan')) + ' su factura' : ''}</p>` : '<p class="hint">Todavía no tiene conduces. Cuando llegue el material, el conduce se enlaza solo si menciona la orden o si es la única abierta de ese proveedor.</p>';
+  const link = waiting.length ? `<div><button type="button" class="btn sm" data-act="order-link-cond-open" data-id="${esc(o.id)}">${ICON.plus} Enlazar un conduce</button></div><div id="o-cond-box" hidden></div>` : '';
+  return `<div class="card" id="o-conds"><h2>Conduces de esta orden</h2>${sum}${rows ? `<div class="cond-list">${rows}</div>` : ''}${link}</div>`;
+}
+function orderCondPickHTML(o, D) {
+  const score = (c) => (c.supplier && sameName(o.supplier, c.supplier) ? 2 : 0) + (o.projectId && c.projectId === o.projectId ? 1 : 0);
+  const list = D.conduces.filter((c) => !c.order && c.ai !== 'pending').sort((a, b) => score(b) - score(a) || condWhen(b).localeCompare(condWhen(a))).slice(0, 30);
+  if (!list.length) return '<p class="hint">No hay conduces sin orden.</p>';
+  return `<p class="usage">Conduces sin orden (primero los de este proveedor y esta obra):</p><div class="o-picks">${list.map((c) => `<button type="button" class="o-pick" data-act="order-link-cond" data-id="${esc(c.id)}" data-order="${esc(o.id)}"><span><b>${esc(condTitle(c))}${c.supplier ? ' · ' + esc(c.supplier) : ''}</b><small>${esc([condMeta(c), c.projectId && D.projById.get(c.projectId) ? D.projById.get(c.projectId).name : ''].filter(Boolean).join(' · ') || 'Sin datos')}</small></span><span class="num">${isNum(c.total) ? esc(money(c.total, c.currency)) : ''}</span></button>`).join('')}</div>`;
+}
+function refreshOrderCondBox(orderId) {
+  setTimeout(() => {
+    const card = $('#o-conds'), D = derive(), o = D.orderById.get(orderId);
+    if (!o || !S.sheet || S.sheet.type !== 'order' || S.sheet.id !== orderId) return;
+    const html = orderCondBoxHTML(o, D, canEdit() && o.status !== 'anulada');
+    if (card) card.outerHTML = html || '<div id="o-conds" hidden></div>';
+  }, 200);
+}
 function refreshOrderSheet(D) {
   const sh = S.sheet;
   if (!sh || sh.type !== 'order' || !sh.id || sh.dirty) return;
@@ -4927,6 +5028,7 @@ function openOrder(id, keepScroll, copyFrom) {
   const repeat = o && canEdit() ? `<div><button type="button" class="btn sm" data-act="order-repeat" data-id="${esc(o.id)}">Repetir esta orden</button></div>` : '';
   const copyNote = src ? `<div class="msg hint"><span>Copia de la orden <b>${esc(orderNo(src))}</b>. Revisa las cantidades antes de guardar.</span></div>` : '';
   const invBox = o ? orderInvBoxHTML(o, D, edit) : '';
+  const condBox = o ? orderCondBoxHTML(o, D, edit) : '';
   const prevScroll = keepScroll && $('.sheet-b') ? $('.sheet-b').scrollTop : 0;
   const danger = o && canEdit() ? `<div>${invs.length ? (o.status !== 'anulada' ? '<button type="button" class="btn danger sm" data-act="order-annul">Anular orden</button>' : '') : `<button type="button" class="btn danger sm" data-act="order-del">${ICON.trash} Eliminar orden</button>`}</div><div id="o-confirm" hidden></div>` : '';
   openSheet(`<form id="order-form" data-id="${o ? esc(o.id) : ''}" autocomplete="off">${sheetHead(o ? esc(orderNo(o)) : 'Nueva orden de compra')}
@@ -4950,6 +5052,7 @@ function openOrder(id, keepScroll, copyFrom) {
       <p class="usage" id="o-est">${esc(estText(data.items || []))}</p>
       <div class="field"><label for="o-notes">Observaciones / instrucciones especiales</label><textarea id="o-notes" rows="2" maxlength="300" ${dis}>${esc(data.notes || '')}</textarea></div>
       ${signedBox}
+      ${condBox}
       ${invBox}
       ${repeat}
       ${danger}
@@ -5041,6 +5144,7 @@ async function saveOrder(thenPdf) {
   }, thenPdf ? '' : 'Orden guardada');
   if (!ok) return null;
   if (S.sheet && S.sheet.type === 'order') { S.sheet.dirty = false; S.sheet.id = full.id; f.dataset.id = full.id; }
+  scheduleLink();
   if (thenPdf) await makeOrderPdf(full); else closeSheet();
   return full;
 }
@@ -5146,6 +5250,7 @@ async function linkOrder(invId, orderId, okMsg = 'Orden asignada') {
   const upd = fillFromOrder({}, inv, o);
   upd.orderAuto = false;
   upd.noOrder = false;
+  upd.orderOff = false;
   if (!(await write(() => db.doc('invoices/' + invId).update(upd), okMsg))) return;
   if (S.sheet && S.sheet.type === 'inv' && S.sheet.id === invId && S.sheet.dirty) {
     if ($('#f-order')) $('#f-order').value = orderId;
@@ -5935,7 +6040,7 @@ function infData(from, to, D) {
   const byProj = [...D.projects, { id: '', name: 'Sin proyecto' }].map((p) => {
     const mine = (i) => (p.id ? i.projectId === p.id : !i.project);
     const c = p.id ? projCosts(p, D) : null;
-    const r = { p, n: invs.filter(mine).length, billed: invs.filter(mine), paid: paid.filter((x) => mine(x.i)), open: open.filter(mine), spent: c ? c.total : null, budget: p.id && isNum(p.budget) && p.budget > 0 ? p.budget : null };
+    const r = { p, n: invs.filter(mine).length, billed: invs.filter(mine), paid: paid.filter((x) => mine(x.i)), open: open.filter(mine), spent: c ? round2(c.total - c.labor) : null, budget: p.id && isNum(p.budget) && p.budget > 0 ? p.budget : null };
     return r;
   }).filter((r) => r.n || r.paid.length || r.open.length);
   const sm = new Map();
@@ -6082,7 +6187,7 @@ async function buildInfPdf(R) {
     rows.push(['Total', M(R.invs), M(amtRows(R.paid)), M(R.open, 'toPay'), '', '', '']);
     table([['Obra', 112], ['Facturado', 78, 'r'], ['Pagado', 78, 'r'], ['Por pagar hoy', 78, 'r'], ['Gastado a la fecha', 78, 'r'], ['Presupuesto', 78, 'r'], ['Uso', 34, 'r']], rows, { total: true, red: (n, k) => k === 6 && over[n] });
     if (over.some(Boolean)) para('En rojo: la obra ya gastó más que su presupuesto.', 7.5, GREY);
-    para('«Gastado a la fecha» suma todas las facturas de la obra, la mano de obra y los materiales recibidos de otras obras (menos los que dio).', 7.5, GREY);
+    para('«Gastado a la fecha» suma todas las facturas de la obra y los materiales recibidos de otras obras (menos los que dio). No incluye la mano de obra.', 7.5, GREY);
     y -= 4;
   }
 
@@ -6482,6 +6587,9 @@ function onClick(e) {
     case 'order-link-open': openOrderLinkBox(id); break;
     case 'order-link-inv': { const raw = S.invoices.find((x) => x.id === id); (raw && raw.orderId && raw.orderId !== t.dataset.order ? addMoreOrder(id, t.dataset.order) : linkOrder(id, t.dataset.order, 'Factura enlazada a la orden')).then(() => refreshOrderInvBox(t.dataset.order)); break; }
     case 'order-unlink-inv': removeOrderFromInv(id, t.dataset.order).then(() => refreshOrderInvBox(t.dataset.order)); break;
+    case 'order-link-cond-open': { const box = $('#o-cond-box'), o = derive().orderById.get(id); if (box && o) { box.hidden = false; box.innerHTML = orderCondPickHTML(o, derive()); box.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } break; }
+    case 'order-link-cond': setCondOrder(id, t.dataset.order).then(() => refreshOrderCondBox(t.dataset.order)); break;
+    case 'order-unlink-cond': setCondOrder(id, null).then(() => refreshOrderCondBox(t.dataset.order)); break;
     case 'nube-connect': nubeConnect(t); break;
     case 'nube-relogin': nubeRelogin(t); break;
     case 'nube-sync': RT.sync.syncNow(); break;
@@ -6587,6 +6695,7 @@ function onChange(e) {
   }
   if ((t.id === 'inf-from' || t.id === 'inf-to') && $('#inf-prev')) { const d = infDates(); if (d) $('#inf-prev').innerHTML = infPreviewHTML(d.from, d.to); }
   if (t.id === 'f-from' || t.id === 'f-to') { S[t.id === 'f-from' ? 'dateFrom' : 'dateTo'] = ymd(t.value) ? t.value : ''; renderAll(); }
+  if (t.id === 'c-ord' && $('#c-oprev')) { const D = derive(), o = D.orderById.get(t.value); $('#c-oprev').innerHTML = o ? orderPreviewHTML(o, D, '') : ''; }
   if (t.id === 'o-proj' && t.value) {
     const prev = derive().orders.filter((x) => x.projectId === t.value);
     for (const [sel, f] of [['#o-place', 'place'], ['#o-by', 'requestedBy'], ['#o-dept', 'department']]) {

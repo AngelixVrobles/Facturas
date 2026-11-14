@@ -109,6 +109,7 @@ const T = dayIso(0), F = dayIso(-13);
   check(/período anterior.*1 factura por RD\$ ?8,000\.00/s.test(pt), 'compara con el período anterior');
   check(/REQUIERE ATENCIÓN/.test(pt) && /1 factura vencida por RD\$ ?5,000\.00/.test(pt), 'lo que requiere atención');
   check(/POR OBRA/.test(pt) && /Enzo\s+RD\$ ?15,000\.00\s+RD\$ ?15,000\.00\s+RD\$ ?0\.00\s+RD\$ ?7,500\.00\s+RD\$ ?12,000\.00\s+63 %/.test(pt) && /Monaco\s+RD\$ ?26,200\.00\s+RD\$ ?3,000\.00\s+RD\$ ?31,200\.00\s+RD\$ ?41,700\.00\s+RD\$ ?30,000\.00\s+139 %/.test(pt), 'por obra: facturado, pagado, por pagar, gastado (con traslados), presupuesto y uso');
+  check(/No incluye la mano de obra/.test(pt), 'el gasto por obra no incluye la mano de obra (lo dice debajo de la tabla)');
   check(/POR PROVEEDOR/.test(pt) && /Bloques del Cibao\s+1\s+RD\$ ?25,000\.00\s+RD\$ ?25,000\.00/.test(pt) && /Ferretería Ochoa\s+1\s+RD\$ ?10,000\.00\s+RD\$ ?0\.00/.test(pt), 'por proveedor, ordenado por monto');
   check(/PENDIENTE A LA FECHA/.test(pt) && /Facturas vencidas/.test(pt) && /Ferretería Ochoa\s+B0100000204\s+Monaco/.test(pt) && /Caja chica\s+1\s+RD\$ ?1,200\.00/.test(pt) && /Cementos del Cibao/.test(pt) && /RD\$ ?5,000\.00/.test(pt) && /Monaco\s+Enzo\s+RD\$ ?7,500\.00/.test(pt), 'pendiente: vencidas, por reponer, órdenes sin factura y cuentas entre obras');
   check(/FACTURAS RECIBIDAS EN EL PERÍODO/.test(pt) && /B0100000202/.test(pt) && !/B0100000204\s+Monaco\s+RD\$ ?8,000\.00\s+Pendiente/.test(pt), 'el detalle tiene las del período (no la del período anterior)');

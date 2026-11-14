@@ -738,6 +738,10 @@ input[type="date"]::-webkit-calendar-picker-indicator { margin: 0 0 0 4px; paddi
 .inf-al { margin: 0 0 8px; padding-left: 18px; font-size: 14px; }
 .inf-al li { margin: 2px 0; }
 .inf-dates { padding: 0; margin-bottom: 10px; }
+.o-cond { display: flex; gap: 8px; align-items: center; }
+.o-cond > .cond-row { flex: 1; min-width: 0; }
+#c-oprev:empty { display: none; }
+#c-oprev .o-prev { margin-top: 8px; }
 .ready { display: flex; gap: 12px; align-items: center; background: var(--paid-bg); border-radius: 12px; padding: 14px; }
 .ready svg { color: var(--paid); width: 26px; height: 26px; }
 .ready span { display: flex; flex-direction: column; min-width: 0; }
