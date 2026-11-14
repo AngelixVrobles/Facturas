@@ -10,7 +10,7 @@ const LIB = {
   qrgen: 'js/qr.js',
 };
 const PDF_CREATOR = 'Facturas de Proyectos';
-const APP_VERSION = '1.29.0';
+const APP_VERSION = '1.30.0';
 const SVG = (d) => `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ICON = {
   lock: SVG('<rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>'),
@@ -101,7 +101,7 @@ const DEFAULT_ORDER_NOTE = 'Toda factura recibida por compras deberá estar acom
 
 const S = {
   tab: 'facturas', filter: 'pendientes', projectFilter: 'all', search: '', paymentId: null,
-  projects: [], invoices: [], payments: [], orders: [], conduces: [], workers: [], asistencia: [], suppliers: [], envios: [], papelera: [], traslados: [], settings: {}, attRules: {}, digi: {}, bk: {}, envioPending: null, got: { projects: false, invoices: false, payments: false, orders: false, conduces: false, workers: false, asistencia: false, suppliers: false, envios: false, papelera: false, traslados: false },
+  projects: [], invoices: [], payments: [], orders: [], conduces: [], workers: [], asistencia: [], suppliers: [], envios: [], papelera: [], traslados: [], settings: {}, attRules: {}, digi: {}, bk: {}, inf: {}, envioPending: null, got: { projects: false, invoices: false, payments: false, orders: false, conduces: false, workers: false, asistencia: false, suppliers: false, envios: false, papelera: false, traslados: false },
   attProject: '', attSheet: '', attDay: 0, orderFilter: 'todas', orderSearch: '', orderProject: 'all', condFilter: 'esperando', condSearch: '', condProject: 'all', trProject: 'all', trSearch: '', sort: { inv: null, cond: null, ord: null, tr: null }, sel: new Set(), todoAll: false, focus: null, invOrder: 'all', dateFilter: '', dateFrom: '', dateTo: '', showAll: new Set(),
   dbState: 'loading', aiState: 'ok', queue: [], sheet: null, payDel: false, busyPdf: false, pdfMsg: '',
   updateReg: null, updating: false, ready: null, restoreFile: null,
@@ -1116,7 +1116,7 @@ function renderFacturas(D) {
   const sum = $('#f-sum');
   if (S.got.invoices && base.length) {
     const canMake = !S.focus && S.filter === 'pendientes' && list.some((i) => i.status === 'pendiente') && canEdit();
-    const acts = (list.length ? `<button type="button" class="btn sm" data-act="list-xlsx">${ICON.sheet} Excel</button>` : '') + (canMake ? `<button type="button" class="btn sm" data-act="new-pay-from">Armar pago con estas ${ICON.right}</button>` : '');
+    const acts = (list.length ? `<button type="button" class="btn sm" data-act="list-xlsx">${ICON.sheet} Excel</button>` : '') + `<button type="button" class="btn sm" data-act="inf-open">${ICON.down} Informe</button>` + (canMake ? `<button type="button" class="btn sm" data-act="new-pay-from">Armar pago con estas ${ICON.right}</button>` : '');
     const focusLine = S.focus ? `<div class="focus-line"><span class="grow">Mostrando: <b>${FOCUS_LABEL[S.focus] || FOCUS_LABEL.sinorden}</b></span><button type="button" class="btn sm" data-act="focus-off">Ver todas</button></div>` : '';
     sum.innerHTML = `${focusLine}<div class="sumline"><span>${plural(list.length, 'factura', 'facturas')} · <b class="mono">${esc(totalStr(list, 'toPay'))}</b></span>${acts ? `<span class="acts">${acts}</span>` : ''}</div>`;
   } else sum.innerHTML = '';
@@ -1200,6 +1200,8 @@ function renderTodo(D) {
   if (trWait.length) rows.push(row(trWait.length, plural(trWait.length, 'traslado por recibir: falta anotar lo que llegó', 'traslados por recibir: falta anotar lo que llegó'), b('tab', 'Ver', ' data-tab="traslados"')));
   const repPend = D.invoices.filter((i) => i.payMode === 'reponer' && i.status === 'pendiente');
   if (repPend.length) { const who = uniqList(repPend.map((i) => i.paidBy || '')); rows.push(row(repPend.length, `${plural(repPend.length, 'factura', 'facturas')} por reponer${who.length === 1 ? ' a ' + esc(who[0]) : ` a ${who.length} personas`} · <b class="mono">${esc(totalStr(repPend, 'toPay'))}</b>`, b('tab', 'Ver', ' data-tab="pagos"'))); }
+  const infD = infDue();
+  if (infD && todayISO() >= infD) rows.push(row('!', `Toca el informe quincenal para el jefe (el último fue ${esc(infRange(S.inf.lastFrom, S.inf.lastTo).toLowerCase())})`, b('inf-open', 'Hacer informe', '', ' primary'), 'now'));
   el.hidden = !rows.length;
   // Lo urgente arriba; si son muchas, se ven las primeras y «Ver todo».
   const RANK = { now: 0, warn: 1, ok: 2 };
@@ -5897,6 +5899,357 @@ function exportListExcel(only) {
   deliverFile(invoicesWorkbook({ heading, scope, invs, D, isPayment: false }), fileSafe(`${heading} - ${proj}${when ? ' - ' + when : ''} - ${todayISO()}`) + '.xlsx');
 }
 
+/* ---------- informe para el jefe (cada 14 días) ---------- */
+// Tiene su propio ciclo, aparte del pase de lista: va desde el día después del último informe hasta hoy.
+const INF_DAYS = 14;
+function infDefault() {
+  const to = todayISO(), last = S.inf && ymd(S.inf.lastTo) ? S.inf.lastTo : '';
+  if (last && last >= to) return { from: ymd(S.inf.lastFrom) ? S.inf.lastFrom : addDays(last, 1 - INF_DAYS), to: last };
+  return { from: last ? addDays(last, 1) : addDays(to, 1 - INF_DAYS), to };
+}
+const infDue = () => (S.inf && ymd(S.inf.lastTo) ? addDays(S.inf.lastTo, INF_DAYS) : '');
+const daysBetween = (a, b) => Math.round((ymd(b) - ymd(a)) / 864e5);
+const amtRows = (rows) => rows.map((r) => ({ amount: r.amount, currency: r.currency }));
+const dopOf = (list, field = 'amount') => round2(sumBy(list, field).get('DOP') || 0);
+function infData(from, to, D) {
+  const inR = (d) => !!d && d >= from && d <= to;
+  const live = D.invoices.filter((i) => !i.notInvoice);
+  const invs = live.filter((i) => inR(invDay(i))).sort((a, b) => invDay(a).localeCompare(invDay(b)) || String(a.supplier || '').localeCompare(String(b.supplier || '')));
+  // El período anterior, del mismo largo, para comparar.
+  const len = daysBetween(from, to) + 1, pFrom = addDays(from, -len), pTo = addDays(from, -1);
+  const prev = live.filter((i) => { const d = invDay(i); return d >= pFrom && d <= pTo; });
+  // Lo pagado en el período: pagos marcados como pagados, facturas pagadas al contado y abonos.
+  const paid = [];
+  for (const p of S.payments) {
+    const d = String(p.paidAt || '').slice(0, 10);
+    if (p.status === 'pagado' && inR(d)) for (const i of payInvoices(p, D)) if (isNum(i.toPay)) paid.push({ i, date: d, amount: i.toPay, currency: i.currency, how: [payNo(p), p.name || 'Pago'].filter(Boolean).join(' ') });
+  }
+  for (const i of live) {
+    if (i.payMode === 'directo' && !i.pay && inR(i.paidDate) && isNum(i.toPay) && i.toPay > 0) paid.push({ i, date: i.paidDate, amount: i.toPay, currency: i.currency, how: 'Al contado' + (i.payMethod ? ' (' + i.payMethod.toLowerCase() + ')' : '') });
+    for (const a of i.abonos || []) if (inR(a.date) && isNum(a.amount)) paid.push({ i, date: a.date, amount: a.amount, currency: i.currency, how: 'Abono' + (a.note ? ': ' + a.note : '') });
+  }
+  paid.sort((a, b) => a.date.localeCompare(b.date));
+  const open = live.filter((i) => i.status !== 'pagada');
+  const overdue = open.filter((i) => FOCUS.vencidas(i)).sort((a, b) => String(a.due).localeCompare(String(b.due)));
+  const waitPay = S.payments.filter((p) => p.status === 'presentado').map((p) => ({ p, invs: payInvoices(p, D) }));
+  const byProj = [...D.projects, { id: '', name: 'Sin proyecto' }].map((p) => {
+    const mine = (i) => (p.id ? i.projectId === p.id : !i.project);
+    const c = p.id ? projCosts(p, D) : null;
+    const r = { p, n: invs.filter(mine).length, billed: invs.filter(mine), paid: paid.filter((x) => mine(x.i)), open: open.filter(mine), spent: c ? c.total : null, budget: p.id && isNum(p.budget) && p.budget > 0 ? p.budget : null };
+    return r;
+  }).filter((r) => r.n || r.paid.length || r.open.length);
+  const sm = new Map();
+  for (const i of invs) {
+    const k = i.sup ? 's:' + i.sup.id : RD.normRnc(i.rnc) ? 'r:' + RD.normRnc(i.rnc) : 'n:' + (supKey(i.supplier) || '?');
+    if (!sm.has(k)) sm.set(k, { name: (i.sup && i.sup.name) || i.supplier || 'Sin proveedor', invs: [] });
+    sm.get(k).invs.push(i);
+  }
+  const bySup = [...sm.values()].sort((a, b) => dopOf(b.invs) - dopOf(a.invs) || b.invs.length - a.invs.length);
+  const noInv = D.orders.filter((o) => o.status !== 'anulada' && !orderHasInv(o, D)).sort((a, b) => String(a.date || a.createdAt || '').localeCompare(String(b.date || b.createdAt || '')));
+  const review = open.filter((i) => reviewFlags(i, D).some((f) => f !== 'Sin orden'));
+  const noOrd = open.filter((i) => needsOrder(i, D));
+  const trIn = S.traslados.filter((t) => !isTrPago(t) && inR(t.date));
+  return {
+    from, to, pFrom, pTo, invs, prev, paid, open, overdue, waitPay, byProj, bySup, noInv, review, noOrd, trIn,
+    approval: approvalOn() ? waitPay.filter((x) => !x.p.approvedAt) : [],
+    reponer: reponerGroups(D), accounts: trAccounts().filter((x) => x.amount >= 0.01),
+    trBad: S.traslados.filter((t) => trState(t) === 'diferencia'), trWait: S.traslados.filter((t) => trState(t) === 'porrecibir'),
+  };
+}
+const infRange = (from, to) => `Del ${fmtDmy(from)} al ${fmtDmy(to)}`;
+const infTitle = (from, to) => `Informe ${fmtDmy(from).slice(0, 5)} al ${fmtDmy(to)}`;
+// Lo que necesita atención, en frases cortas (va en el PDF y en la vista previa).
+function infAlerts(R) {
+  const out = [];
+  if (R.overdue.length) out.push(`${plural(R.overdue.length, 'factura vencida', 'facturas vencidas')} por ${totalStr(R.overdue, 'toPay')}.`);
+  if (R.approval.length) out.push(`${plural(R.approval.length, 'pago espera', 'pagos esperan')} la aprobación del dueño.`);
+  if (R.review.length) out.push(`${plural(R.review.length, 'factura tiene', 'facturas tienen')} algo que revisar (datos, NCF, conduces o montos).`);
+  if (R.noOrd.length) out.push(`${plural(R.noOrd.length, 'factura no tiene', 'facturas no tienen')} orden de compra.`);
+  if (R.noInv.length) out.push(`${plural(R.noInv.length, 'orden de compra no tiene', 'órdenes de compra no tienen')} su factura todavía.`);
+  if (R.trBad.length) out.push(`${plural(R.trBad.length, 'traslado llegó', 'traslados llegaron')} con diferencia entre lo que salió y lo que llegó.`);
+  if (R.trWait.length) out.push(`${plural(R.trWait.length, 'traslado no tiene', 'traslados no tienen')} anotado lo que llegó.`);
+  return out;
+}
+
+async function buildInfPdf(R) {
+  const { PDFDocument, StandardFonts, rgb } = await pdflib();
+  const doc = await PDFDocument.create();
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  const bold = await doc.embedFont(StandardFonts.HelveticaBold);
+  const st = S.settings || {};
+  doc.setTitle(pdfSafe(infTitle(R.from, R.to)));
+  doc.setCreator(PDF_CREATOR);
+  const W = 612, H = 792, X0 = 38, X1 = 574, BOT = 46;
+  const NAVY = rgb(0.137, 0.255, 0.353), INK = rgb(0.1, 0.11, 0.13), GREY = rgb(0.42, 0.45, 0.5), RED = rgb(0.71, 0.14, 0.09);
+  const GRID = rgb(0.75, 0.79, 0.85), WHITE = rgb(1, 1, 1), BAND = rgb(0.95, 0.96, 0.98), SOFT = rgb(0.92, 0.94, 0.97);
+  const logo = await docLogo(doc);
+  const fitT = (s, f, size, w) => { let x = pdfSafe(s); if (f.widthOfTextAtSize(x, size) <= w) return x; while (x.length > 1 && f.widthOfTextAtSize(x + '…', size) > w) x = x.slice(0, -1); return x + '…'; };
+  let p, y, head = null;
+  const newPage = () => {
+    p = doc.addPage([W, H]);
+    y = drawLetterhead(p, { st, font, bold, rgb, logo, x: X0, xr: X1, y: H - 34, title: 'INFORME QUINCENAL', sub: infRange(R.from, R.to) }) - 20;
+  };
+  const text = (s, x, size = 9, f = font, color = INK) => p.drawText(pdfSafe(s), { x, y, size, font: f, color });
+  const rightT = (s, xr, size = 9, f = font, color = INK) => { const v = pdfSafe(s); p.drawText(v, { x: xr - f.widthOfTextAtSize(v, size), y, size, font: f, color }); };
+  const need = (h) => { if (y - h < BOT) { newPage(); if (head) head(); } };
+  const section = (title, note) => {
+    head = null;
+    need(56);
+    y -= 6;
+    text(title.toUpperCase(), X0, 10.5, bold, NAVY);
+    if (note) rightT(note, X1, 8, font, GREY);
+    y -= 5;
+    p.drawLine({ start: { x: X0, y }, end: { x: X1, y }, thickness: 0.8, color: NAVY });
+    y -= 14;
+  };
+  const para = (s, size = 9, color = INK, x = X0) => { for (const ln of wrapText(s, font, size, X1 - x)) { need(size + 4); text(ln, x, size, font, color); y -= size + 4; } };
+  const bullet = (s, color = INK) => { const lines = wrapText(s, font, 9, X1 - X0 - 12); lines.forEach((ln, k) => { need(13); if (!k) p.drawCircle({ x: X0 + 3, y: y + 3, size: 1.6, color: NAVY }); text(ln, X0 + 11, 9, font, color); y -= 13; }); };
+  // Tabla: cols = [[título, ancho, 'r' si va a la derecha]]; filas de textos; la última puede ser de totales.
+  const table = (cols, rows, o = {}) => {
+    const xs = [X0]; for (const c of cols) xs.push(xs[xs.length - 1] + c[1]);
+    const rH = 15, hH = 17;
+    const drawHead = () => {
+      p.drawRectangle({ x: X0, y: y - hH + 12, width: X1 - X0, height: hH, color: NAVY });
+      cols.forEach(([t, w, al], k) => { if (al === 'r') rightT(fitT(t, bold, 7.5, w - 8), xs[k + 1] - 4, 7.5, bold, WHITE); else text(fitT(t, bold, 7.5, w - 8), xs[k] + 4, 7.5, bold, WHITE); });
+      y -= hH;
+    };
+    need(hH + rH * Math.min(rows.length || 1, 3));
+    drawHead();
+    head = drawHead;
+    rows.forEach((r, n) => {
+      const tot = o.total && n === rows.length - 1;
+      if (y - rH < BOT) { newPage(); drawHead(); }
+      if (tot) { p.drawRectangle({ x: X0, y: y - rH + 11, width: X1 - X0, height: rH, color: SOFT }); p.drawLine({ start: { x: X0, y: y + 11 }, end: { x: X1, y: y + 11 }, thickness: 1, color: NAVY }); }
+      else if (n % 2) p.drawRectangle({ x: X0, y: y - rH + 11, width: X1 - X0, height: rH, color: BAND });
+      cols.forEach(([, w, al], k) => {
+        const v = r[k] == null ? '' : String(r[k]), f = tot || (o.boldCol === k) ? bold : font, red = o.red && o.red(n, k);
+        if (al === 'r') rightT(fitT(v, f, 8, w - 8), xs[k + 1] - 4, 8, f, red ? RED : INK); else text(fitT(v, f, 8, w - 8), xs[k] + 4, 8, f, red ? RED : INK);
+      });
+      y -= rH;
+    });
+    p.drawLine({ start: { x: X0, y: y + 11 }, end: { x: X1, y: y + 11 }, thickness: 0.6, color: GRID });
+    head = null;
+    y -= 10;
+  };
+  const M = (list, field = 'amount') => totalStr(list, field);
+  newPage();
+
+  // 1) Resumen
+  section('Resumen del período', `${plural(daysBetween(R.from, R.to) + 1, 'día', 'días')}`);
+  const overdueAmt = R.overdue.length ? M(R.overdue, 'toPay') : money(0);
+  const kpis = [
+    ['Facturado', M(R.invs), plural(R.invs.length, 'factura recibida', 'facturas recibidas')],
+    ['Pagado', M(amtRows(R.paid)), plural(R.paid.length, 'pago de factura', 'pagos de facturas')],
+    ['Por pagar hoy', M(R.open, 'toPay'), plural(R.open.length, 'factura pendiente', 'facturas pendientes')],
+    ['Vencido hoy', overdueAmt, R.overdue.length ? plural(R.overdue.length, 'factura vencida', 'facturas vencidas') : 'Nada vencido'],
+  ];
+  const gap = 10, bw = (X1 - X0 - gap * 3) / 4, bh = 54;
+  need(bh + 10);
+  kpis.forEach(([lbl, val, sub], k) => {
+    const x = X0 + k * (bw + gap), red = k === 3 && R.overdue.length;
+    p.drawRectangle({ x, y: y - bh + 12, width: bw, height: bh, color: BAND, borderColor: GRID, borderWidth: 0.6 });
+    p.drawRectangle({ x, y: y - bh + 12, width: 3, height: bh, color: red ? RED : NAVY });
+    p.drawText(pdfSafe(lbl.toUpperCase()), { x: x + 10, y: y - 2, size: 7.5, font: bold, color: GREY });
+    let sz = 13; const v = pdfSafe(val); while (sz > 8 && bold.widthOfTextAtSize(v, sz) > bw - 16) sz -= 0.5;
+    p.drawText(fitT(v, bold, sz, bw - 16), { x: x + 10, y: y - 21, size: sz, font: bold, color: red ? RED : NAVY });
+    p.drawText(fitT(sub, font, 7.5, bw - 16), { x: x + 10, y: y - 35, size: 7.5, font, color: GREY });
+  });
+  y -= bh + 8;
+  const prevTxt = R.prev.length ? `En el período anterior (${infRange(R.pFrom, R.pTo).toLowerCase()}) ${R.prev.length === 1 ? 'se recibió' : 'se recibieron'} ${plural(R.prev.length, 'factura', 'facturas')} por ${M(R.prev)}.` : '';
+  para([
+    `Del ${fmtDmy(R.from)} al ${fmtDmy(R.to)} ${R.invs.length === 1 ? 'se recibió' : 'se recibieron'} ${plural(R.invs.length, 'factura', 'facturas')} por ${M(R.invs)}${R.invs.length ? ` (${montoEnLetras(dopOf(R.invs)).toLowerCase()})` : ''}.`,
+    prevTxt,
+    `En el mismo período se pagaron ${M(amtRows(R.paid))}.`,
+    `A la fecha de este informe quedan ${plural(R.open.length, 'factura', 'facturas')} por pagar por ${M(R.open, 'toPay')}${R.overdue.length ? `, de las cuales ${plural(R.overdue.length, 'está vencida', 'están vencidas')} por ${overdueAmt}` : ''}.`,
+    R.trIn.length ? `Hubo ${plural(R.trIn.length, 'traslado', 'traslados')} de materiales entre obras por ${money(round2(R.trIn.reduce((t, x) => t + (isNum(x.total) ? x.total : 0), 0)))}.` : '',
+  ].filter(Boolean).join(' '));
+  y -= 4;
+
+  // 2) Lo que necesita atención
+  section('Requiere atención');
+  const alerts = infAlerts(R);
+  if (alerts.length) alerts.forEach((a) => bullet(a)); else para('Nada fuera de lo normal en este período.', 9, GREY);
+  y -= 4;
+
+  // 3) Por obra
+  if (R.byProj.length) {
+    section('Por obra', 'Montos del período, lo pendiente y el gasto a la fecha');
+    const rows = R.byProj.map((r) => {
+      const pct = r.budget && isNum(r.spent) ? Math.round((r.spent / r.budget) * 100) : null;
+      return [r.p.name, M(r.billed), M(amtRows(r.paid)), M(r.open, 'toPay'), isNum(r.spent) ? money(r.spent) : '—', r.budget ? money(r.budget) : '—', pct == null ? '—' : pct + ' %', pct];
+    });
+    const over = rows.map((r) => r[7] != null && r[7] > 100);
+    rows.push(['Total', M(R.invs), M(amtRows(R.paid)), M(R.open, 'toPay'), '', '', '']);
+    table([['Obra', 112], ['Facturado', 78, 'r'], ['Pagado', 78, 'r'], ['Por pagar hoy', 78, 'r'], ['Gastado a la fecha', 78, 'r'], ['Presupuesto', 78, 'r'], ['Uso', 34, 'r']], rows, { total: true, red: (n, k) => k === 6 && over[n] });
+    if (over.some(Boolean)) para('En rojo: la obra ya gastó más que su presupuesto.', 7.5, GREY);
+    para('«Gastado a la fecha» suma todas las facturas de la obra, la mano de obra y los materiales recibidos de otras obras (menos los que dio).', 7.5, GREY);
+    y -= 4;
+  }
+
+  // 4) Por proveedor
+  if (R.bySup.length) {
+    section('Por proveedor', 'Facturas recibidas en el período');
+    const top = R.bySup.slice(0, 15), rest = R.bySup.slice(15);
+    const rows = top.map((g) => [g.name, String(g.invs.length), M(g.invs), M(g.invs.filter((i) => i.status !== 'pagada'), 'toPay')]);
+    if (rest.length) { const all = rest.flatMap((g) => g.invs); rows.push([`Otros ${rest.length} proveedores`, String(all.length), M(all), M(all.filter((i) => i.status !== 'pagada'), 'toPay')]); }
+    rows.push(['Total', String(R.invs.length), M(R.invs), M(R.invs.filter((i) => i.status !== 'pagada'), 'toPay')]);
+    table([['Proveedor', 256], ['Facturas', 60, 'r'], ['Facturado', 110, 'r'], ['Falta por pagar', 110, 'r']], rows, { total: true });
+  }
+
+  // 5) Pendiente a la fecha
+  section('Pendiente a la fecha', 'Al ' + fmtDmy(todayISO()));
+  const stage = [['pendiente', 'Sin meter en un pago'], ['enpago', 'En un pago por presentar'], ['presentada', 'Presentadas, esperando el pago']];
+  const sRows = stage.map(([k, l]) => { const l2 = R.open.filter((i) => i.status === k); return [l, String(l2.length), M(l2, 'toPay')]; }).filter((r) => r[1] !== '0');
+  if (sRows.length) { sRows.push(['Total por pagar', String(R.open.length), M(R.open, 'toPay')]); table([['Estado de las facturas por pagar', 316], ['Facturas', 80, 'r'], ['Monto', 140, 'r']], sRows, { total: true }); }
+  else para('No hay facturas por pagar.', 9, GREY);
+  if (R.overdue.length) {
+    need(40); text('Facturas vencidas', X0, 9, bold, INK); y -= 14;
+    const rows = R.overdue.slice(0, 20).map((i) => [i.supplier || 'Factura', i.number ? RD.normNcf(i.number) : '', i.project ? i.project.name : '', fmtDmy(i.due), String(-dueInfo(i).days), money(i.toPay, i.currency)]);
+    if (R.overdue.length > 20) rows.push([`y ${plural(R.overdue.length - 20, 'factura más', 'facturas más')}`, '', '', '', '', M(R.overdue.slice(20), 'toPay')]);
+    table([['Proveedor', 160], ['NCF', 92], ['Obra', 104], ['Venció', 56], ['Días', 36, 'r'], ['Monto', 88, 'r']], rows, { red: (n, k) => k === 4 });
+  }
+  if (R.waitPay.length) {
+    need(40); text('Pagos presentados', X0, 9, bold, INK); y -= 14;
+    table([['Pago', 236], ['Presentado', 70], ['Facturas', 60, 'r'], ['Aprobación', 80], ['Monto', 90, 'r']], R.waitPay.map(({ p: py, invs }) => [[payNo(py), py.name || 'Pago'].filter(Boolean).join(' · '), fmtDmy(py.presentedAt), String(invs.length), approvalOn() ? (py.approvedAt ? 'Aprobado' : 'Espera al dueño') : '—', M(invs, 'toPay')]));
+  }
+  const repPend = R.reponer.filter((g) => g.pend.length || g.inPay.length);
+  if (repPend.length) {
+    need(40); text('Por reponer (pagado al contado por alguien de la empresa)', X0, 9, bold, INK); y -= 14;
+    table([['Persona', 296], ['Facturas', 80, 'r'], ['Monto', 160, 'r']], repPend.map((g) => { const l = [...g.pend, ...g.inPay]; return [g.who, String(l.length), M(l, 'toPay')]; }));
+  }
+  if (R.noInv.length) {
+    need(40); text('Órdenes de compra que todavía no tienen factura', X0, 9, bold, INK); y -= 14;
+    const rows = R.noInv.slice(0, 15).map((o) => { const d = String(o.date || o.createdAt || '').slice(0, 10); return [orderNo(o), o.supplier || '', o.project ? o.project.name : '', fmtDmy(d), ymd(d) ? String(daysBetween(d, todayISO())) : '', orderEst(o) ? money(orderEst(o)) : '—']; });
+    if (R.noInv.length > 15) rows.push([`y ${R.noInv.length - 15} más`, '', '', '', '', '']);
+    table([['Orden', 70], ['Proveedor', 170], ['Obra', 110], ['Fecha', 56], ['Días', 40, 'r'], ['Estimado', 90, 'r']], rows);
+  }
+  if (R.accounts.length) {
+    need(40); text('Cuentas entre obras por traslados de materiales', X0, 9, bold, INK); y -= 14;
+    table([['Obra que debe', 196], ['Le debe a', 196], ['Monto', 144, 'r']], R.accounts.map((x) => [trProj(x.debtor), trProj(x.creditor), money(x.amount)]));
+  }
+
+  // 6) Detalle
+  section('Facturas recibidas en el período', plural(R.invs.length, 'factura', 'facturas'));
+  if (R.invs.length) {
+    const rows = R.invs.map((i) => [fmtDmy(invDay(i)), i.supplier || 'Factura', i.number ? RD.normNcf(i.number) : '', i.project ? i.project.name : 'Sin proyecto', isNum(i.amount) ? money(i.amount, i.currency) : '—', INV_LABEL[i.status] || '']);
+    rows.push(['Total', '', '', '', M(R.invs), '']);
+    table([['Fecha', 54], ['Proveedor', 166], ['NCF', 92], ['Obra', 98], ['Monto', 78, 'r'], ['Estado', 48]], rows, { total: true });
+  } else para('No se recibieron facturas en este período.', 9, GREY);
+  section('Pagos hechos en el período', plural(R.paid.length, 'pago', 'pagos'));
+  if (R.paid.length) {
+    const rows = R.paid.map((x) => [fmtDmy(x.date), x.i.supplier || 'Factura', x.i.number ? RD.normNcf(x.i.number) : '', x.i.project ? x.i.project.name : '', x.how, money(x.amount, x.currency)]);
+    rows.push(['Total', '', '', '', '', M(amtRows(R.paid))]);
+    table([['Fecha', 54], ['Proveedor', 130], ['NCF', 80], ['Obra', 76], ['Cómo se pagó', 122], ['Monto', 74, 'r']], rows, { total: true });
+  } else para('No se marcaron pagos en este período.', 9, GREY);
+
+  // Firmas
+  need(70);
+  y -= 34;
+  const sw = 200;
+  [[X0, 'Preparado por', st.preparedBy || ''], [X1 - sw, 'Recibido por', '']].forEach(([x, lbl, name]) => {
+    p.drawLine({ start: { x, y }, end: { x: x + sw, y }, thickness: 0.8, color: INK });
+    const yy = y;
+    y = yy - 12; text(lbl, x + (sw - bold.widthOfTextAtSize(pdfSafe(lbl), 9)) / 2, 9, bold, INK);
+    if (name) { y = yy - 23; text(fitT(name, font, 8.5, sw), x + (sw - font.widthOfTextAtSize(fitT(name, font, 8.5, sw), 8.5)) / 2, 8.5, font, GREY); }
+    y = yy;
+  });
+  stampPages(doc, font, rgb, 'Informe quincenal', { x: X0, y: 20 });
+  return doc.save();
+}
+
+function infWorkbook(R) {
+  const { XS, sheetXml, buildXlsx, excelDate } = FILES;
+  const st = S.settings || {};
+  const title = 'Informe quincenal - ' + infRange(R.from, R.to).toLowerCase();
+  const Dt = (s) => { const d = excelDate(String(s || '').slice(0, 10)); return d == null ? { v: '' } : { v: d, s: XS.date }; };
+  const Mn = (v, cur) => (isNum(v) ? { v: round2(v), s: normCur(cur) === 'USD' ? XS.moneyUsd : XS.money } : { v: '' });
+  const top = (name) => [[{ v: st.company || 'Informe quincenal', s: XS.title }], [{ v: name, s: XS.bold }], [{ v: infRange(R.from, R.to) + ' · generado el ' + fmtDate(todayISO()), s: XS.muted }], []];
+  const H = (list, rightFrom) => list.map((v, j) => ({ v, s: rightFrom != null && j >= rightFrom ? XS.headR : XS.head }));
+  const other = [...sumBy([...R.invs, ...R.open], 'amount').keys()].some((c) => c !== 'DOP');
+  const rs = top('Resumen');
+  rs.push(H(['Concepto', 'Cantidad', 'Monto (RD$)'], 1));
+  rs.push([{ v: 'Facturado en el período' }, { v: R.invs.length, s: XS.int }, Mn(dopOf(R.invs))]);
+  rs.push([{ v: 'Facturado en el período anterior' }, { v: R.prev.length, s: XS.int }, Mn(dopOf(R.prev))]);
+  rs.push([{ v: 'Pagado en el período' }, { v: R.paid.length, s: XS.int }, Mn(dopOf(amtRows(R.paid)))]);
+  rs.push([{ v: 'Por pagar hoy' }, { v: R.open.length, s: XS.int }, Mn(dopOf(R.open, 'toPay'))]);
+  rs.push([{ v: 'Vencido hoy' }, { v: R.overdue.length, s: XS.int }, Mn(dopOf(R.overdue, 'toPay'))]);
+  rs.push([]);
+  for (const a of infAlerts(R)) rs.push([{ v: a }]);
+  if (other) rs.push([{ v: 'Hay facturas en otras monedas: el resumen suma solo los pesos; el detalle tiene cada una con su moneda.', s: XS.muted }]);
+  const po = top('Por obra');
+  po.push(H(['Obra', 'Facturas', 'Facturado', 'Pagado', 'Por pagar hoy', 'Gastado a la fecha', 'Presupuesto', 'Uso %'], 1));
+  for (const r of R.byProj) po.push([{ v: r.p.name }, { v: r.n, s: XS.int }, Mn(dopOf(r.billed)), Mn(dopOf(amtRows(r.paid))), Mn(dopOf(r.open, 'toPay')), Mn(r.spent), Mn(r.budget), r.budget && isNum(r.spent) ? { v: Math.round((r.spent / r.budget) * 100), s: XS.int } : { v: '' }]);
+  po.push([{ v: 'Total', s: XS.totLabel }, { v: R.invs.length, s: XS.totInt }, { v: dopOf(R.invs), s: XS.totMoney }, { v: dopOf(amtRows(R.paid)), s: XS.totMoney }, { v: dopOf(R.open, 'toPay'), s: XS.totMoney }]);
+  const ps = top('Por proveedor');
+  ps.push(H(['Proveedor', 'Facturas', 'Facturado', 'Falta por pagar'], 1));
+  for (const g of R.bySup) ps.push([{ v: g.name }, { v: g.invs.length, s: XS.int }, Mn(dopOf(g.invs)), Mn(dopOf(g.invs.filter((i) => i.status !== 'pagada'), 'toPay'))]);
+  ps.push([{ v: 'Total', s: XS.totLabel }, { v: R.invs.length, s: XS.totInt }, { v: dopOf(R.invs), s: XS.totMoney }, { v: dopOf(R.invs.filter((i) => i.status !== 'pagada'), 'toPay'), s: XS.totMoney }]);
+  const fs = top('Facturas recibidas en el período');
+  fs.push(H(['Fecha', 'Proveedor', 'RNC', 'NCF', 'Obra', 'Orden de compra', 'Monto', 'Falta por pagar', 'Estado', 'Forma de pago'], 6));
+  for (const i of R.invs) fs.push([Dt(invDay(i)), { v: i.supplier || '' }, { v: i.rnc ? RD.fmtRnc(i.rnc) : '' }, { v: i.number ? RD.normNcf(i.number) : '' }, { v: i.project ? i.project.name : 'Sin proyecto' }, { v: (i.orders || []).map(orderNo).join(', ') }, Mn(i.amount, i.currency), Mn(i.status === 'pagada' ? 0 : i.toPay, i.currency), { v: INV_LABEL[i.status] || '' }, { v: i.payMode === 'directo' ? 'Al contado (ya pagada)' : i.payMode === 'reponer' ? 'Por reponer' + (i.paidBy ? ' a ' + i.paidBy : '') : 'A crédito' }]);
+  fs.push([{ v: 'Total', s: XS.totLabel }, ...Array(5).fill(0).map(() => ({ v: '', s: XS.totBlank })), { v: dopOf(R.invs), s: XS.totMoney }]);
+  const pg = top('Pagos hechos en el período');
+  pg.push(H(['Fecha', 'Proveedor', 'NCF', 'Obra', 'Cómo se pagó', 'Monto'], 5));
+  for (const x of R.paid) pg.push([Dt(x.date), { v: x.i.supplier || '' }, { v: x.i.number ? RD.normNcf(x.i.number) : '' }, { v: x.i.project ? x.i.project.name : '' }, { v: x.how }, Mn(x.amount, x.currency)]);
+  pg.push([{ v: 'Total', s: XS.totLabel }, ...Array(4).fill(0).map(() => ({ v: '', s: XS.totBlank })), { v: dopOf(amtRows(R.paid)), s: XS.totMoney }]);
+  const pe = top('Pendiente a la fecha');
+  pe.push(H(['Proveedor', 'NCF', 'Obra', 'Fecha', 'Vence', 'Días vencida', 'Estado', 'Por pagar'], 7));
+  for (const i of [...R.open].sort((a, b) => String(a.due || '9').localeCompare(String(b.due || '9')) || invDay(a).localeCompare(invDay(b)))) { const d = dueInfo(i); pe.push([{ v: i.supplier || '' }, { v: i.number ? RD.normNcf(i.number) : '' }, { v: i.project ? i.project.name : 'Sin proyecto' }, Dt(invDay(i)), Dt(i.due), d && d.overdue ? { v: -d.days, s: XS.int } : { v: '' }, { v: INV_LABEL[i.status] || '' }, Mn(i.toPay, i.currency)]); }
+  pe.push([{ v: 'Total', s: XS.totLabel }, ...Array(6).fill(0).map(() => ({ v: '', s: XS.totBlank })), { v: dopOf(R.open, 'toPay'), s: XS.totMoney }]);
+  if (R.noInv.length) {
+    pe.push([], [{ v: 'Órdenes de compra sin factura', s: XS.bold }], H(['Orden', 'Proveedor', 'Obra', 'Fecha', 'Estimado'], 4));
+    for (const o of R.noInv) pe.push([{ v: orderNo(o) }, { v: o.supplier || '' }, { v: o.project ? o.project.name : '' }, Dt(o.date || o.createdAt), Mn(orderEst(o))]);
+  }
+  const footer = `&L${(st.company || 'Informe').replace(/&/g, '&&')}&C${title.replace(/&/g, '&&')}&RPágina &P de &N`;
+  return buildXlsx([
+    { name: 'Resumen', xml: sheetXml(rs, { widths: [62, 12, 18], selected: true, footer }) },
+    { name: 'Por obra', xml: sheetXml(po, { widths: [30, 10, 16, 16, 16, 18, 16, 8], footer, landscape: true }) },
+    { name: 'Por proveedor', xml: sheetXml(ps, { widths: [40, 10, 16, 16], footer }) },
+    { name: 'Facturas', xml: sheetXml(fs, { widths: [11, 32, 14, 16, 22, 16, 14, 14, 12, 22], freeze: 5, landscape: true, footer }) },
+    { name: 'Pagos', xml: sheetXml(pg, { widths: [11, 32, 16, 22, 30, 14], freeze: 5, footer }) },
+    { name: 'Pendiente', xml: sheetXml(pe, { widths: [32, 16, 22, 11, 11, 12, 18, 14], freeze: 5, landscape: true, footer }) },
+  ], { title, creator: st.preparedBy || PDF_CREATOR, names: [] });
+}
+
+function infDates() {
+  const f = $('#inf-from'), t = $('#inf-to');
+  let from = f && ymd(f.value) ? f.value : '', to = t && ymd(t.value) ? t.value : '';
+  if (!from || !to) return null;
+  if (from > to) [from, to] = [to, from];
+  return { from, to };
+}
+function infPreviewHTML(from, to) {
+  const R = infData(from, to, derive());
+  const al = infAlerts(R);
+  return `<div class="inf-kpis"><div><small>Facturado</small><b class="mono">${esc(totalStr(R.invs))}</b><small>${esc(plural(R.invs.length, 'factura', 'facturas'))}</small></div><div><small>Pagado</small><b class="mono">${esc(totalStr(amtRows(R.paid)))}</b><small>${esc(plural(R.paid.length, 'pago', 'pagos'))}</small></div><div><small>Por pagar hoy</small><b class="mono">${esc(totalStr(R.open, 'toPay'))}</b><small>${esc(plural(R.open.length, 'factura', 'facturas'))}</small></div><div class="${R.overdue.length ? 'bad' : ''}"><small>Vencido</small><b class="mono">${esc(R.overdue.length ? totalStr(R.overdue, 'toPay') : money(0))}</b><small>${esc(R.overdue.length ? plural(R.overdue.length, 'factura', 'facturas') : 'Nada vencido')}</small></div></div>${al.length ? `<ul class="inf-al">${al.map((a) => `<li>${esc(a)}</li>`).join('')}</ul>` : ''}`;
+}
+function openInforme() {
+  const d = infDefault(), last = S.inf && ymd(S.inf.lastTo) ? S.inf : null;
+  openSheet(`${sheetHead('Informe quincenal')}
+    <div class="sheet-b">
+      <p class="hint">Para el jefe: lo facturado y lo pagado en el período, cada obra, cada proveedor, lo pendiente y lo que necesita atención, con el membrete de la empresa. Va cada ${INF_DAYS} días, desde el día después del último informe hasta hoy (aparte del pase de lista).</p>
+      <div class="fields inf-dates"><div class="field"><label for="inf-from">Desde</label><input type="date" id="inf-from" value="${esc(d.from)}"></div><div class="field"><label for="inf-to">Hasta</label><input type="date" id="inf-to" value="${esc(d.to)}"></div></div>
+      <div id="inf-prev">${infPreviewHTML(d.from, d.to)}</div>
+      <p class="hint">${last ? `Último informe: ${esc(infRange(last.lastFrom, last.lastTo).toLowerCase())}${last.at ? `, hecho el ${esc(fmtDate(String(last.at).slice(0, 10)))}` : ''}. El próximo toca el ${esc(fmtDate(infDue()))}.` : 'Cuando lo compartas o lo guardes, la app anota las fechas y te avisa en «Para hacer» cuando toque el próximo.'}</p>
+    </div>
+    <div class="sheet-f"><button type="button" class="btn primary" data-act="inf-pdf">${ICON.down} PDF del informe</button><button type="button" class="btn" data-act="inf-xlsx">${ICON.sheet} Excel con el detalle</button></div>`, { type: 'inf' });
+}
+async function makeInforme(kind) {
+  const d = infDates();
+  if (!d) { toast('Elige las dos fechas.'); return; }
+  try {
+    const R = infData(d.from, d.to, derive());
+    const name = fileSafe(`Informe quincenal ${d.from} al ${d.to}`);
+    if (kind === 'pdf') deliverFile(new Blob([await buildInfPdf(R)], { type: 'application/pdf' }), name + '.pdf');
+    else deliverFile(infWorkbook(R), name + '.xlsx');
+    // Al compartirlo o guardarlo queda anotado como el último informe (para el aviso de los 14 días).
+    if (S.ready && canEdit()) S.ready.onDone = () => { if (!S.inf || !ymd(S.inf.lastTo) || d.to > S.inf.lastTo || (d.to === S.inf.lastTo && d.from !== S.inf.lastFrom)) write(() => db.doc('settings/informe').set({ lastFrom: d.from, lastTo: d.to, at: new Date().toISOString(), by: (S.settings && S.settings.preparedBy) || '' })); };
+  } catch (e) {
+    console.error(e);
+    toast('No se pudo preparar el informe.');
+  }
+}
+
 /* ---------- respaldo ---------- */
 async function makeBackup() {
   try {
@@ -6019,6 +6372,9 @@ function onClick(e) {
     case 'pm-no': write(() => db.doc('invoices/' + id).update({ termsCheck: false }), 'Queda para pagarla en un pago'); break;
     case 'sel-clear': S.sel.clear(); renderAll(); break;
     case 'todo-all': S.todoAll = !S.todoAll; renderAll(); break;
+    case 'inf-open': openInforme(); break;
+    case 'inf-pdf': makeInforme('pdf'); break;
+    case 'inf-xlsx': makeInforme('xlsx'); break;
     case 'more-menu': openMoreMenu(); break;
     case 'go-tab': closeSheet(); if (S.tab === 'asistencia') flushAtt(); S.tab = t.dataset.go; S.paymentId = null; S.payDel = false; renderAll(); window.scrollTo(0, 0); break;
     case 'cprojf': S.condProject = t.dataset.p; renderAll(); break;
@@ -6229,6 +6585,7 @@ function onChange(e) {
     if (t.value === 'range' && !S.dateFrom && !S.dateTo) { S.dateFrom = todayISO().slice(0, 8) + '01'; S.dateTo = todayISO(); }
     renderAll();
   }
+  if ((t.id === 'inf-from' || t.id === 'inf-to') && $('#inf-prev')) { const d = infDates(); if (d) $('#inf-prev').innerHTML = infPreviewHTML(d.from, d.to); }
   if (t.id === 'f-from' || t.id === 'f-to') { S[t.id === 'f-from' ? 'dateFrom' : 'dateTo'] = ymd(t.value) ? t.value : ''; renderAll(); }
   if (t.id === 'o-proj' && t.value) {
     const prev = derive().orders.filter((x) => x.projectId === t.value);
@@ -6400,6 +6757,7 @@ function subscribe() {
   db.doc('settings/asistencia').onSnapshot((snap) => { S.attRules = (snap.exists && snap.data()) || {}; scheduleRender(); }, (err) => console.warn(err));
   db.doc('settings/respaldos').onSnapshot((snap) => { S.bk = (snap.exists && snap.data()) || {}; scheduleRender(); }, (err) => console.warn(err));
   db.doc('settings/digitacion').onSnapshot((snap) => { S.digi = (snap.exists && snap.data()) || {}; scheduleRender(); }, (err) => console.warn(err));
+  db.doc('settings/informe').onSnapshot((snap) => { S.inf = (snap.exists && snap.data()) || {}; scheduleRender(); }, (err) => console.warn(err));
   const done = () => { if (S.got.projects && S.got.invoices && S.got.payments && S.got.orders && S.got.conduces && S.got.workers && S.got.asistencia && S.got.suppliers && S.got.envios && S.got.papelera && S.got.traslados && S.dbState === 'loading') { S.dbState = 'ready'; setTimeout(retryOffline, 1500); setTimeout(() => { fixCreditSigns().catch((e) => console.warn(e)); fixAttRules().catch((e) => console.warn(e)); fixPayNumbers().catch((e) => console.warn(e)); scheduleLink(); purgeTrash(false).catch((e) => console.warn(e)); measureStorage(); }, 2500); } };
   for (const name of ['projects', 'invoices', 'payments', 'orders', 'conduces', 'workers', 'asistencia', 'suppliers', 'envios', 'papelera', 'traslados']) {
     db.collection(name).onSnapshot((snap) => {
