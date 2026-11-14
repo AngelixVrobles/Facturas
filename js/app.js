@@ -10,7 +10,7 @@ const LIB = {
   qrgen: 'js/qr.js',
 };
 const PDF_CREATOR = 'Facturas de Proyectos';
-const APP_VERSION = '1.28.0';
+const APP_VERSION = '1.29.0';
 const SVG = (d) => `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ICON = {
   lock: SVG('<rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>'),
@@ -1128,7 +1128,7 @@ function renderFacturas(D) {
     return;
   }
   if (!list.length) {
-    const what = { pendientes: 'pendientes', tramite: 'en trámite', pagadas: 'pagadas', todas: '' }[S.filter];
+    const what = { pendientes: 'pendientes', listas: 'listas', todas: '' }[S.filter];
     const oc = !S.focus && D.orders.length && S.invOrder !== 'all' ? (S.invOrder === 'con' ? 'con orden de compra' : 'sin orden de compra') : '';
     const proj = S.projectFilter !== 'all' ? 'en este proyecto' : '';
     const when = !S.focus && S.dateFilter ? (S.dateFilter === 'range' ? 'en esas fechas' : 'en ' + monthName(S.dateFilter).toLowerCase()) : '';
@@ -1866,6 +1866,7 @@ async function buildTrPdf(t) {
   const W = 612, H = 792, X0 = 38, X1 = 574;
   const NAVY = rgb(0.137, 0.255, 0.353), INK = rgb(0.1, 0.11, 0.13), VAL = rgb(0.04, 0.1, 0.3), GREY = rgb(0.42, 0.45, 0.5);
   const GRID = rgb(0.62, 0.67, 0.74), WHITE = rgb(1, 1, 1), BAND = rgb(0.93, 0.95, 0.97);
+  const logo = await docLogo(doc);
   const items = (t.items || []).filter((x) => x && (x.desc || (x.qty !== '' && x.qty != null)));
   const per = 14;
   const nPages = Math.max(1, Math.ceil(items.length / per));
@@ -1878,9 +1879,10 @@ async function buildTrPdf(t) {
     const center = (s, cx, top, size, f = font, color = INK) => { const v = pdfSafe(s); p.drawText(v, { x: cx - f.widthOfTextAtSize(v, size) / 2, y: yy(top), size, font: f, color }); };
     const right = (s, xr, top, size, f = font, color = INK) => { const v = pdfSafe(s); p.drawText(v, { x: xr - f.widthOfTextAtSize(v, size), y: yy(top), size, font: f, color }); };
     const hline = (a, b, top, th = 0.6, color = GRID) => p.drawLine({ start: { x: a, y: yy(top) }, end: { x: b, y: yy(top) }, thickness: th, color });
-    if (st.company) center(st.company.toUpperCase(), W / 2, 50, 13.5, bold, NAVY);
-    center('TRASLADO DE MATERIALES ENTRE OBRAS', W / 2, st.company ? 70 : 54, 10.5, font, INK);
-    if (nPages > 1) text(`Página ${pg + 1} de ${nPages}`, X0, 28, 8, font, GREY);
+    drawLogo(p, logo, X0, yy(20), 76, 40);
+    if (st.company) center(st.company.toUpperCase(), W / 2, 48, 13.5, bold, NAVY);
+    if (companyLine(st)) center(fitT(companyLine(st), font, 7.5, 330), W / 2, 59, 7.5, font, GREY);
+    center('TRASLADO DE MATERIALES ENTRE OBRAS', W / 2, st.company ? 73 : 54, 10.5, bold, INK);
     const field = (label, value, x, top, xEnd) => {
       text(label, x, top, 9, font, INK);
       const lx = x + font.widthOfTextAtSize(pdfSafe(label), 9) + 4;
@@ -1948,8 +1950,8 @@ async function buildTrPdf(t) {
       if (name) center(fitT(name, font, 8.5, sw), cx, 740, 8.5, font, VAL);
       if (sub) center(fitT(sub, font, 7.5, sw), cx, name ? 751 : 740, 7.5, font, GREY);
     });
-    text(`Generado el ${fmtDmy(todayISO())}`, X0, 772, 7.5, font, GREY);
   }
+  stampPages(doc, font, rgb, 'Traslado de materiales ' + trNo(t), { x: X0, y: 16 });
   return doc.save();
 }
 
@@ -2266,12 +2268,12 @@ function openInvoice(id, keepScroll) {
   if (cand.length) msgs.push(`<div class="msg hint"><span>Hay ${cand.length === 1 ? 'una orden' : 'órdenes'} de este proveedor${i.projectId ? ' para esta obra' : ''}.</span>${cand.slice(0, 3).map((o) => `<button type="button" class="link" data-act="link-order" data-id="${esc(i.id)}" data-order="${esc(o.id)}">Asignar ${esc(orderNo(o))}${!i.projectId && o.project ? ' (' + esc(o.project.name) + ')' : ''}</button>`).join(' ')}${needsOrder(i, D) ? noOrdBtn : ''}</div>`);
   else if (needsOrder(i, D)) msgs.push(`<div class="msg warn">${ICON.alert}<span>Esta factura no tiene orden de compra. Debe presentarse con su orden firmada y sellada.${noOrdBtn}</span></div>`);
   if (i.order && i.orderAuto) msgs.push(`<div class="msg hint"><span>Se enlazó sola a la orden <b>${esc(orderNo(i.order))}</b>: es la única abierta de este proveedor. Si no es, cámbiala en «Orden de compra».</span></div>`);
-  if (!i.order && i.noOrder) info.push(`<div class="msg"><span>Marcada como factura que no lleva orden de compra.${edit ? ` <button type="button" class="link" data-act="no-order-undo" data-id="${esc(i.id)}">Deshacer</button>` : ''}</span></div>`);
+  if (!i.order && i.noOrder) msgs.push(`<div class="msg"><span>Marcada como factura que no lleva orden de compra.${edit ? ` <button type="button" class="link" data-act="no-order-undo" data-id="${esc(i.id)}">Deshacer</button>` : ''}</span></div>`);
   for (const o of (i.orders || []).filter((x) => x.status !== 'autorizada')) msgs.push(`<div class="msg warn">${ICON.alert}<span>La orden ${esc(orderNo(o))} todavía no tiene la copia firmada y sellada.</span></div>`);
   msgs.push(crossMsgsHTML(i, D, edit));
   if (i.termsCheck && !i.payMode && !i.pay) msgs.push(`<div class="msg warn">${ICON.alert}<span>La factura dice que es <b>de contado</b>. ¿Ya se pagó?</span>${edit ? `<span class="acts"><button type="button" class="btn sm primary" data-act="pm-yes" data-id="${esc(i.id)}">Sí, ya se pagó</button><button type="button" class="btn sm" data-act="pm-reponer" data-id="${esc(i.id)}">Hay que reponérselo a quien pagó</button><button type="button" class="btn sm ghost" data-act="pm-no" data-id="${esc(i.id)}">No, va en un pago</button></span>` : ''}</div>`);
   else if (i.payMode && !i.pay) (i.payMode === 'reponer' ? msgs : info).push(`<div class="msg${i.payMode === 'reponer' ? '' : ' ok'}">${i.payMode === 'reponer' ? '' : ICON.check}<span>${esc(payText(i))}.${i.payMode === 'reponer' ? ' Va en un pago como reposición a esa persona.' : ''}</span></div>`);
-  if (i.envio) info.push(`<div class="msg">${ICON.check}<span>Se le mandó a la digitadora el ${esc(fmtDate(i.envio.date))}, ${esc(ENVIO_LABEL[i.envio.method] || '')}${i.envio.to ? ', a ' + esc(i.envio.to) : ''}. <button type="button" class="link" data-act="envio-view" data-id="${esc(i.envio.id)}">Ver envío ${esc(String(i.envio.number || ''))}</button>${edit ? ` <button type="button" class="link" data-act="digi-undo-one" data-id="${esc(i.id)}">No se la mandé</button>` : ''}</span></div>`);
+  if (i.envio) msgs.push(`<div class="msg">${ICON.check}<span>Se le mandó a la digitadora el ${esc(fmtDate(i.envio.date))}, ${esc(ENVIO_LABEL[i.envio.method] || '')}${i.envio.to ? ', a ' + esc(i.envio.to) : ''}. <button type="button" class="link" data-act="envio-view" data-id="${esc(i.envio.id)}">Ver envío ${esc(String(i.envio.number || ''))}</button>${edit ? ` <button type="button" class="link" data-act="digi-undo-one" data-id="${esc(i.id)}">No se la mandé</button>` : ''}</span></div>`);
   else if (!i.notInvoice) msgs.push(`<div class="msg"><span>Todavía no se la has mandado a la digitadora.${edit ? ` <button type="button" class="link" data-act="digi-open">Mandar</button> <button type="button" class="link" data-act="digi-one" data-id="${esc(i.id)}">Ya se la mandé</button>` : ''}</span></div>`);
   if (i.sup) {
     const di = dueInfo(i);
@@ -2535,6 +2537,9 @@ async function openSettings() {
         <div class="field full"><label for="st-company">Empresa</label><input id="st-company" maxlength="100" placeholder="Ej. Constructora del Caribe, S.R.L." value="${esc(st.company || '')}"></div>
         <div class="field"><label for="st-rnc">RNC de la empresa</label><input id="st-rnc" class="mono" inputmode="numeric" maxlength="15" value="${esc(RD.normRnc(st.companyRnc))}"></div>
         <div class="field"><label for="st-area">Área o departamento</label><input id="st-area" maxlength="80" placeholder="Ej. Administración de obra" value="${esc(st.area || '')}"></div>
+        <div class="field full"><label for="st-addr">Dirección de la empresa</label><input id="st-addr" maxlength="120" placeholder="Calle, número, sector, ciudad" value="${esc(st.address || '')}"></div>
+        <div class="field"><label for="st-phone">Teléfono</label><input id="st-phone" maxlength="30" inputmode="tel" value="${esc(st.phone || '')}"></div>
+        <div class="field full"><label>Logo</label><div class="logo-box" id="logo-box">${logoBoxHTML()}</div></div>
         <div class="field full"><label for="st-name">Elaboró (tu nombre)</label><input id="st-name" maxlength="80" value="${esc(st.preparedBy || '')}"></div>
       </div>
       <h3 class="h2">Lectura automática (opcional)</h3>
@@ -3917,7 +3922,7 @@ async function attPdf(sh, proj, blank) {
     const pg = out.addPage([W, H]);
     let y = H - M;
     T(pg, 'PASE DE LISTA — ' + proj.name, M, y - 12, 14, bold);
-    T(pg, S.settings.company || '', W - M - font.widthOfTextAtSize(pdfSafe(S.settings.company || ''), 8), y - 10, 8, font, grey);
+    { const cl = [S.settings.company || '', companyLine(S.settings)].filter(Boolean).join('  ·  '); T(pg, cl, W - M - font.widthOfTextAtSize(pdfSafe(cl), 8), y - 10, 8, font, grey); }
     y -= 28;
     T(pg, `Obreros por la casa   ·   Entrada hasta las: ${sh.entryLimit || '______'}   ·   Salida desde las: ${sh.exitFrom || '______'}   ·   ${attPeriodLabel(sh)}`, M, y, 9, font, ink);
     y -= 14;
@@ -3985,6 +3990,7 @@ async function attPdf(sh, proj, blank) {
       ['Encargado', 'Revisó', 'Autorizó'].forEach((l, j) => { const x = M + j * (sw + 60); pg.drawLine({ start: { x, y: ySig + 10 }, end: { x: x + sw, y: ySig + 10 }, thickness: 0.7, color: ink }); T(pg, l, x, ySig, 7.5, bold, grey); });
     }
   }
+  stampPages(out, font, rgb, (blank ? 'Planilla en blanco · ' : 'Pase de lista · ') + proj.name + ' · ' + attPeriodLabel(sh), { x: M, y: 10 });
   return out.save();
 }
 async function attExport(kind) {
@@ -4588,13 +4594,13 @@ async function buildDigiPdf(invs, { number, date = todayISO(), to = digiName(), 
   const T = (s, x, yy, size, f = font, color = C.ink) => page.drawText(pdfSafe(s), { x, y: yy, size, font: f, color });
   const R = (s, xr, yy, size, f = font, color = C.ink) => { const t = pdfSafe(s); page.drawText(t, { x: xr - f.widthOfTextAtSize(t, size), y: yy, size, font: f, color }); };
   const fit = (s, f, size, w) => { let t = pdfSafe(s); if (f.widthOfTextAtSize(t, size) <= w) return t; while (t.length > 1 && f.widthOfTextAtSize(t + '…', size) > w) t = t.slice(0, -1); return t + '…'; };
-  const newPage = () => { page = out.addPage([W, H]); y = H - M; };
+  const own = new Set(), logo = await docLogo(out);
+  const stamp = () => stampPages(out, font, rgb, `Facturas para digitar · envío ${number}`, { own, x: M });
+  const newPage = () => { page = out.addPage([W, H]); own.add(page); y = H - M; };
   const cols = [{ k: '#', x: M + 2, w: 14 }, { k: 'Proyecto', x: M + 18, w: 70 }, { k: 'Proveedor', x: M + 92, w: 108 }, { k: 'RNC', x: M + 204, w: 54 }, { k: 'NCF', x: M + 262, w: 66 }, { k: 'Fecha', x: M + 332, w: 46 }, { k: 'ITBIS', xr: M + 444, w: 60 }, { k: 'Total', xr: W - M - 2, w: 76 }];
   const head = () => { page.drawRectangle({ x: M, y: y - 6, width: W - 2 * M, height: 19, color: C.band }); cols.forEach((c) => (c.xr ? R(c.k, c.xr, y, 8, bold, C.grey) : T(c.k, c.x, y, 8, bold, C.grey))); y -= 21; };
   newPage();
-  if (st.company) { T(fit(st.company, bold, 11, W - 2 * M - 180), M, y - 8, 11, bold); if (st.companyRnc) T('RNC ' + RD.fmtRnc(st.companyRnc), M, y - 21, 9, font, C.grey); }
-  R('FACTURAS PARA DIGITAR', W - M, y - 8, 9, bold, C.accent);
-  y -= 56;
+  y = drawLetterhead(page, { st, font, bold, rgb, logo, x: M, xr: W - M, y, title: 'FACTURAS PARA DIGITAR', sub: 'Envío No. ' + String(number).padStart(4, '0') }) - 30;
   T(longDate(date), M, y, 20, bold); y -= 20;
   T([`Envío ${number}`, to ? 'Para: ' + to : '', st.preparedBy ? 'Entrega: ' + st.preparedBy : '', plural(invs.length, 'factura', 'facturas')].filter(Boolean).join('   ·   '), M, y, 9, font, C.grey); y -= 30;
   head();
@@ -4627,7 +4633,7 @@ async function buildDigiPdf(invs, { number, date = todayISO(), to = digiName(), 
     T(lbl, x, y - 13, 9, bold, C.grey);
     if (who) T(fit(who, font, 9, sw), x, y - 25, 9);
   });
-  if (!withFiles) return out.save();
+  if (!withFiles) { stamp(); return out.save(); }
   for (const [n, i] of invs.entries()) {
     const label = `${n + 1} de ${invs.length} · ${i.supplier || 'Sin nombre'}${i.number ? ' · NCF ' + RD.normNcf(i.number) : ''} · ${money(i.amount, i.currency)}`;
     for (const f of [{ fileId: i.fileId, fileType: i.fileType }, ...(i.extraPages || [])]) {
@@ -4644,6 +4650,7 @@ async function buildDigiPdf(invs, { number, date = todayISO(), to = digiName(), 
       } catch (e) { console.warn('PDF digitadora', e); (rep.missing = rep.missing || new Set()).add(i.supplier || i.fileName || 'Sin nombre'); }
     }
   }
+  stamp();
   return out.save();
 }
 async function digiSend(method, btn) {
@@ -4845,7 +4852,7 @@ function renderSyncChip() {
 
 async function createPayment(name, date, ids) {
   const ref = db.collection('payments').doc();
-  const ok = await write(() => ref.set({ name: String(name || '').trim().slice(0, 80) || 'Pago ' + fmtDate(todayISO()), date: ymd(date) ? date : todayISO(), status: 'armando', invoiceIds: ids, createdAt: new Date().toISOString() }), 'Pago creado');
+  const ok = await write(() => ref.set({ name: String(name || '').trim().slice(0, 80) || 'Pago ' + fmtDate(todayISO()), date: ymd(date) ? date : todayISO(), status: 'armando', invoiceIds: ids, number: S.payments.reduce((m, p) => Math.max(m, Number(p.number) || 0), 0) + 1, createdAt: new Date().toISOString() }), 'Pago creado');
   if (ok) { closeSheet(); S.tab = 'pagos'; S.paymentId = ref.id; S.payDel = false; renderAll(); window.scrollTo(0, 0); }
 }
 async function addToPayment(payId, ids) {
@@ -5238,6 +5245,7 @@ async function buildOrderPdf(o, opts = {}) {
   const W = 612, H = 792, X0 = 38, X1 = 574;
   const NAVY = rgb(0.137, 0.255, 0.353), INK = rgb(0.1, 0.11, 0.13), VAL = rgb(0.04, 0.1, 0.3), GREY = rgb(0.42, 0.45, 0.5);
   const SEP = rgb(0.8, 0.82, 0.86), GRID = rgb(0.62, 0.67, 0.74), WHITE = rgb(1, 1, 1), RED = rgb(0.75, 0.15, 0.12), BLACK = rgb(0, 0, 0);
+  const logo = await docLogo(doc);
   let qrm = null;
   if (st.orderQr !== false && o.id) { try { await loadScript(LIB.qrgen); qrm = window.QR.encode(orderQrText(o)); } catch (e) { console.warn('QR de la orden', e); } }
   const items = (o.items || []).filter((x) => x && (x.desc || (x.qty !== '' && x.qty != null)));
@@ -5250,9 +5258,10 @@ async function buildOrderPdf(o, opts = {}) {
     const text = (s, x, top, size, f = font, color = INK) => p.drawText(pdfSafe(s), { x, y: yy(top), size, font: f, color });
     const center = (s, cx, top, size, f = font, color = INK) => { const t = pdfSafe(s); p.drawText(t, { x: cx - f.widthOfTextAtSize(t, size) / 2, y: yy(top), size, font: f, color }); };
     const hline = (a, b, top, th = 0.6, color = SEP) => p.drawLine({ start: { x: a, y: yy(top) }, end: { x: b, y: yy(top) }, thickness: th, color });
-    if (st.company) center(st.company.toUpperCase(), W / 2, 56, 13.5, bold, NAVY);
-    center('ORDEN DE COMPRA / SOLICITUD DE MATERIALES', W / 2, st.company ? 76 : 60, 10.5, font, INK);
-    if (nPages > 1) text(`Página ${pg + 1} de ${nPages}`, X0, 28, 8, font, GREY);
+    drawLogo(p, logo, X0, yy(22), 76, 40);
+    if (st.company) center(st.company.toUpperCase(), W / 2, 54, 13.5, bold, NAVY);
+    if (companyLine(st)) center(fitT(companyLine(st), font, 7.5, 330), W / 2, 65, 7.5, font, GREY);
+    center('ORDEN DE COMPRA / SOLICITUD DE MATERIALES', W / 2, st.company ? 79 : 60, 10.5, bold, INK);
     if (opts.unsigned) text('COPIA SIN FIRMA', X0, 40, 9, bold, RED);
     if (qrm) {
       // Código de la orden: con él, la foto de la orden firmada se reconoce y se adjunta sola.
@@ -5333,8 +5342,104 @@ async function buildOrderPdf(o, opts = {}) {
       wrapText(words.join(' '), font, 8.5, X1 - 2 - 44).slice(0, 4).forEach((ln, k) => text(ln, 44, 684 + 13 * k, 8.5, font, INK));
     }
   }
+  stampPages(doc, font, rgb, 'Orden de compra ' + orderNo(o), { x: X0, y: 20 });
   return doc.save();
 }
+
+/* ---------- membrete y pie de los documentos ---------- */
+// Todos los PDF que se entregan llevan el mismo membrete (logo, empresa, RNC, dirección y teléfono) y el mismo pie
+// (empresa, qué documento es, cuándo se generó y «Página X de Y»).
+const companyLine = (st) => [st.companyRnc ? 'RNC ' + RD.fmtRnc(st.companyRnc) : '', st.address || '', st.phone ? 'Tel. ' + st.phone : ''].filter(Boolean).join('  ·  ');
+async function docLogo(out) {
+  const d = String((S.settings && S.settings.logo) || '');
+  if (!d.startsWith('data:image/')) return null;
+  try {
+    const bytes = Uint8Array.from(atob(d.slice(d.indexOf(',') + 1)), (c) => c.charCodeAt(0));
+    return /^data:image\/png/.test(d) ? await out.embedPng(bytes) : await out.embedJpg(bytes);
+  } catch (e) { console.warn('logo', e); return null; }
+}
+// El logo dentro de una caja (arriba a la izquierda): devuelve el ancho que ocupó.
+function drawLogo(page, logo, x, yTop, maxW, maxH) {
+  if (!logo) return 0;
+  const s = Math.min(maxW / logo.width, maxH / logo.height);
+  page.drawImage(logo, { x, y: yTop - logo.height * s, width: logo.width * s, height: logo.height * s });
+  return logo.width * s + 10;
+}
+// Membrete a la izquierda y el nombre del documento a la derecha, con una raya debajo. Devuelve la «y» de la raya.
+function drawLetterhead(page, k) {
+  const { st, font, bold, rgb } = k, ink = rgb(0.08, 0.11, 0.16), grey = rgb(0.38, 0.42, 0.48), navy = rgb(0.137, 0.255, 0.353);
+  const fitW = (s, f, size, w) => { let t = pdfSafe(s); while (t.length > 1 && f.widthOfTextAtSize(t, size) > w) t = t.slice(0, -1); return t; };
+  const rw = Math.max(bold.widthOfTextAtSize(pdfSafe(k.title || ''), 10), k.sub ? font.widthOfTextAtSize(pdfSafe(k.sub), 9) : 0);
+  const lx = k.x + drawLogo(page, k.logo, k.x, k.y + 2, 84, 38);
+  const lw = k.xr - lx - rw - 16;
+  let yy = k.y - 9;
+  if (st.company) { page.drawText(fitW(st.company, bold, 12, lw), { x: lx, y: yy, size: 12, font: bold, color: navy }); yy -= 12; }
+  for (const line of [companyLine(st), st.area || ''].filter(Boolean)) { page.drawText(fitW(line, font, 8, lw), { x: lx, y: yy, size: 8, font, color: grey }); yy -= 10; }
+  if (k.title) { const t = pdfSafe(k.title); page.drawText(t, { x: k.xr - bold.widthOfTextAtSize(t, 10), y: k.y - 9, size: 10, font: bold, color: navy }); }
+  if (k.sub) { const t = pdfSafe(k.sub); page.drawText(t, { x: k.xr - font.widthOfTextAtSize(t, 9), y: k.y - 22, size: 9, font, color: ink }); }
+  const yl = Math.min(yy + 2, k.y - (k.logo ? 42 : 30));
+  page.drawLine({ start: { x: k.x, y: yl }, end: { x: k.xr, y: yl }, thickness: 1.2, color: navy });
+  return yl;
+}
+// Pie en las páginas hechas por la app (las fotos y los PDF adjuntos no se tocan, pero cuentan).
+function stampPages(out, font, rgb, label, o = {}) {
+  const pages = out.getPages(), grey = rgb(0.38, 0.42, 0.48), st = S.settings || {};
+  const now = new Date(), when = `${fmtDmy(todayISO())} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  const left = pdfSafe([st.company || '', label, 'Generado el ' + when + (st.preparedBy ? ' por ' + st.preparedBy : '')].filter(Boolean).join('  ·  '));
+  pages.forEach((p, n) => {
+    if (o.own && !o.own.has(p)) return;
+    const { width } = p.getSize(), x = o.x || 42, y = o.y || 22, right = `Página ${n + 1} de ${pages.length}`;
+    let t = left; const max = width - 2 * x - font.widthOfTextAtSize(right, 7.5) - 12;
+    while (t.length > 1 && font.widthOfTextAtSize(t, 7.5) > max) t = t.slice(0, -1);
+    p.drawText(t, { x, y, size: 7.5, font, color: grey });
+    p.drawText(right, { x: width - x - font.widthOfTextAtSize(right, 7.5), y, size: 7.5, font, color: grey });
+  });
+}
+// El monto en letras, como va en los documentos de pago: «Cincuenta mil ochocientos treinta pesos con 00/100».
+function numLetras(n) {
+  const U = ['', 'uno', 'dos', 'tres', 'cuatro', 'cinco', 'seis', 'siete', 'ocho', 'nueve', 'diez', 'once', 'doce', 'trece', 'catorce', 'quince', 'dieciséis', 'diecisiete', 'dieciocho', 'diecinueve', 'veinte', 'veintiuno', 'veintidós', 'veintitrés', 'veinticuatro', 'veinticinco', 'veintiséis', 'veintisiete', 'veintiocho', 'veintinueve'];
+  const Dz = ['', '', '', 'treinta', 'cuarenta', 'cincuenta', 'sesenta', 'setenta', 'ochenta', 'noventa'];
+  const Cn = ['', 'ciento', 'doscientos', 'trescientos', 'cuatrocientos', 'quinientos', 'seiscientos', 'setecientos', 'ochocientos', 'novecientos'];
+  const apoc = (s) => s.replace(/veintiuno$/, 'veintiún').replace(/uno$/, 'un');
+  const lt1000 = (x) => { if (x === 100) return 'cien'; const r = x % 100; return [Cn[Math.floor(x / 100)], r < 30 ? U[r] : Dz[Math.floor(r / 10)] + (r % 10 ? ' y ' + U[r % 10] : '')].filter(Boolean).join(' '); };
+  if (!n) return 'cero';
+  const mill = Math.floor(n / 1e6), miles = Math.floor((n % 1e6) / 1000), r = n % 1000, out = [];
+  if (mill) out.push(mill === 1 ? 'un millón' : apoc(lt1000(mill)) + ' millones');
+  if (miles) out.push(miles === 1 ? 'mil' : apoc(lt1000(miles)) + ' mil');
+  if (r) out.push(lt1000(r));
+  return out.join(' ');
+}
+function montoEnLetras(v, cur = 'DOP') {
+  if (!isNum(v) || Math.abs(v) >= 1e12) return '';
+  const c = Math.round(Math.abs(v) * 100), ent = Math.floor(c / 100);
+  const w = numLetras(ent).replace(/veintiuno$/, 'veintiún').replace(/uno$/, 'un');
+  const unit = cur === 'USD' ? (ent === 1 ? 'dólar' : 'dólares') : cur === 'EUR' ? (ent === 1 ? 'euro' : 'euros') : ent === 1 ? 'peso' : 'pesos';
+  const s = `${v < 0 ? 'menos ' : ''}${w}${ent && ent % 1e6 === 0 ? ' de' : ''} ${unit} con ${String(c % 100).padStart(2, '0')}/100`;
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+const payNo = (p) => (p && Number(p.number) > 0 ? 'No. ' + String(p.number).padStart(4, '0') : '');
+// Los pagos hechos antes de tener número lo reciben en el orden en que se crearon.
+async function fixPayNumbers() {
+  if (!canEdit() || !S.payments.some((p) => !(Number(p.number) > 0))) return;
+  let n = S.payments.reduce((m, p) => Math.max(m, Number(p.number) || 0), 0);
+  for (const p of [...S.payments].filter((x) => !(Number(x.number) > 0)).sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')))) await db.doc('payments/' + p.id).update({ number: ++n });
+}
+// El logo de la empresa: se guarda pequeño, dentro de los ajustes (así pasa a los otros aparatos con la nube).
+async function setLogo(file) {
+  try {
+    const url = URL.createObjectURL(file);
+    const img = await new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = rej; im.src = url; });
+    const s = Math.min(1, 480 / img.width, 220 / img.height);
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, Math.round(img.width * s)); c.height = Math.max(1, Math.round(img.height * s));
+    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+    URL.revokeObjectURL(url);
+    let data = c.toDataURL('image/png');
+    if (data.length > 220000) { const g = c.getContext('2d'); g.globalCompositeOperation = 'destination-over'; g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); data = c.toDataURL('image/jpeg', 0.85); }
+    if (await write(() => db.doc('settings/general').update({ logo: data }), 'Logo guardado: sale en los documentos')) { S.settings = { ...S.settings, logo: data }; const b = $('#logo-box'); if (b) b.innerHTML = logoBoxHTML(); }
+  } catch (e) { console.error(e); toast('No se pudo leer esa imagen. Usa un PNG o JPG.'); }
+}
+const logoBoxHTML = () => (S.settings.logo ? `<img src="${esc(S.settings.logo)}" alt="Logo de la empresa" class="logo-prev"><button type="button" class="btn sm" data-act="logo-pick">Cambiar el logo</button><button type="button" class="btn sm ghost" data-act="logo-rm">Quitarlo</button>` : '<button type="button" class="btn sm" data-act="logo-pick">Poner el logo de la empresa</button><span class="usage">Sale arriba en los PDF (pagos, órdenes, traslados, planilla).</span>');
 
 /* ---------- PDF para presentar ---------- */
 const WIN = new Set('€‚ƒ„…†‡ˆ‰Š‹ŒŽ‘’“”•–—˜™š›œžŸ');
@@ -5375,8 +5480,9 @@ async function buildPackage(pay, D, onProgress) {
   const R = (s, xr, yy, size, f = font, color = C.ink) => { const t = pdfSafe(s); page.drawText(t, { x: xr - f.widthOfTextAtSize(t, size), y: yy, size, font: f, color }); };
   const fit = (s, f, size, w) => { let t = pdfSafe(s); if (f.widthOfTextAtSize(t, size) <= w) return t; while (t.length > 1 && f.widthOfTextAtSize(t + '…', size) > w) t = t.slice(0, -1); return t + '…'; };
   const hr = (yy, color = C.line, th = 0.7) => page.drawLine({ start: { x: M, y: yy }, end: { x: W - M, y: yy }, thickness: th, color });
-  const foot = () => page.drawText(pdfSafe(`${st.company ? st.company + ' · ' : ''}${pay.name || 'Pago'} · Relación de facturas`), { x: M, y: M - 20, size: 8, font, color: C.grey });
-  const newPage = () => { page = out.addPage([W, H]); y = H - M; };
+  const own = new Set(), logo = await docLogo(out);
+  const foot = () => {};
+  const newPage = () => { page = out.addPage([W, H]); own.add(page); y = H - M; };
   const ensure = (need, again) => { if (y - need < M + 14) { foot(); newPage(); if (again) again(); } };
   // Un archivo guardado (foto o PDF) en páginas nuevas; la foto lleva arriba qué es.
   const addFile = async (fileId, type, label) => {
@@ -5396,19 +5502,14 @@ async function buildPackage(pay, D, onProgress) {
   const condN = invs.reduce((t, i) => t + (i.conduces || []).length, 0);
 
   newPage();
-  if (st.company) {
-    T(fit(st.company, bold, 11, W - 2 * M - 200), M, y - 8, 11, bold);
-    const sub = [st.companyRnc ? 'RNC ' + RD.fmtRnc(st.companyRnc) : '', st.area || ''].filter(Boolean).join(' · ');
-    if (sub) T(fit(sub, font, 9, W - 2 * M - 200), M, y - 21, 9, font, C.grey);
-    R('RELACIÓN DE FACTURAS PARA PAGO', W - M, y - 8, 9, bold, C.accent);
-    hr(y - (sub ? 31 : 20));
-    y -= sub ? 62 : 50;
-  } else { T('RELACIÓN DE FACTURAS PARA PAGO', M, y - 8, 9, bold, C.accent); y -= 36; }
+  y = drawLetterhead(page, { st, font, bold, rgb, logo, x: M, xr: W - M, y, title: 'RELACIÓN DE FACTURAS PARA PAGO', sub: payNo(pay) }) - 34;
   T(fit(pay.name || 'Pago', bold, 22, W - 2 * M), M, y, 22, bold); y -= 20;
   T([pay.date ? 'Fecha del pago: ' + fmtDate(pay.date) : '', 'Estado: ' + (PAY_LABEL[pay.status] || 'Por presentar'), 'Generado el ' + fmtDate(todayISO()), st.preparedBy ? 'Elaboró: ' + st.preparedBy : ''].filter(Boolean).join('   ·   '), M, y, 9, font, C.grey); y -= 34;
   T('Total a pagar', M, y, 10, font, C.grey); R(plural(invs.length, 'factura', 'facturas') + ' · ' + plural(groups.length, 'proyecto', 'proyectos') + (condN ? ' · ' + plural(condN, 'conduce', 'conduces') : ''), W - M, y, 10, font, C.grey); y -= 28;
   T(fit(totalStr(invs, 'toPay'), bold, 26, W - 2 * M), M, y, 26, bold); y -= 16;
-  T('ITBIS incluido: ' + totalStr(invs, 'itbis'), M, y - 2, 9.5, font, C.grey); y -= 12; hr(y, C.ink, 1.2); y -= 28;
+  T('ITBIS incluido: ' + totalStr(invs, 'itbis'), M, y - 2, 9.5, font, C.grey); y -= 12;
+  { const curs = [...new Set(invs.filter((i) => isNum(i.toPay)).map((i) => normCur(i.currency)))]; if (curs.length === 1) { const w = montoEnLetras(round2(invs.reduce((t, i) => t + (isNum(i.toPay) ? i.toPay : 0), 0)), curs[0]); if (w) { y -= 4; T(fit('Son: ' + w + '.', font, 9.5, W - 2 * M), M, y - 2, 9.5, font, C.ink); y -= 12; } } }
+  hr(y, C.ink, 1.2); y -= 28;
 
   T('Por proyecto', M, y, 11.5, bold); y -= 20;
   page.drawRectangle({ x: M, y: y - 6, width: W - 2 * M, height: 19, color: C.band });
@@ -5457,8 +5558,8 @@ async function buildPackage(pay, D, onProgress) {
     page.drawLine({ start: { x, y }, end: { x: x + sw, y }, thickness: 0.8, color: C.ink });
     T(lbl, x, y - 13, 9, bold, C.grey);
     if (n === 0 && st.preparedBy) T(fit(st.preparedBy, font, 9, sw), x, y - 25, 9);
+    T('Fecha: ____ / ____ / ______', x, y - (n === 0 && st.preparedBy ? 37 : 25), 8, font, C.grey);
   });
-  foot();
 
   let k = 0;
   const doneOrders = new Set();
@@ -5530,6 +5631,7 @@ async function buildPackage(pay, D, onProgress) {
       } catch (e) { console.warn('PDF orden', e); }
     }
   }
+  stampPages(out, font, rgb, [pay.name || 'Pago', payNo(pay)].filter(Boolean).join(' ') + ' · Relación de facturas', { own, x: M });
   return out.save();
 }
 async function makePdf(payId) {
@@ -5856,6 +5958,8 @@ function onClick(e) {
     case 'tab': if (S.tab === 'asistencia') flushAtt(); S.tab = t.dataset.tab; if (S.tab !== 'pagos') S.paymentId = null; S.payDel = false; renderAll(); window.scrollTo(0, 0); break;
     case 'filter': S.filter = t.dataset.f; S.focus = null; renderAll(); break;
     case 'filters': S.showFilters = !S.showFilters; renderAll(); break;
+    case 'logo-pick': $('#logo-input').click(); break;
+    case 'logo-rm': write(() => db.doc('settings/general').update({ logo: '' }), 'Logo quitado').then((ok) => { if (ok) { S.settings = { ...S.settings, logo: '' }; const b = $('#logo-box'); if (b) b.innerHTML = logoBoxHTML(); } }); break;
     case 'invorder': S.invOrder = t.dataset.o; renderAll(); break;
     case 'projf': S.projectFilter = t.dataset.p; renderAll(); break;
     case 'add': pickFiles(); break;
@@ -6213,7 +6317,7 @@ function onSubmit(e) {
   } else if (f.id === 'settings-form') {
     const rncv = RD.normRnc($('#st-rnc').value);
     if (rncv && rncv.length !== 9 && rncv.length !== 11) { toast('El RNC debe tener 9 dígitos (u 11 si es cédula).'); return; }
-    const data = { needApproval: $('#st-ap').checked, ownerEmail: $('#st-owner').value.trim().toLowerCase().slice(0, 120), company: $('#st-company').value.trim().slice(0, 100), companyRnc: rncv, area: $('#st-area').value.trim().slice(0, 80), preparedBy: $('#st-name').value.trim().slice(0, 80), orderPrefix: $('#st-oc-prefix').value.trim().slice(0, 8), orderNext: Math.max(1, parseInt($('#st-oc-next').value, 10) || 1), orderNote: $('#st-oc-note').value.trim().slice(0, 500), orderQr: $('#st-oc-qr').checked, updatedAt: new Date().toISOString() };
+    const data = { needApproval: $('#st-ap').checked, ownerEmail: $('#st-owner').value.trim().toLowerCase().slice(0, 120), company: $('#st-company').value.trim().slice(0, 100), companyRnc: rncv, area: $('#st-area').value.trim().slice(0, 80), preparedBy: $('#st-name').value.trim().slice(0, 80), address: $('#st-addr').value.trim().slice(0, 120), phone: $('#st-phone').value.trim().slice(0, 30), logo: S.settings.logo || '', orderPrefix: $('#st-oc-prefix').value.trim().slice(0, 8), orderNext: Math.max(1, parseInt($('#st-oc-next').value, 10) || 1), orderNote: $('#st-oc-note').value.trim().slice(0, 500), orderQr: $('#st-oc-qr').checked, updatedAt: new Date().toISOString() };
     const key = $('#st-key').value.trim();
     if (key !== ai.getKey()) S.aiState = 'ok';
     ai.setKey(key);
@@ -6232,6 +6336,7 @@ function bind() {
   document.addEventListener('keydown', onKeys);
   $('#file-input').addEventListener('change', (e) => { const files = [...e.target.files]; e.target.value = ''; if (files.length) addFiles(files); });
   $('#restore-input').addEventListener('change', (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) restoreBackup(f); });
+  $('#logo-input').addEventListener('change', (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) setLogo(f); });
   $('#signed-input').addEventListener('change', (e) => { const f = e.target.files[0]; e.target.value = ''; if (f && S.sheet && S.sheet.type === 'order' && S.sheet.id) attachSigned(S.sheet.id, f); else if (f && S.sheet && S.sheet.type === 'tr' && S.sheet.id) { attachTrSigned(S.sheet.id, f, S.trPhotoKind || 'signed'); S.trPhotoKind = null; } });
   $('#page-input').addEventListener('change', (e) => { const files = [...e.target.files]; e.target.value = ''; const inv = pageTarget; pageTarget = null; if (files.length && inv) addPages(inv, files); });
   $('#cond-input').addEventListener('change', (e) => { const files = [...e.target.files]; e.target.value = ''; const inv = condTarget; condTarget = null; if (files.length) addConduceFiles(files, inv); });
@@ -6295,7 +6400,7 @@ function subscribe() {
   db.doc('settings/asistencia').onSnapshot((snap) => { S.attRules = (snap.exists && snap.data()) || {}; scheduleRender(); }, (err) => console.warn(err));
   db.doc('settings/respaldos').onSnapshot((snap) => { S.bk = (snap.exists && snap.data()) || {}; scheduleRender(); }, (err) => console.warn(err));
   db.doc('settings/digitacion').onSnapshot((snap) => { S.digi = (snap.exists && snap.data()) || {}; scheduleRender(); }, (err) => console.warn(err));
-  const done = () => { if (S.got.projects && S.got.invoices && S.got.payments && S.got.orders && S.got.conduces && S.got.workers && S.got.asistencia && S.got.suppliers && S.got.envios && S.got.papelera && S.got.traslados && S.dbState === 'loading') { S.dbState = 'ready'; setTimeout(retryOffline, 1500); setTimeout(() => { fixCreditSigns().catch((e) => console.warn(e)); fixAttRules().catch((e) => console.warn(e)); scheduleLink(); purgeTrash(false).catch((e) => console.warn(e)); measureStorage(); }, 2500); } };
+  const done = () => { if (S.got.projects && S.got.invoices && S.got.payments && S.got.orders && S.got.conduces && S.got.workers && S.got.asistencia && S.got.suppliers && S.got.envios && S.got.papelera && S.got.traslados && S.dbState === 'loading') { S.dbState = 'ready'; setTimeout(retryOffline, 1500); setTimeout(() => { fixCreditSigns().catch((e) => console.warn(e)); fixAttRules().catch((e) => console.warn(e)); fixPayNumbers().catch((e) => console.warn(e)); scheduleLink(); purgeTrash(false).catch((e) => console.warn(e)); measureStorage(); }, 2500); } };
   for (const name of ['projects', 'invoices', 'payments', 'orders', 'conduces', 'workers', 'asistencia', 'suppliers', 'envios', 'papelera', 'traslados']) {
     db.collection(name).onSnapshot((snap) => {
       S[name] = snap.docs.map((d) => ({ ...d.data(), id: d.id }));

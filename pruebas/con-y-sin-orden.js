@@ -36,7 +36,7 @@ async function download(page, clickSel, name) {
 const cards = (page) => page.$$eval('#f-list [data-act="open-inv"]', (els) => els.map((e) => ({
   sup: e.querySelector('.supplier').textContent,
   oc: [...e.querySelectorAll('.pill.oc, .pill.nooc')].map((p) => p.className.replace('pill ', '').replace(' minor', '') + '=' + p.textContent),
-  warnSinOrden: [...e.querySelectorAll('.pill.warn')].some((p) => p.textContent === 'Sin orden'),
+  warnSinOrden: [...e.querySelectorAll('.falta')].some((p) => /orden de compra/.test(p.textContent)),
 })));
 const chipText = (page) => page.$$eval('#f-ochips .chip', (els) => els.map((e) => [...e.querySelectorAll('span')].map((x) => x.textContent.trim()).join(' ') + (e.getAttribute('aria-pressed') === 'true' ? '*' : '')));
 const sups = async (page) => (await cards(page)).map((c) => c.sup).sort().join('|');
@@ -94,11 +94,12 @@ const settle = (page) => page.waitForTimeout(250);
   check(by['Ferretería Americana'].oc.join() === 'oc ok=OC-0001', 'con orden firmada: «OC-0001» en verde');
   check(by['Ferretería Ochoa'].oc.join() === 'oc pend=OC-0002 por firmar', 'con orden por firmar: «OC-0002 por firmar» en ámbar');
   check(by['Maderas Nacionales'].oc.join() === 'oc bad=OC-0003 anulada', 'con orden anulada: «OC-0003 anulada» en rojo');
-  check(by['Importadora Caribe'].oc.length === 0 && by['Importadora Caribe'].warnSinOrden, 'sin orden y la debía llevar: aviso rojo «Sin orden» (una sola etiqueta)');
-  check(by['Colmado La Esquina'].oc.join() === 'nooc=No lleva orden' && !by['Colmado La Esquina'].warnSinOrden, 'marcada que no lleva: «No lleva orden» en gris');
-  check(by['Bloques del Cibao'].oc.join() === 'nooc=Sin orden' && !by['Bloques del Cibao'].warnSinOrden, 'anterior a las órdenes: «Sin orden» en gris, sin aviso');
+  check(by['Importadora Caribe'].oc.length === 0 && by['Importadora Caribe'].warnSinOrden, 'sin orden y la debía llevar: «Le falta: orden de compra»');
+  check(by['Colmado La Esquina'].oc.length === 0 && !by['Colmado La Esquina'].warnSinOrden, 'marcada que no lleva: no le falta la orden');
+  check(by['Bloques del Cibao'].oc.length === 0 && !by['Bloques del Cibao'].warnSinOrden, 'anterior a las órdenes: no le falta la orden');
 
-  // 3) Filtro Todas / Con orden / Sin orden con sus cantidades.
+  // 3) Filtro Todas / Con orden / Sin orden con sus cantidades (en el teléfono, detrás de «Filtrar»).
+  await page.click('#f-filt');
   check((await chipText(page)).join(' | ') === 'Todas 6* | Con orden 3 | Sin orden 3', 'filtro: ' + (await chipText(page)).join(' | '));
   await page.click('[data-act="backup-later"]').catch(() => {});
   await settle(page);
@@ -115,10 +116,10 @@ const settle = (page) => page.waitForTimeout(250);
   await shot('facturas-sin-orden.png');
 
   // Las cantidades siguen al estado elegido arriba (Pendientes / Pagadas…).
-  await page.click('[data-act="filter"][data-f="pagadas"]');
+  await page.click('[data-act="filter"][data-f="listas"]');
   await settle(page);
-  check((await chipText(page)).join(' | ') === 'Todas 0 | Con orden 0 | Sin orden 0*', 'en Pagadas las cantidades son 0');
-  check(/No hay facturas pagadas sin orden de compra\./.test(await page.textContent('#f-list')), 'mensaje vacío dice «pagadas sin orden de compra»');
+  check((await chipText(page)).join(' | ') === 'Todas 0 | Con orden 0 | Sin orden 0*', 'en Listas las cantidades son 0');
+  check(/No hay facturas listas sin orden de compra\./.test(await page.textContent('#f-list')), 'mensaje vacío dice «listas sin orden de compra»');
   await page.click('[data-act="filter"][data-f="pendientes"]');
   await settle(page);
 

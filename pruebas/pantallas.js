@@ -63,7 +63,7 @@ async function seed(page) {
   check(visTabs.join('|') === 'Facturas|Conduces|Órdenes|Pagos|Más', 'teléfono: 5 pestañas abajo (' + visTabs.join(', ') + ')');
   const todoRows = await tp.$$('#todo .todo-row');
   const todoTxt = await txt(tp, '#todo');
-  check(todoRows.length === 4 && /Ver todo \(\d+\)/.test(todoTxt), '«Para hacer» muestra 4 cosas y «Ver todo»');
+  check(todoRows.length === 3 && /Ver todo \(\d+\)/.test(todoTxt), '«Para hacer» muestra 3 cosas y «Ver todo»');
   const firstCls = await tp.$eval('#todo .todo-row', (r) => r.className);
   check(/warn/.test(firstCls), 'lo urgente va arriba (' + firstCls + ')');
   await tp.click('#todo [data-act="todo-all"]');
@@ -73,8 +73,9 @@ async function seed(page) {
   await tp.click('#todo [data-act="todo-all"]');
   const card = await tp.$eval('#f-list [data-act="open-inv"]', (c) => [...c.querySelectorAll('.pill')].map((p) => (p.classList.contains('minor') ? 'm:' : '') + p.textContent.trim()));
   console.log('     etiquetas de una tarjeta:', JSON.stringify(card));
-  const firstMinor = card.findIndex((x) => x.startsWith('m:'));
-  check(firstMinor > 0 && card.slice(firstMinor).every((x) => x.startsWith('m:')) && card.some((x) => x === 'm:Por digitar'), 'las etiquetas secundarias (No lleva orden, Por digitar) van al final y más suaves');
+  const falta = await tp.$eval('#f-list [data-act="open-inv"] .falta:not(.rev)', (e) => e.textContent.trim());
+  check(card.length <= 2 && /^Le falta: .*mandarla a la digitadora/.test(falta), 'cada tarjeta lleva pocas etiquetas y una línea con lo que le falta (' + falta + ')');
+  check(!(await tp.isVisible('#f-filters')) && await tp.isVisible('#f-filt'), 'en el teléfono los filtros están guardados detrás de «Filtrar»');
   await tp.screenshot({ path: path.join(OUT, 'telefono.png') });
   await tp.click('.tabs [data-act="more-menu"]');
   await tp.waitForSelector('.menu-list');

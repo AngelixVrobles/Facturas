@@ -68,13 +68,14 @@ const answers = [];
       const r = RT.db.collection('invoices').doc(); await r.set({ ...base, supplier: sup, rnc, number: ncf, date: '2026-11-10', amount: amt }); ids[k] = r.id;
     }
     const r5 = RT.db.collection('invoices').doc(); await r5.set({ ...base, supplier: 'Plomería Central', rnc: '130555666', number: 'B0100000105', date: '2026-11-11', amount: 850, payMode: 'reponer', paidBy: 'Caja chica', payMethod: 'Efectivo', paidDate: '2026-11-11' }); ids.e = r5.id;
+    await RT.db.collection('envios').doc().set({ number: 1, date: '2026-11-12', method: 'archivo', to: 'Digitadora', invoiceIds: Object.values(ids), createdAt: '2026-11-12T20:00:00.000Z' });
     const pay = RT.db.collection('payments').doc(); await pay.set({ name: 'Pago semana 46', date: '2026-11-12', status: 'armando', invoiceIds: [ids.d], createdAt: '2026-11-12T10:00:00.000Z' });
     return { ...ids, pay: pay.id, proj: p.id };
   });
   await page.reload();
   await page.waitForSelector('#f-list [data-act="open-inv"]');
   await page.click('[data-act="backup-later"]').catch(() => {});
-  check(await segN(page, 'pendientes') === 4 && await segN(page, 'tramite') === 1, 'al principio: 4 pendientes (una es para reponer) y 1 en trámite');
+  check(await segN(page, 'pendientes') === 5 && await segN(page, 'listas') === 0, 'al principio: las 5 tienen algo pendiente (falta pagarlas) y ninguna está lista');
 
   // 1) Ya se pagó al contado: sale de pendientes y pasa a pagadas.
   await page.click(`#f-list [data-act="open-inv"][data-id="${I.a}"]`);
@@ -89,8 +90,8 @@ const answers = [];
   await settle(page);
   let a = await inv(page, I.a);
   check(a.payMode === 'directo' && a.payMethod === 'Efectivo' && a.paidBy === 'Caja chica' && a.paidDate === '2026-11-10' && a.hist.some((h) => /ya pagada/.test(h.what)), 'queda guardado: ya pagada, en efectivo, el 10 de noviembre, por la caja chica (y en el historial)');
-  check(await segN(page, 'pendientes') === 3 && await segN(page, 'pagadas') === 1 && !(await page.$(`#f-list [data-id="${I.a}"]`)), 'sale de pendientes (la principal) y pasa a pagadas');
-  await page.click('#f-seg [data-f="pagadas"]');
+  check(await segN(page, 'pendientes') === 4 && await segN(page, 'listas') === 1 && !(await page.$(`#f-list [data-id="${I.a}"]`)), 'sale de pendientes (la principal) y pasa a listas');
+  await page.click('#f-seg [data-f="listas"]');
   await settle(page, 300);
   check(/Efectivo/.test(await txt(page, `#f-list [data-id="${I.a}"]`)), 'en pagadas dice cómo se pagó');
   await page.click('#f-seg [data-f="pendientes"]');
@@ -107,7 +108,7 @@ const answers = [];
   await page.click('#inv-save');
   await page.waitForSelector('#sheet-root', { state: 'hidden' });
   await settle(page);
-  check((await inv(page, I.b)).payMode === 'reponer' && /Reponer a Ing\. Pérez/.test(await txt(page, `#f-list [data-id="${I.b}"]`)) && await segN(page, 'pendientes') === 3, 'sigue en pendientes, con «Reponer a Ing. Pérez»');
+  check((await inv(page, I.b)).payMode === 'reponer' && /reponerle a Ing\. Pérez/.test(await txt(page, `#f-list [data-id="${I.b}"]`)) && await segN(page, 'pendientes') === 4, 'sigue en pendientes, con «Le falta: reponerle a Ing. Pérez»');
   const todoRep = async () => { const more = await page.$('#todo [data-act="todo-all"]'); if (more && /Ver todo/.test(await more.textContent())) { await more.click(); await settle(page, 150); } return txt(page, '#todo'); };
   check(/2 facturas por reponer a 2 personas · RD\$3,150\.00/.test(await todoRep()), '«Para hacer»: 2 facturas por reponer a 2 personas, RD$3,150');
   // El apartado «Por reponer», en Pagos: por persona, y con un toque se arma la reposición.
@@ -127,7 +128,7 @@ const answers = [];
   await settle(page, 300);
 
   // 3) Una que está en un pago no se puede marcar «ya se pagó» sin quitarla del pago.
-  await page.click('#f-seg [data-f="tramite"]');
+  await page.click('#f-seg [data-f="pendientes"]');
   await page.click(`#f-list [data-act="open-inv"][data-id="${I.d}"]`);
   await page.waitForSelector('#f-paymode');
   await page.selectOption('#f-paymode', 'directo');

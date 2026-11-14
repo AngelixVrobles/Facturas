@@ -442,6 +442,8 @@ body.locked .toast { top: calc(14px + env(safe-area-inset-top, 0px)); bottom: au
 .filt-btn { align-self: flex-start; border: 0; background: none; color: var(--accent); font: 650 14px var(--font-body); padding: 2px 0; text-decoration: underline; text-underline-offset: 3px; }
 @media (max-width: 959px) { .f-filters:not(.open) { display: none; } }
 @media (min-width: 960px) { .filt-btn { display: none; } }
+.logo-box { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.logo-prev { max-height: 46px; max-width: 150px; background: #fff; border: 1px solid var(--line); border-radius: 6px; padding: 3px; }
 .tc-link { display: flex; gap: 6px; }
 .rep-g { display: flex; flex-direction: column; gap: 6px; padding: 10px 0; border-top: 1px solid var(--line); }
 .rep-card h2 + .hint + .rep-g { border-top: 0; }
@@ -859,6 +861,7 @@ input[type="date"]::-webkit-calendar-picker-indicator { margin: 0 0 0 4px; paddi
 
 <input id="file-input" class="file-input" type="file" accept="image/*,application/pdf,.xml,text/xml,application/xml" multiple tabindex="-1" aria-hidden="true">
 <input id="restore-input" class="file-input" type="file" accept=".zip,application/zip" tabindex="-1" aria-hidden="true">
+<input id="logo-input" class="file-input" type="file" accept="image/png,image/jpeg" tabindex="-1" aria-hidden="true">
 <input id="signed-input" class="file-input" type="file" accept="image/*,application/pdf" tabindex="-1" aria-hidden="true">
 <input id="fill-photo-input" class="file-input" type="file" accept="image/*" tabindex="-1" aria-hidden="true">
 <input id="cond-input" class="file-input" type="file" accept="image/*,application/pdf" multiple tabindex="-1" aria-hidden="true">

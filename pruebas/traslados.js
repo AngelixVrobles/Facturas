@@ -65,6 +65,20 @@ async function fillRow(page, n, qty, unit, desc, price) {
   });
   await page.click('[data-act="backup-later"]').catch(() => {});
 
+  // 0) Membrete: logo, dirección y teléfono de la empresa (salen en los documentos).
+  const logoFile = path.join(OUT, 'logo.png');
+  await page.screenshot({ path: logoFile, clip: { x: 0, y: 0, width: 300, height: 120 } });
+  await page.click('#settings-btn');
+  await page.waitForSelector('#st-addr');
+  await page.setInputFiles('#logo-input', logoFile);
+  await page.waitForSelector('#logo-box img', { timeout: 10000 });
+  await page.fill('#st-addr', 'Av. 27 de Febrero 100, Santiago');
+  await page.fill('#st-phone', '809-555-0100');
+  await page.click('#settings-form button[type="submit"]');
+  await page.waitForSelector('#settings-form', { state: 'detached' });
+  const stg = await page.evaluate(async () => (await RT.db.doc('settings/general').get()).data());
+  check(/^data:image\/(png|jpeg);base64,/.test(stg.logo || '') && stg.logo.length < 300000 && stg.address === 'Av. 27 de Febrero 100, Santiago' && stg.phone === '809-555-0100', 'Ajustes guarda el logo (pequeño), la dirección y el teléfono');
+
   // 1) En el teléfono, Traslados está en «Más».
   await page.click('.tabs [data-act="more-menu"]');
   await page.click('.menu-row[data-go="traslados"]');
@@ -98,6 +112,7 @@ async function fillRow(page, n, qty, unit, desc, price) {
   check(/TRASLADO DE MATERIALES ENTRE OBRAS/.test(pt) && /TR-0001/.test(pt) && /Residencial ENZO/.test(pt) && /Monaco/.test(pt) && /Tierra/.test(pt) && /RD\$2,400\.00/.test(pt) && /TOTAL DEL TRASLADO/.test(pt) && /RD\$5,400\.00/.test(pt), 'PDF: la hoja con las obras, los materiales, cada total y el total');
   check(/queda a favor de\s+Residencial ENZO/.test(pt) && /sin precio/.test(pt) && /Juan del almacén/.test(pt) && /Pedro \(chofer\)/.test(pt) && /Camión L123456/.test(pt) && /Maestro Luis/.test(pt) && /Lo autorizó/.test(pt), 'PDF: dice a favor de quién queda y las firmas con los nombres');
   execFileSync('pdftoppm', ['-r', '70', '-png', '-singlefile', pdf, path.join(OUT, 'hoja-pdf')]);
+  check(/Av\. 27 de Febrero 100, Santiago/.test(pt) && /Tel\. 809-555-0100/.test(pt) && /Página 1 de 1/.test(pt) && /Generado el \d\d\/\d\d\/\d{4}/.test(pt) && /\bimage\b/.test(execFileSync('pdfimages', ['-list', pdf]).toString()), 'el PDF lleva el membrete (logo, dirección, teléfono) y el pie con «Página 1 de 1»');
   let trs = await docs(page, 'traslados');
   const t1 = trs[0];
   check(trs.length === 1 && t1.kind === 'material' && t1.number === 1 && t1.total === 5400 && t1.fromId === P.enzo && t1.toId === P.monaco && t1.items.length === 3 && t1.items[1].priceSrc === 'OC-0001' && !t1.items[0].priceSrc && t1.carriedBy === 'Pedro (chofer)', 'queda guardado: obras, materiales, total, de dónde salió cada precio y quiénes');

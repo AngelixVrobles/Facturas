@@ -78,9 +78,9 @@ async function savePdf(page, clickSel, name) {
   await settle(page);
 
   // 1) Las que faltan por mandar: etiqueta en la tarjeta y aviso en «Para hacer».
-  check(/Por digitar/.test(await cardText(page, ids.a)) && /Por digitar/.test(await cardText(page, ids.b)) && /Por digitar/.test(await cardText(page, ids.c)), 'las facturas sin mandar dicen «Por digitar»');
+  check(/mandarla a la digitadora/.test(await cardText(page, ids.a)) && /mandarla a la digitadora/.test(await cardText(page, ids.b)) && /mandarla a la digitadora/.test(await cardText(page, ids.c)), 'las facturas sin mandar dicen «Por digitar»');
   const dCard = await page.$(`#f-list [data-act="open-inv"][data-id="${ids.d}"]`);
-  check(!dCard || !/Por digitar/.test(await cardText(page, ids.d)), 'lo que no es factura no sale como por digitar');
+  check(!dCard || !/mandarla a la digitadora/.test(await cardText(page, ids.d)), 'lo que no es factura no sale como por digitar');
   let rows = await todoRows(page);
   console.log('     para hacer (10:00):', JSON.stringify(rows));
   check(rows.some(([c, t]) => c === 'warn' && /3 facturas por mandar a la digitadora · 1 de días anteriores/.test(t)), 'en la mañana, «Para hacer» dice: 3 facturas por mandar a la digitadora · 1 de días anteriores');
@@ -123,14 +123,14 @@ async function savePdf(page, clickSel, name) {
   check(/B0100000777/.test(cover) && /B0100000888/.test(cover) && !/B0100000502/.test(cover) && /RD\$12,720\.00/.test(cover) && /Recibió/.test(cover), 'PDF: las 2 facturas elegidas, el total y la firma de recibido');
   check(pdfPages(pdf) === 3 && /TRANSPORTE Y AGREGADOS S\. LOPEZ/.test(pdfText(pdf)), 'PDF: detrás va cada factura (el PDF y la foto): 3 páginas');
   execFileSync('pdftoppm', ['-r', '60', '-png', '-f', '1', '-l', '1', '-singlefile', pdf, path.join(OUT, 'portada')]);
-  check((await docs(page, 'envios')).length === 0 && /Por digitar/.test(await cardText(page, ids.a)), 'antes de confirmar, nada queda marcado');
+  check((await docs(page, 'envios')).length === 0 && /mandarla a la digitadora/.test(await cardText(page, ids.a)), 'antes de confirmar, nada queda marcado');
   await page.screenshot({ path: path.join(OUT, 'confirmar.png') });
   await page.click('[data-act="envio-ok"]');
   await page.waitForSelector('#sheet-root', { state: 'hidden' });
   await settle(page);
   let envs = await docs(page, 'envios');
   check(envs.length === 1 && envs[0].number === 1 && envs[0].method === 'archivo' && envs[0].to === 'Yokasta' && [...envs[0].invoiceIds].sort().join() === [ids.a, ids.b].sort().join(), 'confirmado: queda el envío 1 con las 2 facturas');
-  check(!/Por digitar/.test(await cardText(page, ids.a)) && !/Por digitar/.test(await cardText(page, ids.b)) && /Por digitar/.test(await cardText(page, ids.c)), 'las mandadas ya no dicen «Por digitar»; la otra sí');
+  check(!/mandarla a la digitadora/.test(await cardText(page, ids.a)) && !/mandarla a la digitadora/.test(await cardText(page, ids.b)) && /mandarla a la digitadora/.test(await cardText(page, ids.c)), 'las mandadas ya no dicen «Por digitar»; la otra sí');
   rows = await todoRows(page);
   console.log('     para hacer (mandadas):', JSON.stringify(rows));
   check(rows[0] && rows[0][0] === 'warn' && /1 factura de días anteriores sin mandar a la digitadora/.test(rows[0][1]) && rows.some(([c, t]) => c === 'ok' && /Hoy ya le mandaste 2 facturas a la digitadora \(envío 1\)/.test(t)), '«Para hacer»: queda 1 de días anteriores, y «Hoy ya le mandaste 2 facturas (envío 1)»');
@@ -175,7 +175,7 @@ async function savePdf(page, clickSel, name) {
   envs = await docs(page, 'envios');
   check(envs.length === 3 && envs.some((e) => e.number === 3 && e.method === 'papel'), 'queda el envío 3, en papel');
   const tt = await todoText(page);
-  check(!/por mandar|sin mandar|Manda las de hoy/.test(tt) && /Hoy ya le mandaste 3 facturas a la digitadora \(envíos 1, 2, 3\)/.test(tt) && !(await page.$$eval('#f-list .pill.digi', (p) => p.length)), 'todo mandado: no queda nada «Por digitar», y dice «Hoy ya le mandaste 3 facturas (envíos 1, 2, 3)»');
+  check(!/por mandar|sin mandar|Manda las de hoy/.test(tt) && /Hoy ya le mandaste 3 facturas a la digitadora \(envíos 1, 2, 3\)/.test(tt) && !(await page.$$eval('#f-list .falta', (p) => p.filter((x) => /digitadora/.test(x.textContent)).length)), 'todo mandado: no queda nada «Por digitar», y dice «Hoy ya le mandaste 3 facturas (envíos 1, 2, 3)»');
 
   // 6) Deshacer un envío entero (desde Proyectos → Digitadora).
   await page.evaluate(() => document.querySelector('.tabs [data-tab="proyectos"]').click());

@@ -77,6 +77,7 @@ const openInv = async (page, txt) => { await page.click(`#f-list [data-act="open
   check(ncDoc.amount === -300 && ncDoc.itbis === -45.76, 'la nota de crédito guardada en positivo se arregló sola: -300 y ITBIS -45.76');
   const ncCard = (await page.textContent(`#f-list [data-act="open-inv"][data-id="${ids.nc}"]`)).replace(/\s+/g, ' ');
   check(/-RD\$300\.00/.test(ncCard) && /Nota de crédito/.test(ncCard) && !/Sin orden/.test(ncCard), 'la tarjeta dice «Nota de crédito», -RD$300.00 y no pide orden');
+  await page.click('#f-filt');
   await page.click(`#f-chips [data-p="${ids.pB}"]`);
   await settle(page);
   check(/2 facturas · RD\$700\.00/.test((await page.textContent('#f-sum')).replace(/\s+/g, ' ')), 'Caperuza 2: 1,000 - 300 = RD$700.00');
@@ -119,7 +120,7 @@ print([r[4] for r in ws.iter_rows(values_only=True) if r and r[0] == 'Total'][0]
   await page.screenshot({ path: path.join(OUT, 'avisos-cruce.png') });
   await closeSheet(page);
   let card = (await page.textContent(`#f-list [data-act="open-inv"][data-id="${ids.ag}"]`)).replace(/\s+/g, ' ');
-  check(/Cobra más que sus conduces/.test(card) && /Falta conduce/.test(card) && /Más que la orden/.test(card), 'la tarjeta lleva los tres avisos');
+  check(/Revisar:.*Cobra más que sus conduces/.test(card) && /Más que la orden/.test(card) && /Le falta:.*conduce/.test(card), 'la tarjeta lleva los tres avisos');
   await openInv(page, 'B0100000777');
   await page.click('[data-act="ack"][data-f="condRefsOk"]');
   await settle(page, 700);
@@ -169,15 +170,15 @@ print(' '.join(str(c) for r in list(ws.iter_rows(values_only=True))[:4] for c in
   await page.click('[data-act="filter"][data-f="pendientes"]');
   await page.click(`#f-chips [data-p="${ids.pB}"]`);
   await settle(page, 800);
-  check((await page.$$('#f-list [data-act="open-inv"]')).length === 60 && /Ver 10 más/.test(await page.textContent('#f-list')), 'con 70 facturas se ven 60 y «Ver 10 más»');
+  check((await page.$$('#f-list [data-act="open-inv"]')).length === 60 && /Ver 12 más/.test(await page.textContent('#f-list')), 'con 72 facturas pendientes se ven 60 y «Ver 12 más»');
   await page.click('[data-act="new-pay-from"]');
   await page.waitForSelector('#pick-form');
   const picked = await page.$$eval('#sheet-root input[data-pick="inv"]', (bs) => bs.filter((b) => b.checked).length);
-  check(picked === 70, '«Armar pago con estas» marca las 70, no solo las que se ven (' + picked + ')');
+  check(picked === 70, '«Armar pago con estas» marca las 70 que faltan por pagar, no solo las que se ven (' + picked + ')');
   await closeSheet(page);
   await page.click('[data-act="more"]');
   await settle(page);
-  check((await page.$$('#f-list [data-act="open-inv"]')).length === 70, '«Ver más» muestra las 70');
+  check((await page.$$('#f-list [data-act="open-inv"]')).length === 72, '«Ver más» muestra las 72');
 
   console.log('problemas:', problems.length ? problems : 'ninguno');
   await browser.close();

@@ -115,7 +115,7 @@ print(json.dumps({'ab': [[r['Proveedor'], r.get('Abonado'), r.get('Por pagar')] 
   await page.click('[data-act="ab-rm"]');
   await settle(page, 700);
   if (await page.$('#inv-form')) await closeSheet(page);
-  check(/Pendiente/.test(await page.textContent(`#f-list [data-act="open-inv"][data-id="${ids.b}"]`)) && pay, 'al quitar el abono vuelve a pendiente');
+  check(/pagarla/.test(await page.textContent(`#f-list [data-act="open-inv"][data-id="${ids.b}"]`)) && pay, 'al quitar el abono vuelve a pendiente');
 
   console.log('problemas:', problems.length ? problems : 'ninguno');
   await browser.close();
