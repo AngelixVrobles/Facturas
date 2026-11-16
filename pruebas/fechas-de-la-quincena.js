@@ -130,6 +130,9 @@ const setDate = async (page, d) => { await page.fill('#att-start-d', d); await p
   await waitUntil(async () => { const l = await sheets(page, I.e); return l.length === 2 && l[0].start === '2026-11-01' && l[1].start === '2026-11-15'; }, 5000);
   [a, b] = await sheets(page, I.e);
   check(a.start === '2026-11-01' && b.start === '2026-11-15' && a.marks[I.w.Marcelo][9].e === 't' && b.marks[I.w.Marcelo][1].e === 'ok', '«Deshacer» deja las quincenas como estaban, con sus marcas');
+  // La pantalla ya tiene las dos quincenas de vuelta (se espera a que la app las vea).
+  await waitUntil(async () => /Del 15 al 28 de nov de 2026/.test(await txt(page, '.att-period')) && !(await page.isDisabled('[data-act="att-prev"]')), 8000);
+  await settle(page, 600);
 
   // 3) Ya ordenada: lo dice; y una fecha muy vieja no se deja.
   await page.click('[data-act="att-start"]');
