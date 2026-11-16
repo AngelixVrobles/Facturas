@@ -2118,7 +2118,8 @@ function restoreFocus() {
   let el = lastFocus;
   lastFocus = null;
   if (!el || !wide()) return;
-  if (!el.isConnected && el.dataset && el.dataset.act) el = $(`[data-act="${CSS.escape(el.dataset.act)}"]${el.dataset.id ? `[data-id="${CSS.escape(el.dataset.id)}"]` : ''}`);
+  // En las tablas, la fila y su botón llevan lo mismo: se busca el que puede recibir el foco.
+  if (!el.isConnected && el.dataset && el.dataset.act) { const q = `[data-act="${CSS.escape(el.dataset.act)}"]${el.dataset.id ? `[data-id="${CSS.escape(el.dataset.id)}"]` : ''}`; el = $('button' + q) || $('a' + q) || $(q); }
   if (el && el.isConnected) { try { el.focus({ preventScroll: true }); } catch (e) { /* nada */ } }
 }
 function closeSheet() { const root = $('#sheet-root'); const had = !!S.sheet; root.hidden = true; root.innerHTML = ''; S.sheet = null; S.ready = null; lockBody(); if (had) restoreFocus(); else lastFocus = null; if (S.updateReg) setTimeout(tryAutoUpdate, 300); }
