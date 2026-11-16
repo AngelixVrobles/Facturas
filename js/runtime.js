@@ -394,7 +394,7 @@
         if (cur !== undefined && stable(cur) === stable(row.data)) continue;
         apply.push(row);
         const x = row.data || {};
-        for (const k of ['thumbId', 'signedThumbId']) if (x[k]) wanted.push(x[k]);
+        for (const k of ['thumbId', 'signedThumbId', 'photoId']) if (x[k]) wanted.push(x[k]);
         if (String(x.fileType || '').startsWith('image/') && x.fileId) wanted.push(x.fileId);
         if (String(x.signedFileType || '').startsWith('image/') && x.signedFileId) wanted.push(x.signedFileId);
       }

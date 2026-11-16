@@ -10,7 +10,7 @@ const LIB = {
   qrgen: 'js/qr.js',
 };
 const PDF_CREATOR = 'Facturas de Proyectos';
-const APP_VERSION = '1.32.0';
+const APP_VERSION = '1.33.0';
 const SVG = (d) => `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ICON = {
   lock: SVG('<rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>'),
@@ -2122,7 +2122,7 @@ function restoreFocus() {
   if (!el.isConnected && el.dataset && el.dataset.act) { const q = `[data-act="${CSS.escape(el.dataset.act)}"]${el.dataset.id ? `[data-id="${CSS.escape(el.dataset.id)}"]` : ''}`; el = $('button' + q) || $('a' + q) || $(q); }
   if (el && el.isConnected) { try { el.focus({ preventScroll: true }); } catch (e) { /* nada */ } }
 }
-function closeSheet() { const root = $('#sheet-root'); const had = !!S.sheet; root.hidden = true; root.innerHTML = ''; S.sheet = null; S.ready = null; lockBody(); if (had) restoreFocus(); else lastFocus = null; if (S.updateReg) setTimeout(tryAutoUpdate, 300); }
+function closeSheet() { wcamStop(); const root = $('#sheet-root'); const had = !!S.sheet; root.hidden = true; root.innerHTML = ''; S.sheet = null; S.ready = null; lockBody(); if (had) restoreFocus(); else lastFocus = null; if (S.updateReg) setTimeout(tryAutoUpdate, 300); }
 function lockBody() { document.body.classList.toggle('locked', !!S.sheet || !$('#viewer').hidden); }
 const sheetHead = (title) => `<div class="sheet-h"><h2>${title}</h2><button type="button" class="icon-btn plain" data-act="sheet-close" aria-label="Cerrar">${ICON.close}</button></div>`;
 
@@ -3747,7 +3747,7 @@ function renderAsistencia(D) {
   const list = rows.map((w) => {
     const m = (marks[w.id] || {})[k] || {};
     const v = attDayValue(m, R, attDow(sh, k), attHalf(sh, k));
-    return `<div class="att-row"><div class="att-who"><b>${esc(w.name)}</b><small>${esc(w.role || '')}${w.active === false ? ' · ya no trabaja aquí' : ''}</small><span class="att-val${v === null ? ' empty' : ''}">${v === null ? '—' : fmtDays(v)}</span></div>
+    return `<div class="att-row"><div class="att-who">${wAvatarHTML(w)}<b>${esc(w.name)}</b><small>${esc(w.role || '')}${w.active === false ? ' · ya no trabaja aquí' : ''}</small><span class="att-val${v === null ? ' empty' : ''}">${v === null ? '—' : fmtDays(v)}</span></div>
       <div class="att-marks"><div class="att-g" role="group" aria-label="Entrada"><span>E</span>${markBtns(w.id, 'e', ATT_E, m.e, dis)}</div><div class="att-g" role="group" aria-label="Pase sorpresa"><span>P</span>${markBtns(w.id, 'p', ATT_P, m.p, dis)}</div><div class="att-g" role="group" aria-label="Salida"><span>S</span>${markBtns(w.id, 's', ATT_S, m.s, dis)}</div></div></div>`;
   }).join('');
   const tots = rows.map((w) => ({ w, t: attTotals(sh, w.id, R) }));
@@ -3760,7 +3760,7 @@ function renderAsistencia(D) {
   // En la computadora: la quincena entera como la planilla de papel (obreros por días); tocando un día se marca abajo.
   const nDays = attLen(sh);
   const cellMark = (m) => (!m || !m.e ? '' : m.e === 'x' ? 'x' : [ATT_SHOW[m.e] || '', m.p ? ATT_SHOW[m.p] || '' : '·', m.s ? ATT_SHOW[m.s] || '' : '·'].join('\u2009'));
-  const plan = wide() && rows.length ? `<div class="card att-plan"><div class="att-plan-in"><table class="tbl att-tbl"><colgroup><col class="w-aname">${'<col>'.repeat(nDays)}<col class="w-adays"><col class="w-apay"></colgroup><thead><tr><th><span class="th-txt">Obrero</span></th>${Array.from({ length: nDays }, (_, j) => { const d = ymd(attDate(sh, j)); return `<th class="att-h${j === k ? ' on' : ''}${attDate(sh, j) === todayISO() ? ' today' : ''}"><button type="button" class="th-sort" data-act="att-day" data-k="${j}" aria-pressed="${j === k}">${DOW[d.getDay()]} <b>${d.getDate()}</b>${attHalf(sh, j) ? ' <i class="att-half-mk" title="Medio día">½</i>' : ''}</button></th>`; }).join('')}<th class="r"><span class="th-txt">Días</span></th><th class="r"><span class="th-txt">Pago</span></th></tr></thead><tbody>${tots.map((x) => `<tr><td class="c-aname"><b>${esc(x.w.name)}</b><small>${esc(x.w.role || '')}</small></td>${Array.from({ length: nDays }, (_, j) => { const m = (marks[x.w.id] || {})[j]; const v = attDayValue(m, R, attDow(sh, j), attHalf(sh, j)); return `<td class="att-c${j === k ? ' on' : ''}${m && m.e === 'x' ? ' abs' : ''}" data-act="att-day" data-k="${j}"><span>${esc(cellMark(m))}</span>${v === null ? '' : `<small>${esc(fmtDays(v))}</small>`}</td>`; }).join('')}<td class="r mono">${esc(fmtDays(x.t.days))}</td><td class="r mono">${isNum(payOf(x)) ? esc(money(payOf(x))) : '—'}</td></tr>`).join('')}</tbody></table></div><p class="usage">En cada día: entrada · pase sorpresa · salida, y lo que cuenta. Toca un día para marcarlo abajo.</p></div>` : '';
+  const plan = wide() && rows.length ? `<div class="card att-plan"><div class="att-plan-in"><table class="tbl att-tbl"><colgroup><col class="w-aname">${'<col>'.repeat(nDays)}<col class="w-adays"><col class="w-apay"></colgroup><thead><tr><th><span class="th-txt">Obrero</span></th>${Array.from({ length: nDays }, (_, j) => { const d = ymd(attDate(sh, j)); return `<th class="att-h${j === k ? ' on' : ''}${attDate(sh, j) === todayISO() ? ' today' : ''}"><button type="button" class="th-sort" data-act="att-day" data-k="${j}" aria-pressed="${j === k}">${DOW[d.getDay()]} <b>${d.getDate()}</b>${attHalf(sh, j) ? ' <i class="att-half-mk" title="Medio día">½</i>' : ''}</button></th>`; }).join('')}<th class="r"><span class="th-txt">Días</span></th><th class="r"><span class="th-txt">Pago</span></th></tr></thead><tbody>${tots.map((x) => `<tr><td class="c-aname"><div class="aname-in">${wAvatarHTML(x.w, 'sm')}<div><b>${esc(x.w.name)}</b><small>${esc(x.w.role || '')}</small></div></div></td>${Array.from({ length: nDays }, (_, j) => { const m = (marks[x.w.id] || {})[j]; const v = attDayValue(m, R, attDow(sh, j), attHalf(sh, j)); return `<td class="att-c${j === k ? ' on' : ''}${m && m.e === 'x' ? ' abs' : ''}" data-act="att-day" data-k="${j}"><span>${esc(cellMark(m))}</span>${v === null ? '' : `<small>${esc(fmtDays(v))}</small>`}</td>`; }).join('')}<td class="r mono">${esc(fmtDays(x.t.days))}</td><td class="r mono">${isNum(payOf(x)) ? esc(money(payOf(x))) : '—'}</td></tr>`).join('')}</tbody></table></div><p class="usage">En cada día: entrada · pase sorpresa · salida, y lo que cuenta. Toca un día para marcarlo abajo.</p></div>` : '';
   el.innerHTML = chips + bar + `
     <div class="card att-head">
       <div class="att-period"><button type="button" class="icon-btn" data-act="att-prev" aria-label="Quincena anterior"${idx < sheets.length - 1 ? '' : ' disabled'}>‹</button><b>${esc(attPeriodLabel(sh))}</b><button type="button" class="icon-btn" data-act="att-next" aria-label="Quincena siguiente"${idx > 0 ? '' : ' disabled'}>›</button></div>
@@ -3786,10 +3786,11 @@ function openWorkers() {
   if (!p) return;
   const all = attWorkersOf(p.id, true);
   const edit = canEdit();
-  const row = (w) => `<div class="w-row" data-w="${esc(w.id)}"><input data-wf="name" maxlength="60" value="${esc(w.name || '')}" aria-label="Nombre"${edit ? '' : ' disabled'}><input data-wf="role" list="dl-roles" maxlength="40" value="${esc(w.role || '')}" placeholder="Función" aria-label="Función"${edit ? '' : ' disabled'}><input data-wf="pay" class="mono" inputmode="decimal" maxlength="10" value="${esc(amountInput(w.pay))}" placeholder="Pago/día" aria-label="Pago por día"${edit ? '' : ' disabled'}>${edit ? `<button type="button" class="btn ghost sm" data-act="att-w-toggle" data-id="${esc(w.id)}">${w.active === false ? 'Volver' : 'Ya no está'}</button>` : ''}</div>`;
+  const row = (w) => `<div class="w-row" data-w="${esc(w.id)}">${wAvatarHTML(w)}<input data-wf="name" maxlength="60" value="${esc(w.name || '')}" aria-label="Nombre"${edit ? '' : ' disabled'}><input data-wf="role" list="dl-roles" maxlength="40" value="${esc(w.role || '')}" placeholder="Función" aria-label="Función"${edit ? '' : ' disabled'}><input data-wf="pay" class="mono" inputmode="decimal" maxlength="10" value="${esc(amountInput(w.pay))}" placeholder="Pago/día" aria-label="Pago por día"${edit ? '' : ' disabled'}>${edit ? `<button type="button" class="btn ghost sm" data-act="att-w-toggle" data-id="${esc(w.id)}">${w.active === false ? 'Volver' : 'Ya no está'}</button>` : ''}</div>`;
   const act = all.filter((w) => w.active !== false), gone = all.filter((w) => w.active === false);
   openSheet(`${sheetHead('Obreros de ' + esc(p.name))}<div class="sheet-b">
     <p class="hint">Escribe y pasa a otra casilla: se guarda solo. El pago por día es para el resumen de la quincena (RD$).</p>
+    ${act.length ? `<p class="usage">Foto y video: <b>${act.filter(wMediaDone).length} de ${act.length}</b> listos. Toca la cara (o las iniciales) de cada uno para tomarle la foto y grabarle el video diciendo su nombre.</p>` : ''}
     <div class="w-list">${act.map(row).join('') || '<p class="hint">Todavía no hay obreros.</p>'}</div>
     ${edit ? `<form id="w-add" class="w-row add" autocomplete="off"><input id="w-name" maxlength="60" placeholder="Nombre" required><input id="w-role" list="dl-roles" maxlength="40" placeholder="Función"><input id="w-pay" class="mono" inputmode="decimal" maxlength="10" placeholder="Pago/día"><button type="submit" class="btn primary sm">Agregar</button></form>` : ''}
     ${gone.length ? `<details class="edit"><summary>Ya no trabajan aquí (${gone.length})</summary><div class="w-list">${gone.map(row).join('')}</div></details>` : ''}
@@ -3837,6 +3838,153 @@ async function toggleWorker(id) {
     if (!back && ids.includes(id) && !marked) await db.doc('asistencia/' + sh.id).update({ workers: ids.filter((x) => x !== id) });
   }, back ? 'Volvió a la lista' : 'Ya no sale en las planillas nuevas');
   if (ok) setTimeout(() => { if (S.sheet && S.sheet.type === 'workers') openWorkers(); }, 150);
+}
+/* ---------- foto y video de cada obrero ---------- */
+// La foto sale junto a su nombre en el pase de lista (para saber quién es al marcar). El video, diciendo su nombre,
+// queda de constancia. Se toman con la cámara de adelante dentro de la app; si el teléfono no deja, con su cámara.
+const W_VIDEO_SECS = 8;
+let wcam = null; // { stream, kind, id, rec, timer }
+const wInitials = (n) => String(n || '').trim().split(/\s+/).filter(Boolean).slice(0, 2).map((x) => x[0]).join('').toUpperCase() || '?';
+function wAvatarHTML(w, size = '') {
+  return `<button type="button" class="w-av${size ? ' ' + size : ''}${w.photoId ? '' : ' none'}" data-act="w-card" data-id="${esc(w.id)}" aria-label="Foto y video de ${esc(w.name || 'obrero')}">${w.photoId ? `<img src="${esc(assetUrl(w.photoId))}" alt="">` : `<span>${esc(wInitials(w.name))}</span>`}${w.videoId ? '<i class="w-vid" aria-hidden="true"></i>' : ''}</button>`;
+}
+const wMediaDone = (w) => !!(w.photoId && w.videoId);
+// El siguiente obrero de la misma obra al que le falta la foto o el video.
+function wNextMissing(w) {
+  const list = attWorkersOf(w.projectId), k = list.findIndex((x) => x.id === w.id);
+  for (let j = 1; j < list.length; j++) { const x = list[(k + j) % list.length]; if (!wMediaDone(x)) return x; }
+  return null;
+}
+function openWorkerCard(id) {
+  wcamStop();
+  const w = S.workers.find((x) => x.id === id);
+  if (!w) return;
+  const edit = canEdit(), who = (s) => (s ? ' por ' + s : '');
+  const photo = w.photoId ? `<img class="wc-photo" src="${esc(assetUrl(w.photoId))}" alt="Foto de ${esc(w.name)}">` : `<div class="wc-photo none"><span>${esc(wInitials(w.name))}</span></div>`;
+  const vid = w.videoId
+    ? `<video class="wc-video" id="wc-video" controls playsinline preload="metadata"></video><p class="usage">Grabado el ${esc(fmtDate(String(w.videoAt || '').slice(0, 10)))}${esc(who(w.videoBy))}${isNum(w.videoSecs) ? ` · ${w.videoSecs} s` : ''}</p>`
+    : '<p class="hint">Todavía no tiene video. Pídele que mire a la cámara y diga su nombre completo.</p>';
+  const next = edit ? wNextMissing(w) : null;
+  openSheet(`${sheetHead(esc(w.name || 'Obrero'))}<div class="sheet-b wcard">
+    <p class="usage">${esc([w.role, D_projName(w.projectId), w.active === false ? 'ya no trabaja aquí' : ''].filter(Boolean).join(' · '))}</p>
+    <div class="wc-media">${photo}</div>
+    ${w.photoId ? `<p class="usage wc-c">Foto del ${esc(fmtDate(String(w.photoAt || '').slice(0, 10)))}${esc(who(w.photoBy))}</p>` : ''}
+    ${edit ? `<div class="actions wc-c"><button type="button" class="btn${w.photoId ? '' : ' primary'}" data-act="w-photo" data-id="${esc(w.id)}">${w.photoId ? 'Cambiar la foto' : 'Tomar la foto'}</button></div>` : ''}
+    <div id="wc-cam" hidden></div>
+    <h3 class="h2">Video diciendo su nombre</h3>
+    ${vid}
+    ${edit ? `<div class="actions"><button type="button" class="btn${w.videoId || !w.photoId ? '' : ' primary'}" data-act="w-video" data-id="${esc(w.id)}">${w.videoId ? 'Grabar otra vez' : 'Grabar el video'}</button></div>` : ''}
+    <input type="file" id="wc-photo-in" accept="image/*" capture="user" hidden><input type="file" id="wc-video-in" accept="video/*" capture="user" hidden>
+  </div>${next ? `<div class="sheet-f"><button type="button" class="btn block" data-act="w-card" data-id="${esc(next.id)}">Siguiente sin foto o video: ${esc(next.name)} ${ICON.right}</button></div>` : ''}`, { type: 'wcard', id });
+  if (w.videoId) RT.assets.objectUrl(w.videoId).then((u) => {
+    const v = $('#wc-video');
+    if (!v) return;
+    if (u) v.src = u; else v.outerHTML = '<p class="msg warn"><span>No se pudo abrir el video. Si se grabó en otro teléfono, puede que todavía no haya bajado de la nube.</span></p>';
+  }).catch(() => {});
+}
+function wcamStop() {
+  if (!wcam) return;
+  const c = wcam;
+  wcam = null;
+  clearInterval(c.timer);
+  const card = $('.wcard'); if (card) card.classList.remove('cam-on');
+  try { if (c.rec && c.rec.state !== 'inactive') { c.rec.ondataavailable = null; c.rec.onstop = null; c.rec.stop(); } } catch (e) { /* nada */ }
+  for (const t of c.stream.getTracks()) t.stop();
+}
+const wcamFallback = (kind) => { const i = $(kind === 'photo' ? '#wc-photo-in' : '#wc-video-in'); if (i) i.click(); };
+async function wcamOpen(id, kind) {
+  const box = $('#wc-cam');
+  if (!box) return;
+  wcamStop();
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || (kind === 'video' && typeof MediaRecorder === 'undefined')) { wcamFallback(kind); return; }
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } }, audio: kind === 'video' });
+  } catch (e) {
+    console.warn('cámara', e);
+    toast(e && e.name === 'NotAllowedError' ? 'No hay permiso para la cámara en la app; se abre la cámara del teléfono.' : 'No se pudo abrir la cámara aquí; se abre la del teléfono.');
+    wcamFallback(kind);
+    return;
+  }
+  if (!$('#wc-cam')) { for (const t of stream.getTracks()) t.stop(); return; }
+  wcam = { stream, kind, id };
+  const card = $('.wcard'); if (card) card.classList.add('cam-on');
+  box.hidden = false;
+  box.innerHTML = `<div class="cam"><video id="cam-v" autoplay muted playsinline></video>${kind === 'video' ? '<span class="cam-rec" id="cam-time" hidden></span>' : ''}</div>
+    <p class="hint">${kind === 'photo' ? 'Que mire de frente, sin gorra ni lentes oscuros, con buena luz.' : `Toca <b>Grabar</b> y que diga su nombre completo mirando a la cámara. Se para sola a los ${W_VIDEO_SECS} segundos.`}</p>
+    <div class="actions">${kind === 'photo' ? '<button type="button" class="btn primary" data-act="cam-shot">Tomar la foto</button>' : '<button type="button" class="btn primary" data-act="cam-rec" id="cam-rec-btn">Grabar</button>'}<button type="button" class="btn" data-act="cam-cancel">Cancelar</button></div>`;
+  const v = $('#cam-v');
+  v.srcObject = stream;
+  v.play().catch(() => {});
+  box.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+// Foto cuadrada y pequeña (sale en las listas y se sube a la nube sin gastar espacio).
+function squareJpeg(src, w, h, size = 480) {
+  const s = Math.min(w, h), c = document.createElement('canvas');
+  c.width = c.height = Math.min(size, s);
+  c.getContext('2d').drawImage(src, (w - s) / 2, (h - s) / 2, s, s, 0, 0, c.width, c.height);
+  return canvasToJpeg(c, 0.85);
+}
+async function wcamShot() {
+  const v = $('#cam-v');
+  if (!wcam || !v || !v.videoWidth) { toast('Espera a que se vea la cámara.'); return; }
+  const id = wcam.id, blob = await squareJpeg(v, v.videoWidth, v.videoHeight);
+  wcamStop();
+  await saveWorkerMedia(id, 'photo', blob);
+}
+function wcamRecord() {
+  if (!wcam) return;
+  if (wcam.rec) { if (wcam.rec.state === 'recording') wcam.rec.stop(); return; }
+  const types = ['video/mp4;codecs=avc1', 'video/mp4', 'video/webm;codecs=vp8,opus', 'video/webm'];
+  const mt = types.find((t) => MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(t)) || '';
+  let rec;
+  try { rec = new MediaRecorder(wcam.stream, { ...(mt ? { mimeType: mt } : {}), videoBitsPerSecond: 600000, audioBitsPerSecond: 64000 }); } catch (e) { rec = new MediaRecorder(wcam.stream); }
+  const chunks = [], t0 = Date.now(), c = wcam;
+  rec.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+  rec.onstop = () => {
+    const secs = Math.max(1, Math.round((Date.now() - t0) / 1000));
+    const blob = new Blob(chunks, { type: String(rec.mimeType || mt || 'video/webm').split(';')[0] });
+    const id = c.id;
+    if (wcam === c) wcamStop();
+    if (!blob.size) { toast('No se grabó nada. Intenta otra vez.'); return; }
+    saveWorkerMedia(id, 'video', blob, secs);
+  };
+  rec.start(500);
+  c.rec = rec;
+  const btn = $('#cam-rec-btn'), tm = $('#cam-time');
+  if (btn) { btn.textContent = 'Parar'; btn.classList.remove('primary'); btn.classList.add('danger'); }
+  const tick = () => { const left = W_VIDEO_SECS - Math.floor((Date.now() - t0) / 1000); if (tm) { tm.hidden = false; tm.textContent = `● Grabando · ${Math.max(0, left)} s`; } if (left <= 0 && rec.state === 'recording') rec.stop(); };
+  tick();
+  c.timer = setInterval(tick, 250);
+}
+async function wFileMedia(kind, file) {
+  const id = S.sheet && S.sheet.type === 'wcard' ? S.sheet.id : null;
+  if (!id || !file) return;
+  try {
+    if (kind === 'photo') {
+      const url = URL.createObjectURL(file);
+      const img = await new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = rej; im.src = url; });
+      const blob = await squareJpeg(img, img.naturalWidth, img.naturalHeight);
+      URL.revokeObjectURL(url);
+      await saveWorkerMedia(id, 'photo', blob);
+    } else {
+      if (file.size > 25 * 1048576) { toast(`El video pesa ${fmtBytes(file.size)}. Grábalo más corto (unos ${W_VIDEO_SECS} segundos).`); return; }
+      const secs = await new Promise((res) => { const u = URL.createObjectURL(file), v = document.createElement('video'); v.preload = 'metadata'; v.onloadedmetadata = () => { URL.revokeObjectURL(u); res(isFinite(v.duration) ? Math.max(1, Math.round(v.duration)) : null); }; v.onerror = () => { URL.revokeObjectURL(u); res(null); }; v.src = u; setTimeout(() => res(null), 4000); });
+      await saveWorkerMedia(id, 'video', file.type ? file : new Blob([file], { type: 'video/mp4' }), secs);
+    }
+  } catch (e) { console.error(e); toast(kind === 'photo' ? 'No se pudo leer esa foto.' : 'No se pudo guardar ese video.'); }
+}
+async function saveWorkerMedia(id, kind, blob, secs) {
+  const w = S.workers.find((x) => x.id === id);
+  if (!w) return;
+  toast(kind === 'photo' ? 'Guardando la foto…' : 'Guardando el video…');
+  try {
+    const up = await assets.upload(blob, { type: blob.type || (kind === 'photo' ? 'image/jpeg' : 'video/mp4') });
+    const now = new Date().toISOString(), by = (S.settings && S.settings.preparedBy) || '';
+    const upd = kind === 'photo' ? { photoId: up.id, photoAt: now, photoBy: by } : { videoId: up.id, videoAt: now, videoBy: by, videoType: up.contentType, videoSecs: isNum(secs) ? secs : null, videoBytes: up.sizeBytes };
+    if (!(await write(() => db.doc('workers/' + id).update(upd), kind === 'photo' ? 'Foto guardada' : 'Video guardado'))) return;
+    setTimeout(() => { if (S.sheet && S.sheet.type === 'wcard' && S.sheet.id === id) openWorkerCard(id); }, 200);
+  } catch (e) { console.error(e); toast(kind === 'photo' ? 'No se pudo guardar la foto.' : 'No se pudo guardar el video.'); }
 }
 async function newAttSheet() {
   const pid = S.attProject;
@@ -6596,6 +6744,12 @@ function onClick(e) {
     case 'att-half': attSetHalf(t.dataset.v === '1'); break;
     case 'att-new': newAttSheet(); break;
     case 'att-start': openAttStart(); break;
+    case 'w-card': openWorkerCard(id); break;
+    case 'w-photo': wcamOpen(id, 'photo'); break;
+    case 'w-video': wcamOpen(id, 'video'); break;
+    case 'cam-shot': wcamShot(); break;
+    case 'cam-rec': wcamRecord(); break;
+    case 'cam-cancel': { wcamStop(); const b = $('#wc-cam'); if (b) { b.hidden = true; b.innerHTML = ''; } break; }
     case 'att-prev': case 'att-next': { flushAtt(); const sheets = attSheetsOf(S.attProject); const k = sheets.findIndex((x) => x.id === S.attSheet) + (a === 'att-prev' ? 1 : -1); if (sheets[k]) { S.attSheet = sheets[k].id; S.attDay = attTodayIdx(sheets[k]); renderAll(); } break; }
     case 'att-workers': openWorkers(); break;
     case 'att-w-toggle': toggleWorker(id); break;
@@ -6816,6 +6970,7 @@ async function hintCreate(id, btn) {
 }
 function onChange(e) {
   const t = e.target;
+  if (t.id === 'wc-photo-in' || t.id === 'wc-video-in') { const f = t.files[0]; t.value = ''; if (f) wFileMedia(t.id === 'wc-photo-in' ? 'photo' : 'video', f); return; }
   if (t.id === 'f-proj') { $('#f-newproj-wrap').hidden = t.value !== '__new'; if (t.value === '__new') $('#f-newproj').focus(); }
   if (t.id === 'f-order' || t.id === 'mo-add') {
     const box = $(t.id === 'f-order' ? '#f-order-prev' : '#mo-prev'), D = derive(), o = t.value ? D.orderById.get(t.value) : null;
