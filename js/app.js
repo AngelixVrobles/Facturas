@@ -10,7 +10,7 @@ const LIB = {
   qrgen: 'js/qr.js',
 };
 const PDF_CREATOR = 'Facturas de Proyectos';
-const APP_VERSION = '1.31.0';
+const APP_VERSION = '1.31.1';
 const SVG = (d) => `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ICON = {
   lock: SVG('<rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>'),
@@ -3764,7 +3764,7 @@ function renderAsistencia(D) {
     <div class="card att-head">
       <div class="att-period"><button type="button" class="icon-btn" data-act="att-prev" aria-label="Quincena anterior"${idx < sheets.length - 1 ? '' : ' disabled'}>‹</button><b>${esc(attPeriodLabel(sh))}</b><button type="button" class="icon-btn" data-act="att-next" aria-label="Quincena siguiente"${idx > 0 ? '' : ' disabled'}>›</button></div>
       <div class="fields"><div class="field"><label for="att-in">Entrada hasta las</label><input id="att-in" maxlength="8" placeholder="7:30" value="${esc(sh.entryLimit || '')}"${dis}></div><div class="field"><label for="att-out">Salida desde las</label><input id="att-out" maxlength="8" placeholder="5:00" value="${esc(sh.exitFrom || '')}"${dis}></div></div>
-      ${edit && idx === 0 ? '<button type="button" class="btn sm" data-act="att-new">Empezar la quincena siguiente</button>' : ''}
+      ${edit && idx === 0 ? '<button type="button" class="btn sm" data-act="att-new">Empezar la quincena siguiente</button><button type="button" class="link att-start-btn" data-act="att-start">Cambiar las fechas de esta quincena</button>' : ''}
     </div>
     ${plan}
     <div class="att-days" role="group" aria-label="Día">${dayBtns}</div>
@@ -3844,6 +3844,82 @@ async function newAttSheet() {
   const ref = db.collection('asistencia').doc();
   const ok = await write(() => ref.set({ projectId: pid, start, days: ATT_DAYS, entryLimit: last ? last.entryLimit || '' : '', exitFrom: last ? last.exitFrom || '' : '', workers: attWorkersOf(pid).map((w) => w.id), marks: {}, surprise: {}, createdAt: new Date().toISOString() }), 'Quincena lista');
   if (ok) { attJustMade = ref.id; S.attSheet = ref.id; S.attDay = attTodayIdx({ start, days: ATT_DAYS }); renderAll(); }
+}
+// Cambiar el día en que empieza la quincena (por ejemplo, para que una obra vaya igual que las otras).
+// Las marcas no se pierden: se quedan en su fecha. Si hay marcas de antes del nuevo comienzo, esos días quedan en una
+// planilla aparte (más corta) y la quincena nueva empieza en la fecha elegida.
+function attHasBefore(sh, n) {
+  const used = (k) => Number(k) < n;
+  return Object.values(sh.marks || {}).some((ms) => Object.entries(ms || {}).some(([k, m]) => used(k) && m && (m.e || m.p || m.s)));
+}
+function attShiftMaps(sh, diff, keep) {
+  const mv = (obj) => { const o = {}; for (const [k, v] of Object.entries(obj || {})) { const j = Number(k) - diff; if (keep(Number(k)) && j >= 0 && j < ATT_DAYS) o[j] = v; } return o; };
+  const marks = {};
+  for (const [wid, ms] of Object.entries(sh.marks || {})) { const m = mv(ms); if (Object.keys(m).length) marks[wid] = m; }
+  return { marks, surprise: mv(sh.surprise), half: mv(sh.half) };
+}
+function attStartInfo(sh, to) {
+  const sheets = attSheetsOf(sh.projectId), prev = sheets[sheets.findIndex((x) => x.id === sh.id) + 1] || null;
+  if (!ymd(to)) return { err: 'Elige la fecha.' };
+  const diff = Math.round((ymd(to) - ymd(sh.start)) / 864e5), len = attLen(sh);
+  if (!diff) return { err: 'La quincena ya empieza ese día.' };
+  if (prev && to <= attEnd(prev)) return { err: `La quincena anterior llega hasta el ${fmtDate(attEnd(prev))}. Elige una fecha después.` };
+  const range = `del ${fmtDate(to)} al ${fmtDate(addDays(to, ATT_DAYS - 1))}`;
+  if (diff < 0) {
+    const lost = Object.values(sh.marks || {}).some((ms) => Object.entries(ms || {}).some(([k, m]) => Number(k) - diff >= ATT_DAYS && m && (m.e || m.p || m.s)));
+    if (lost) return { err: 'Hay marcas en los últimos días que quedarían fuera de la quincena. Elige una fecha más cerca.' };
+    return { diff, split: false, text: `La quincena va a ir ${range}. Las marcas se quedan en sus mismas fechas.` };
+  }
+  if (attHasBefore(sh, Math.min(diff, len))) {
+    if (diff >= len) return { err: 'Esa fecha es después de esta quincena. Usa «Empezar la quincena siguiente».' };
+    return { diff, split: true, text: `Hay marcas de antes del ${fmtDate(to)}. No se pierden: esos días (del ${fmtDate(sh.start)} al ${fmtDate(addDays(to, -1))}) quedan en una planilla aparte, y la quincena nueva va ${range} con las marcas que ya pusiste desde ese día.` };
+  }
+  return { diff, split: false, text: `La quincena va a ir ${range}. Las marcas se quedan en sus mismas fechas.` };
+}
+function openAttStart() {
+  const { sh } = attCurrent(derive());
+  if (!sh || !canEdit()) return;
+  flushAtt();
+  const others = [...new Set(S.projects.filter((p) => p.id !== sh.projectId).map((p) => attSheetsOf(p.id)[0]).filter(Boolean).map((x) => x.start))];
+  const guess = others.find((d) => d !== sh.start && d > sh.start) || (weekStart(todayISO()) !== sh.start ? weekStart(todayISO()) : sh.start);
+  openSheet(`<form id="att-start-form" data-id="${esc(sh.id)}" autocomplete="off">${sheetHead('Fechas de la quincena')}<div class="sheet-b">
+    <p class="hint">Esta quincena va <b>${esc(attPeriodLabel(sh).toLowerCase())}</b>. Elige el día en que debe empezar; dura 14 días. Las marcas que ya pusiste no se pierden.</p>
+    <div class="field"><label for="att-start-d">Empieza el</label><input type="date" id="att-start-d" value="${esc(guess)}"></div>
+    <div class="msg" id="att-start-msg"></div>
+  </div><div class="sheet-f"><button type="submit" class="btn primary block" id="att-start-go">Cambiar las fechas</button></div></form>`, { type: 'attstart', id: sh.id });
+  attStartPreview();
+}
+function attStartPreview() {
+  const f = $('#att-start-form'), sh = f && S.asistencia.find((x) => x.id === f.dataset.id);
+  if (!sh) return;
+  const r = attStartInfo(sh, $('#att-start-d').value);
+  $('#att-start-msg').innerHTML = `<span>${esc(r.err || r.text)}</span>`;
+  $('#att-start-msg').classList.toggle('warn', !!r.err);
+  $('#att-start-go').disabled = !!r.err;
+}
+async function saveAttStart() {
+  const f = $('#att-start-form'), sh = f && S.asistencia.find((x) => x.id === f.dataset.id);
+  if (!sh) return;
+  await flushAtt();
+  const to = $('#att-start-d').value, r = attStartInfo(sh, to);
+  if (r.err) { toast(r.err); return; }
+  const now = new Date().toISOString();
+  let newId = sh.id;
+  const ok = await write(async () => {
+    if (r.split) {
+      // Los días de antes se quedan en la planilla vieja (más corta); la nueva empieza en la fecha elegida.
+      const ref = db.collection('asistencia').doc();
+      newId = ref.id;
+      await ref.set({ projectId: sh.projectId, start: to, days: ATT_DAYS, entryLimit: sh.entryLimit || '', exitFrom: sh.exitFrom || '', workers: [...(sh.workers || [])], ...attShiftMaps(sh, r.diff, (k) => k >= r.diff), createdAt: now });
+      await db.doc('asistencia/' + sh.id).update({ days: r.diff, ...attShiftMaps(sh, 0, (k) => k < r.diff), updatedAt: now });
+    } else {
+      await db.doc('asistencia/' + sh.id).update({ start: to, days: ATT_DAYS, ...attShiftMaps(sh, r.diff, () => true), updatedAt: now });
+    }
+  }, 'Fechas de la quincena cambiadas');
+  if (!ok) return;
+  closeSheet();
+  attJustMade = newId; S.attSheet = newId; S.attDay = attTodayIdx({ start: to, days: ATT_DAYS });
+  renderAll();
 }
 function attMark(wid, f, v) {
   const { sh } = attCurrent(derive());
@@ -6455,6 +6531,7 @@ function onClick(e) {
     case 'att-surprise': attSurpriseNow(); break;
     case 'att-half': attSetHalf(t.dataset.v === '1'); break;
     case 'att-new': newAttSheet(); break;
+    case 'att-start': openAttStart(); break;
     case 'att-prev': case 'att-next': { flushAtt(); const sheets = attSheetsOf(S.attProject); const k = sheets.findIndex((x) => x.id === S.attSheet) + (a === 'att-prev' ? 1 : -1); if (sheets[k]) { S.attSheet = sheets[k].id; S.attDay = attTodayIdx(sheets[k]); renderAll(); } break; }
     case 'att-workers': openWorkers(); break;
     case 'att-w-toggle': toggleWorker(id); break;
@@ -6695,6 +6772,7 @@ function onChange(e) {
   }
   if ((t.id === 'inf-from' || t.id === 'inf-to') && $('#inf-prev')) { const d = infDates(); if (d) $('#inf-prev').innerHTML = infPreviewHTML(d.from, d.to); }
   if (t.id === 'f-from' || t.id === 'f-to') { S[t.id === 'f-from' ? 'dateFrom' : 'dateTo'] = ymd(t.value) ? t.value : ''; renderAll(); }
+  if (t.id === 'att-start-d') attStartPreview();
   if (t.id === 'c-ord' && $('#c-oprev')) { const D = derive(), o = D.orderById.get(t.value); $('#c-oprev').innerHTML = o ? orderPreviewHTML(o, D, '') : ''; }
   if (t.id === 'o-proj' && t.value) {
     const prev = derive().orders.filter((x) => x.projectId === t.value);
@@ -6773,6 +6851,8 @@ function onSubmit(e) {
     const budget = bRaw ? parseAmount(bRaw) : null;
     if (bRaw && (budget == null || budget < 0)) { toast('Escribe el presupuesto solo con números.'); return; }
     write(() => db.doc('projects/' + f.dataset.id).update({ name: name.slice(0, 80), budget: budget == null ? null : round2(budget) }), 'Proyecto guardado').then((ok) => { if (ok) closeSheet(); });
+  } else if (f.id === 'att-start-form') {
+    saveAttStart();
   } else if (f.id === 'lock-form') {
     tryUnlock();
   } else if (f.id === 'pin-form') {
