@@ -10,7 +10,7 @@ const LIB = {
   qrgen: 'js/qr.js',
 };
 const PDF_CREATOR = 'Facturas de Proyectos';
-const APP_VERSION = '1.31.2';
+const APP_VERSION = '1.32.0';
 const SVG = (d) => `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ICON = {
   lock: SVG('<rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>'),
@@ -3765,7 +3765,7 @@ function renderAsistencia(D) {
     <div class="card att-head">
       <div class="att-period"><button type="button" class="icon-btn" data-act="att-prev" aria-label="Quincena anterior"${idx < sheets.length - 1 ? '' : ' disabled'}>‹</button><b>${esc(attPeriodLabel(sh))}</b><button type="button" class="icon-btn" data-act="att-next" aria-label="Quincena siguiente"${idx > 0 ? '' : ' disabled'}>›</button></div>
       <div class="fields"><div class="field"><label for="att-in">Entrada hasta las</label><input id="att-in" maxlength="8" placeholder="7:30" value="${esc(sh.entryLimit || '')}"${dis}></div><div class="field"><label for="att-out">Salida desde las</label><input id="att-out" maxlength="8" placeholder="5:00" value="${esc(sh.exitFrom || '')}"${dis}></div></div>
-      ${edit && idx === 0 ? '<button type="button" class="btn sm" data-act="att-new">Empezar la quincena siguiente</button>' : ''}${edit && (idx === 0 || (idx === 1 && !attHasBefore(sheets[0], 1e9))) ? '<button type="button" class="link att-start-btn" data-act="att-start">Cambiar las fechas de esta quincena</button>' : ''}
+      ${edit && idx === 0 ? '<button type="button" class="btn sm" data-act="att-new">Empezar la quincena siguiente</button>' : ''}${edit ? '<button type="button" class="link att-start-btn" data-act="att-start">Cambiar las fechas de las quincenas</button>' : ''}
     </div>
     ${plan}
     <div class="att-days" role="group" aria-label="Día">${dayBtns}</div>
@@ -3841,108 +3841,149 @@ async function toggleWorker(id) {
 async function newAttSheet() {
   const pid = S.attProject;
   const last = attSheetsOf(pid)[0];
-  const start = last ? addDays(attEnd(last), 1) : weekStart(todayISO());
+  const today = todayISO(), live = S.projects.filter((p) => p.id !== pid).map((p) => attSheetsOf(p.id)[0]).find((s) => s && s.start <= today && today <= attEnd(s) && attLen(s) === ATT_DAYS);
+  const start = last ? addDays(attEnd(last), 1) : live ? live.start : weekStart(today);
   const ref = db.collection('asistencia').doc();
   const ok = await write(() => ref.set({ projectId: pid, start, days: ATT_DAYS, entryLimit: last ? last.entryLimit || '' : '', exitFrom: last ? last.exitFrom || '' : '', workers: attWorkersOf(pid).map((w) => w.id), marks: {}, surprise: {}, createdAt: new Date().toISOString() }), 'Quincena lista');
   if (ok) { attJustMade = ref.id; S.attSheet = ref.id; S.attDay = attTodayIdx({ start, days: ATT_DAYS }); renderAll(); }
 }
-// Cambiar el día en que empieza la quincena (por ejemplo, para que una obra vaya igual que las otras).
-// Las marcas no se pierden: se quedan en su fecha. Si hay marcas de antes del nuevo comienzo, esos días quedan en una
-// planilla aparte (más corta) y la quincena nueva empieza en la fecha elegida.
-function attHasBefore(sh, n) {
-  const used = (k) => Number(k) < n;
-  return Object.values(sh.marks || {}).some((ms) => Object.entries(ms || {}).some(([k, m]) => used(k) && m && (m.e || m.p || m.s)));
+// Ordenar las quincenas de una obra: se escoge el día en que empezó una y todas van cada 14 días desde ahí (antes y
+// después). Las marcas, la hora del pase y el medio día se quedan en su fecha; las planillas se rehacen alrededor de
+// ellas. Las quincenas viejas (que terminaron 14 días o más antes de esa fecha) no se tocan.
+const ATT_BACK = 42;
+const attAlign = (x, iso) => addDays(x, Math.floor(daysBetween(x, iso) / ATT_DAYS) * ATT_DAYS);
+const attRangeTxt = (start, days) => `del ${fmtDate(start)} al ${fmtDate(addDays(start, days - 1))}`;
+function attRealign(pid, x) {
+  const today = todayISO();
+  if (!ymd(x)) return { err: 'Elige la fecha.' };
+  if (x < addDays(today, -ATT_BACK) || x > addDays(today, ATT_DAYS)) return { err: 'Elige una fecha de las últimas seis semanas (o de las próximas dos).' };
+  const all = attSheetsOf(pid).slice().reverse();
+  const lim = addDays(x, -(ATT_DAYS - 1));
+  const old = all.filter((s) => attEnd(s) >= lim), kept = all.filter((s) => attEnd(s) < lim);
+  const floor = kept.length ? addDays(attEnd(kept[kept.length - 1]), 1) : '';
+  // Lo que hay en cada fecha (aunque esté fuera de los días de su planilla, para no perder nada).
+  const has = (m) => !!(m && (m.e || m.p || m.s));
+  const byDate = new Map(), at = (d) => { if (!byDate.has(d)) byDate.set(d, { marks: {}, surprise: '', half: false }); return byDate.get(d); };
+  let count = 0, clash = false;
+  for (const s of old) {
+    for (const [wid, ms] of Object.entries(s.marks || {})) for (const [k, m] of Object.entries(ms || {})) {
+      if (!has(m)) continue;
+      const v = at(attDate(s, Number(k)));
+      if (v.marks[wid]) clash = true;
+      v.marks[wid] = m; count++;
+    }
+    for (const [k, t] of Object.entries(s.surprise || {})) if (t) { const v = at(attDate(s, Number(k))); if (!v.surprise) count++; v.surprise = v.surprise || t; }
+    for (const [k, h] of Object.entries(s.half || {})) if (h) { const v = at(attDate(s, Number(k))); if (!v.half) count++; v.half = true; }
+  }
+  if (clash) return { err: 'Hay un obrero marcado el mismo día en dos planillas de esta obra. Revisa esas marcas antes de ordenar las fechas.' };
+  // Las quincenas que hacen falta: las que tienen marcas, la de hoy (y las del medio); si la fecha es más adelante, desde esa.
+  const starts = [...byDate.keys(), today, ...(x > today ? [x] : [])].map((d) => attAlign(x, d)).sort();
+  const out = [];
+  for (let s0 = starts[0]; s0 <= starts[starts.length - 1]; s0 = addDays(s0, ATT_DAYS)) {
+    const st = floor && s0 < floor ? floor : s0, end = addDays(s0, ATT_DAYS - 1);
+    if (end >= st) out.push({ start: st, days: daysBetween(st, end) + 1, marks: {}, surprise: {}, half: {} });
+  }
+  let placed = 0;
+  for (const [d, v] of byDate) {
+    const p = out.find((q) => d >= q.start && d <= addDays(q.start, q.days - 1));
+    if (!p) return { err: 'No se pudo ordenar sin perder marcas.' };
+    const k = daysBetween(p.start, d);
+    for (const [wid, m] of Object.entries(v.marks)) { (p.marks[wid] = p.marks[wid] || {})[k] = m; placed++; }
+    if (v.surprise) { p.surprise[k] = v.surprise; placed++; }
+    if (v.half) { p.half[k] = true; placed++; }
+  }
+  if (placed !== count) return { err: 'No se pudo ordenar sin perder marcas.' };
+  // Obreros, horas de entrada y salida: los de las planillas de esas fechas (o la más nueva).
+  const newest = old[old.length - 1] || kept[kept.length - 1] || null;
+  for (const p of out) {
+    const pEnd = addDays(p.start, p.days - 1);
+    const over = old.filter((s) => s.start <= pEnd && attEnd(s) >= p.start);
+    const lap = (s) => daysBetween(s.start > p.start ? s.start : p.start, attEnd(s) < pEnd ? attEnd(s) : pEnd);
+    const src = over.slice().sort((a, b) => lap(b) - lap(a))[0] || newest;
+    const ids = [];
+    for (const s of over.length ? over : newest ? [newest] : []) for (const w of s.workers || []) if (!ids.includes(w)) ids.push(w);
+    if (!over.length && !newest) for (const w of attWorkersOf(pid)) ids.push(w.id);
+    for (const wid of Object.keys(p.marks)) if (!ids.includes(wid)) ids.push(wid);
+    Object.assign(p, { workers: ids, entryLimit: (src && src.entryLimit) || '', exitFrom: (src && src.exitFrom) || '' });
+  }
+  const same = old.length === out.length && old.every((s, k) => s.start === out[k].start && attLen(s) === out[k].days);
+  out.forEach((p, k) => { p.id = old[k] ? old[k].id : null; p.n = Object.values(p.marks).reduce((t, ms) => t + Object.keys(ms).length, 0); });
+  return { pid, x, old, out, same, gone: old.slice(out.length) };
 }
-function attShiftMaps(sh, diff, keep) {
-  const mv = (obj) => { const o = {}; for (const [k, v] of Object.entries(obj || {})) { const j = Number(k) - diff; if (keep(Number(k)) && j >= 0 && j < ATT_DAYS) o[j] = v; } return o; };
-  const marks = {};
-  for (const [wid, ms] of Object.entries(sh.marks || {})) { const m = mv(ms); if (Object.keys(m).length) marks[wid] = m; }
-  return { marks, surprise: mv(sh.surprise), half: mv(sh.half) };
-}
-function attStartInfo(sh, to) {
-  const sheets = attSheetsOf(sh.projectId), prev = sheets[sheets.findIndex((x) => x.id === sh.id) + 1] || null;
-  if (!ymd(to)) return { err: 'Elige la fecha.' };
-  const diff = Math.round((ymd(to) - ymd(sh.start)) / 864e5), len = attLen(sh);
-  if (!diff) return { err: 'La quincena ya empieza ese día.' };
-  const range = `del ${fmtDate(to)} al ${fmtDate(addDays(to, ATT_DAYS - 1))}`;
-  if (diff < 0) {
-    const lost = Object.values(sh.marks || {}).some((ms) => Object.entries(ms || {}).some(([k, m]) => Number(k) - diff >= ATT_DAYS && m && (m.e || m.p || m.s)));
-    if (lost) return { err: 'Hay marcas en los últimos días que quedarían fuera de la quincena. Elige una fecha más cerca.' };
-  }
-  // Si la fecha cae dentro de la quincena anterior, esa se acorta: sus días desde esa fecha (con sus marcas) pasan a esta.
-  if (prev && to <= attEnd(prev)) {
-    if (to <= prev.start) return { err: `La quincena anterior empieza el ${fmtDate(prev.start)}. Elige una fecha después de ese día.` };
-    const cut = attIdxOf(prev, to), has = (m) => !!(m && (m.e || m.p || m.s));
-    const clash = Object.entries(prev.marks || {}).some(([wid, ms]) => Object.entries(ms || {}).some(([k, m]) => Number(k) >= cut && has(m) && has(((sh.marks || {})[wid] || {})[Number(k) - cut + diff])));
-    if (clash) return { err: 'Hay obreros marcados el mismo día en las dos quincenas. Revisa las marcas antes de cambiar las fechas.' };
-    const moved = Object.values(prev.marks || {}).some((ms) => Object.entries(ms || {}).some(([k, m]) => Number(k) >= cut && has(m)));
-    return { diff, take: { prev, cut }, text: `Quedan así: una quincena del ${fmtDate(prev.start)} al ${fmtDate(addDays(to, -1))} (con las marcas de esos días) y otra ${range}${moved ? ` (con las marcas del ${fmtDate(to)} en adelante, en sus mismas fechas)` : ''}. Ninguna marca se pierde.` };
-  }
-  if (diff < 0) {
-    return { diff, split: false, text: `La quincena va a ir ${range}. Las marcas se quedan en sus mismas fechas.` };
-  }
-  if (attHasBefore(sh, Math.min(diff, len))) {
-    if (diff >= len) return { err: 'Esa fecha es después de esta quincena. Usa «Empezar la quincena siguiente».' };
-    return { diff, split: true, text: `Hay marcas de antes del ${fmtDate(to)}. No se pierden: esos días (del ${fmtDate(sh.start)} al ${fmtDate(addDays(to, -1))}) quedan en una planilla aparte, y la quincena nueva va ${range} con las marcas que ya pusiste desde ese día.` };
-  }
-  return { diff, split: false, text: `La quincena va a ir ${range}. Las marcas se quedan en sus mismas fechas.` };
+function attRealignText(r) {
+  const days = (p) => { const d = new Set(); for (const ms of Object.values(p.marks)) for (const k of Object.keys(ms)) d.add(k); return d.size; };
+  return r.out.map((p) => `${attRangeTxt(p.start, p.days)}${p.days !== ATT_DAYS ? ` (${p.days} días)` : ''}${days(p) ? ` — ${plural(days(p), 'día marcado', 'días marcados')}` : ''}`);
 }
 function openAttStart() {
-  const { sh: seen } = attCurrent(derive());
-  if (!seen || !canEdit()) return;
+  const { sh } = attCurrent(derive());
+  if (!sh || !canEdit()) return;
   flushAtt();
-  // Si se está viendo la quincena de antes y la más nueva no tiene marcas (se empezó sin querer), se mueve esa.
-  const all = attSheetsOf(seen.projectId), sh = all[0] && all[0].id !== seen.id && all[1] && all[1].id === seen.id && !attHasBefore(all[0], 1e9) ? all[0] : seen;
-  // Se propone la fecha en que empieza la quincena que corre hoy en las otras obras (la más común; si empatan, la primera).
+  // Se propone el día en que empezó la quincena que corre hoy en las obras (la más común; si empatan, la primera).
   const today = todayISO(), cur = S.projects.filter((p) => p.id !== sh.projectId).map((p) => attSheetsOf(p.id)[0]).filter(Boolean);
-  const common = (arr) => { const c = new Map(); for (const d of arr) c.set(d, (c.get(d) || 0) + 1); return [...c].sort((x, y) => y[1] - x[1] || x[0].localeCompare(y[0])).map((x) => x[0]).find((d) => d !== sh.start); };
-  const guess = common(cur.filter((x) => x.start <= today && today <= attEnd(x)).map((x) => x.start)) || common(cur.map((x) => x.start)) || (weekStart(today) !== sh.start ? weekStart(today) : sh.start);
-  openSheet(`<form id="att-start-form" data-id="${esc(sh.id)}" autocomplete="off">${sheetHead('Fechas de la quincena')}<div class="sheet-b">
-    <p class="hint">${sh === seen ? `Esta quincena va <b>${esc(attPeriodLabel(sh).toLowerCase())}</b>.` : `Esta quincena va <b>${esc(attPeriodLabel(seen).toLowerCase())}</b>, y después hay otra <b>${esc(attPeriodLabel(sh).toLowerCase())}</b> que todavía no tiene marcas.`} Elige el día en que debe empezar la quincena de ahora; dura 14 días. Las marcas que ya pusiste no se pierden.</p>
-    <div class="field"><label for="att-start-d">Empieza el</label><input type="date" id="att-start-d" value="${esc(guess)}"></div>
+  const common = (arr) => { const c = new Map(); for (const d of arr) c.set(d, (c.get(d) || 0) + 1); return [...c].sort((x, y) => y[1] - x[1] || x[0].localeCompare(y[0])).map((x) => x[0])[0]; };
+  const mine = attSheetsOf(sh.projectId).find((s) => s.start <= today && today <= attEnd(s));
+  const live = [...cur, ...(mine ? [mine] : [])].filter((x) => x.start <= today && today <= attEnd(x) && attLen(x) === ATT_DAYS).map((x) => x.start);
+  const guess = common(live) || common(cur.map((x) => x.start)) || (mine ? mine.start : weekStart(today));
+  const p = D_projName(sh.projectId);
+  const now = attSheetsOf(sh.projectId).slice(0, 3).reverse().map((s) => attRangeTxt(s.start, attLen(s)) + (attLen(s) !== ATT_DAYS ? ` (${attLen(s)} días)` : ''));
+  openSheet(`<form id="att-start-form" data-p="${esc(sh.projectId)}" autocomplete="off">${sheetHead('Fechas de las quincenas')}<div class="sheet-b">
+    <p class="hint">Escoge el día en que empezó una quincena (por ejemplo, el domingo en que empezó la de ahora). Las demás van cada 14 días desde ahí, antes y después. Las marcas se quedan en su fecha: no se pierde ninguna.</p>
+    <p class="usage">Ahora ${esc(p)} tiene: ${esc(now.join(' · '))}.</p>
+    <div class="field"><label for="att-start-d">Una quincena empezó el</label><input type="date" id="att-start-d" value="${esc(guess)}"></div>
     <div class="msg" id="att-start-msg"></div>
-  </div><div class="sheet-f"><button type="submit" class="btn primary block" id="att-start-go">Cambiar las fechas</button></div></form>`, { type: 'attstart', id: sh.id });
+    <label class="check-row" id="att-start-all-row" hidden><input type="checkbox" id="att-start-all" checked><span id="att-start-all-txt"></span></label>
+  </div><div class="sheet-f"><button type="submit" class="btn primary block" id="att-start-go">Ordenar las quincenas</button></div></form>`, { type: 'attstart', id: sh.projectId });
   attStartPreview();
 }
+const D_projName = (pid) => { const p = S.projects.find((x) => x.id === pid); return p ? p.name : 'la obra'; };
+// Las otras obras que quedarían distintas con esa fecha (para hacer lo mismo en ellas).
+function attRealignOthers(pid, x) {
+  return S.projects.filter((p) => p.id !== pid && attSheetsOf(p.id).length).map((p) => ({ p, r: attRealign(p.id, x) })).filter((o) => !o.r.err && !o.r.same);
+}
 function attStartPreview() {
-  const f = $('#att-start-form'), sh = f && S.asistencia.find((x) => x.id === f.dataset.id);
-  if (!sh) return;
-  const r = attStartInfo(sh, $('#att-start-d').value);
-  $('#att-start-msg').innerHTML = `<span>${esc(r.err || r.text)}</span>`;
-  $('#att-start-msg').classList.toggle('warn', !!r.err);
-  $('#att-start-go').disabled = !!r.err;
+  const f = $('#att-start-form');
+  if (!f) return;
+  const x = $('#att-start-d').value, r = attRealign(f.dataset.p, x);
+  const others = r.err ? [] : attRealignOthers(f.dataset.p, x);
+  const msg = $('#att-start-msg');
+  msg.innerHTML = `<span>${r.err ? esc(r.err) : r.same ? `En ${esc(D_projName(f.dataset.p))} las quincenas ya van así.${others.length ? ' Puedes ordenar las otras obras.' : ''}` : `Quedan así: ${attRealignText(r).map(esc).join(' · ')}. Ninguna marca se pierde.`}</span>`;
+  msg.classList.toggle('warn', !!r.err);
+  const row = $('#att-start-all-row');
+  row.hidden = !others.length;
+  $('#att-start-all-txt').textContent = others.length ? `Hacer lo mismo en ${others.map((o) => o.p.name).join(', ')}` : '';
+  $('#att-start-go').disabled = !!r.err || (r.same && !(others.length && $('#att-start-all').checked));
 }
 async function saveAttStart() {
-  const f = $('#att-start-form'), sh = f && S.asistencia.find((x) => x.id === f.dataset.id);
-  if (!sh) return;
+  const f = $('#att-start-form');
+  if (!f) return;
   await flushAtt();
-  const to = $('#att-start-d').value, r = attStartInfo(sh, to);
+  const pid = f.dataset.p, x = $('#att-start-d').value, r = attRealign(pid, x);
   if (r.err) { toast(r.err); return; }
-  const now = new Date().toISOString();
-  let newId = sh.id;
+  const list = [...(r.same ? [] : [r]), ...($('#att-start-all') && $('#att-start-all').checked ? attRealignOthers(pid, x).map((o) => o.r) : [])];
+  if (!list.length) { toast('Las quincenas ya van así.'); return; }
+  const now = new Date().toISOString(), before = [], made = [];
   const ok = await write(async () => {
-    if (r.take) {
-      // La anterior se acorta hasta el día antes; sus días desde la fecha elegida se juntan con los de esta.
-      const { prev, cut } = r.take, a = attShiftMaps(prev, cut, (k) => k >= cut), b = attShiftMaps(sh, r.diff, () => true);
-      const marks = { ...a.marks };
-      for (const [wid, ms] of Object.entries(b.marks)) marks[wid] = { ...(marks[wid] || {}), ...ms };
-      const workers = [...new Set([...(prev.workers || []), ...(sh.workers || [])])];
-      await db.doc('asistencia/' + sh.id).update({ start: to, days: ATT_DAYS, marks, surprise: { ...a.surprise, ...b.surprise }, half: { ...a.half, ...b.half }, workers, updatedAt: now });
-      await db.doc('asistencia/' + prev.id).update({ days: cut, ...attShiftMaps(prev, 0, (k) => k < cut), updatedAt: now });
-    } else if (r.split) {
-      // Los días de antes se quedan en la planilla vieja (más corta); la nueva empieza en la fecha elegida.
-      const ref = db.collection('asistencia').doc();
-      newId = ref.id;
-      await ref.set({ projectId: sh.projectId, start: to, days: ATT_DAYS, entryLimit: sh.entryLimit || '', exitFrom: sh.exitFrom || '', workers: [...(sh.workers || [])], ...attShiftMaps(sh, r.diff, (k) => k >= r.diff), createdAt: now });
-      await db.doc('asistencia/' + sh.id).update({ days: r.diff, ...attShiftMaps(sh, 0, (k) => k < r.diff), updatedAt: now });
-    } else {
-      await db.doc('asistencia/' + sh.id).update({ start: to, days: ATT_DAYS, ...attShiftMaps(sh, r.diff, () => true), updatedAt: now });
+    for (const q of list) {
+      for (const p of q.out) {
+        const o = p.id ? q.old.find((s) => s.id === p.id) : null;
+        const ref = p.id ? db.doc('asistencia/' + p.id) : db.collection('asistencia').doc();
+        if (o) { const { id, ...data } = o; before.push([o.id, data]); } else made.push(ref.id);
+        await ref.set({ projectId: q.pid, start: p.start, days: p.days, entryLimit: p.entryLimit, exitFrom: p.exitFrom, workers: p.workers, marks: p.marks, surprise: p.surprise, half: p.half, createdAt: (o && o.createdAt) || now, updatedAt: now });
+        p.id = ref.id;
+      }
+      for (const g of q.gone) { const { id, ...data } = g; before.push([g.id, data]); await db.doc('asistencia/' + g.id).delete(); }
     }
-  }, 'Fechas de la quincena cambiadas');
+  });
   if (!ok) return;
   closeSheet();
-  attJustMade = newId; S.attSheet = newId; S.attDay = attTodayIdx({ start: to, days: ATT_DAYS });
+  const mineNow = (list.find((q) => q.pid === pid) || r).out, today = todayISO();
+  const show = mineNow.find((p) => p.start <= today && today <= addDays(p.start, p.days - 1)) || mineNow[mineNow.length - 1];
+  if (show && show.id) { attJustMade = show.id; S.attSheet = show.id; S.attDay = attTodayIdx({ start: show.start, days: show.days }); }
   renderAll();
+  toastAct(list.length > 1 ? `Quincenas ordenadas en ${plural(list.length, 'obra', 'obras')}` : 'Quincenas ordenadas', 'Deshacer', () => write(async () => {
+    for (const id of made) await db.doc('asistencia/' + id).delete();
+    for (const [id, data] of before) await db.doc('asistencia/' + id).set(data);
+  }, 'Fechas como estaban').then(() => { S.attSheet = ''; renderAll(); }));
 }
 function attMark(wid, f, v) {
   const { sh } = attCurrent(derive());
@@ -6795,7 +6836,7 @@ function onChange(e) {
   }
   if ((t.id === 'inf-from' || t.id === 'inf-to') && $('#inf-prev')) { const d = infDates(); if (d) $('#inf-prev').innerHTML = infPreviewHTML(d.from, d.to); }
   if (t.id === 'f-from' || t.id === 'f-to') { S[t.id === 'f-from' ? 'dateFrom' : 'dateTo'] = ymd(t.value) ? t.value : ''; renderAll(); }
-  if (t.id === 'att-start-d') attStartPreview();
+  if (t.id === 'att-start-d' || t.id === 'att-start-all') attStartPreview();
   if (t.id === 'c-ord' && $('#c-oprev')) { const D = derive(), o = D.orderById.get(t.value); $('#c-oprev').innerHTML = o ? orderPreviewHTML(o, D, '') : ''; }
   if (t.id === 'o-proj' && t.value) {
     const prev = derive().orders.filter((x) => x.projectId === t.value);
