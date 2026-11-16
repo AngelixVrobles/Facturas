@@ -41,6 +41,7 @@ const inv = async (page, id) => (await docs(page, 'invoices')).find((i) => i.id 
 const segN = async (page, f) => Number(await page.textContent(`#f-seg [data-f="${f}"] .n`));
 const BLANK = { es_factura: true, tipo_documento: 'factura', proveedor: '', rnc_proveedor: '', ncf: '', ncf_vence: '', fecha: '', itbis: '', total: '', total_corregido: '', tachados: [], cambio_de: '', condicion_pago: '', moneda: 'DOP', concepto: '', proyecto: '', rnc_cliente: '104595114', referencia: '', conduces: '', conduce_numero: '', material: '', cantidad: '', viajes: '' };
 const answers = [];
+const sheetTxt = (page) => txt(page, '.sheet');
 const sheets = async (page, pid) => (await docs(page, 'asistencia')).filter((a) => a.projectId === pid).sort((a, b) => a.start.localeCompare(b.start));
 
 (async () => {
@@ -67,7 +68,14 @@ const sheets = async (page, pid) => (await docs(page, 'asistencia')).filter((a) 
     await se.set({ projectId: e.id, start: '2026-11-08', days: 14, entryLimit: '7:30', exitFrom: '5:00', workers: [w.Marcelo, w.Maslem], marks: { [w.Marcelo]: { 1: ok, 2: { e: 't', p: 'ok', s: 'ok' }, 8: ok }, [w.Maslem]: { 1: ok, 8: ok } }, surprise: { 2: '9:15', 8: '10:00' }, half: { 1: true, 9: true }, createdAt: '2026-11-08T10:00:00.000Z' });
     const sm = db.collection('asistencia').doc();
     await sm.set({ projectId: m.id, start: '2026-11-15', days: 14, entryLimit: '7:30', exitFrom: '5:00', workers: [w.Carlet], marks: {}, surprise: {}, createdAt: '2026-11-15T10:00:00.000Z' });
-    return { m: m.id, e: e.id, w, se: se.id };
+    const t = db.collection('projects').doc(); await t.set({ name: 'TORRE', createdAt: '2026-09-03T10:00:00.000Z' });
+    const tw = db.collection('workers').doc(); await tw.set({ projectId: t.id, name: 'Tipo', role: 'Ayudante', pay: 1000, active: true, seq: 9, createdAt: '2026-11-01T10:00:00.000Z' });
+    w.Tipo = tw.id;
+    const t1 = db.collection('asistencia').doc();
+    await t1.set({ projectId: t.id, start: '2026-11-08', days: 14, entryLimit: '7:30', exitFrom: '5:00', workers: [tw.id], marks: { [tw.id]: { 1: ok, 2: ok, 8: { e: 't', p: 'ok', s: 'ok' } } }, surprise: { 8: '10:00' }, half: { 8: true }, createdAt: '2026-11-08T10:00:00.000Z' });
+    const t2 = db.collection('asistencia').doc();
+    await t2.set({ projectId: t.id, start: '2026-11-22', days: 14, entryLimit: '7:30', exitFrom: '5:00', workers: [tw.id], marks: {}, surprise: {}, createdAt: '2026-11-16T12:00:00.000Z' });
+    return { m: m.id, e: e.id, t: t.id, w, se: se.id, t1: t1.id, t2: t2.id };
   });
   await page.reload();
   await page.click('[data-act="backup-later"]').catch(() => {});
@@ -129,10 +137,45 @@ const sheets = async (page, pid) => (await docs(page, 'asistencia')).filter((a) 
   await waitUntil(async () => /Del 15 al 28/.test(await txt(page, '.att-period')), 5000);
   await page.click('[data-act="att-start"]');
   await page.waitForSelector('#att-start-d');
-  await page.fill('#att-start-d', '2026-11-12');
+  await page.fill('#att-start-d', '2026-11-08');
   await page.dispatchEvent('#att-start-d', 'change');
   await settle(page, 200);
-  check(/La quincena anterior llega hasta el 14 nov de 2026/.test(await txt(page, '#att-start-msg')) && await page.isDisabled('#att-start-go'), 'no deja empezar antes de que termine la quincena anterior');
+  check(/La quincena anterior empieza el 8 nov de 2026/.test(await txt(page, '#att-start-msg')) && await page.isDisabled('#att-start-go'), 'no deja empezar el mismo día (o antes) que la quincena anterior');
+  await page.click('.sheet-h [data-act="sheet-close"]');
+
+  // 5) El caso del teléfono: la anterior va del 8 al 21 y se empezó otra del 22 al 5 sin querer. Al escoger el 15,
+  //    la anterior queda del 8 al 14 y esta del 15 al 28, con las marcas del 16 en su fecha.
+  await page.locator('[data-act="att-proj"]', { hasText: 'TORRE' }).click();
+  await waitUntil(async () => /Del 8 al 21 de nov de 2026/.test(await txt(page, '.att-period')), 5000);
+  check(/Del 8 al 21 de nov de 2026/.test(await txt(page, '.att-period')) && await page.isVisible('[data-act="att-start"]'), 'en la quincena de hoy (8 al 21) también sale «Cambiar las fechas», porque la que sigue no tiene marcas');
+  await page.click('[data-act="att-next"]');
+  await waitUntil(async () => /Del 22 de nov al 5 de dic de 2026/.test(await txt(page, '.att-period')), 5000);
+  await page.click('[data-act="att-start"]');
+  await page.waitForSelector('#att-start-d');
+  check(await page.inputValue('#att-start-d') === '2026-11-15', 'propone el 15 (cuando empiezan las otras obras)');
+  const m5 = await txt(page, '#att-start-msg');
+  console.log('     aviso:', m5);
+  check(/Quedan así: una quincena del 8 nov de 2026 al 14 nov de 2026 \(con las marcas de esos días\) y otra del 15 nov de 2026 al 28 nov de 2026 \(con las marcas del 15 nov de 2026 en adelante/.test(m5) && !(await page.isDisabled('#att-start-go')), 'desde la del 22 al 5 ahora sí deja (como en el teléfono): explica cómo quedan las dos');
+  await page.click('.sheet-h [data-act="sheet-close"]');
+  // Lo mismo desde la quincena de hoy (8 al 21): mueve la nueva vacía.
+  await page.click('[data-act="att-prev"]');
+  await waitUntil(async () => /Del 8 al 21 de nov de 2026/.test(await txt(page, '.att-period')), 5000);
+  await page.click('[data-act="att-start"]');
+  await page.waitForSelector('#att-start-d');
+  check(/Esta quincena va del 8 al 21 de nov de 2026, y después hay otra del 22 de nov al 5 de dic de 2026 que todavía no tiene marcas/.test(await sheetTxt(page)) && await page.inputValue('#att-start-d') === '2026-11-15' && /Quedan así: una quincena del 8 nov de 2026 al 14 nov de 2026/.test(await txt(page, '#att-start-msg')), 'desde la quincena de hoy explica las dos y propone el 15');
+  await page.screenshot({ path: path.join(OUT, 'torre.png') });
+  await page.click('#att-start-go');
+  await page.waitForSelector('#att-start-form', { state: 'detached' });
+  await waitUntil(async () => { const l = await sheets(page, I.t); return l.length === 2 && l[1].start === '2026-11-15' && l[0].days === 7; }, 5000);
+  const [t1, t2] = await sheets(page, I.t);
+  console.log('     torre:', JSON.stringify([t1, t2].map((x) => ({ start: x.start, days: x.days, marks: x.marks, surprise: x.surprise, half: x.half }))));
+  check(t1.id === I.t1 && t1.start === '2026-11-08' && t1.days === 7 && t1.marks[I.w.Tipo][1].e === 'ok' && t1.marks[I.w.Tipo][2].e === 'ok' && !t1.marks[I.w.Tipo][8] && !t1.surprise[8] && !t1.half[8], 'la anterior queda del 8 al 14 con sus marcas de esa semana');
+  check(t2.id === I.t2 && t2.start === '2026-11-15' && t2.days === 14 && t2.marks[I.w.Tipo][1].e === 't' && Object.keys(t2.marks[I.w.Tipo]).length === 1 && t2.surprise[1] === '10:00' && t2.half[1] === true, 'la de esta semana va del 15 al 28 con la marca del lunes 16, la hora del pase y el medio día');
+  await waitUntil(async () => /Del 15 al 28 de nov de 2026/.test(await txt(page, '.att-period')), 5000);
+  check(/Del 15 al 28 de nov de 2026/.test(await txt(page, '.att-period')), 'TORRE ahora dice «Del 15 al 28 de nov de 2026»');
+  await page.click('.att-day[data-k="1"]');
+  await settle(page, 300);
+  check(await page.locator('.att-row').count() === 1 && /Tipo/.test(await txt(page, '.att-row')), 'el lunes 16 sale con su obrero marcado');
 
   console.log('problemas:', problems.length ? problems : 'ninguno');
   await browser.close();
