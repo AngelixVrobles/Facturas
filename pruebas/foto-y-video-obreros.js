@@ -163,6 +163,49 @@ const wdoc = async (page, id) => (await docs(page, 'workers')).find((w) => w.id 
   check(await page.locator('.att-tbl .c-aname .w-av').count() === 3, 'en la computadora, la tabla de la quincena también tiene las caras');
   await page.screenshot({ path: path.join(OUT, 'pc.png') });
 
+  // 9) Fotos y videos que ya están en el teléfono: «Subir de la galería».
+  const clip = path.join(OUT, 'clip.webm'), tall = path.join(OUT, 'vertical.png');
+  execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc=size=320x240:rate=15', '-f', 'lavfi', '-i', 'sine=frequency=440', '-t', '3', '-c:v', 'libvpx', '-b:v', '200k', '-c:a', 'libopus', clip]);
+  execFileSync('ffmpeg', ['-y', '-loglevel', 'error', '-f', 'lavfi', '-i', 'color=c=red:size=600x900', '-frames:v', '1', tall]);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await settle(page, 600);
+  await page.click(`.att-row [data-act="w-card"][data-id="${I.w.Tipo}"]`);
+  await page.waitForSelector('.wcard');
+  check(await page.locator('.wcard [data-act="w-pick"]').count() === 2, 'la ficha tiene «Subir de la galería» para la foto y para el video');
+  let [fc2] = await Promise.all([page.waitForEvent('filechooser'), page.click('[data-act="w-pick"][data-k="video"]')]);
+  const inp = await fc2.element().evaluate((e) => ({ cap: e.hasAttribute('capture'), acc: e.accept }));
+  check(!inp.cap && inp.acc === 'video/*', 'el botón abre la galería (no la cámara)');
+  await fc2.setFiles(clip);
+  w = await waitUntil(async () => { const x = await wdoc(page, I.w.Tipo); return x.videoId ? x : null; }, 8000);
+  check(w && w.videoSrc === 'galeria' && w.videoType === 'video/webm' && w.videoSecs === 3 && w.videoBytes > 1000, `el video de la galería se guarda con su duración (${w && w.videoSecs} s) y su tipo`);
+  await page.waitForSelector('#wc-video');
+  const v2 = await page.waitForFunction(() => { const v = document.querySelector('#wc-video'); return v && v.readyState >= 1 ? v.duration : null; }, null, { timeout: 10000 }).then((h) => h.jsonValue()).catch(() => null);
+  check(v2 && Math.round(v2) === 3, 'el video subido se ve en la ficha');
+  check(/Subido de la galería el \d+ \w+ de \d{4} por A\. Robles · 3 s · \d+ KB/.test(await txt(page, '.wcard')), 'dice que se subió de la galería, cuándo, quién, los segundos y el tamaño');
+  [fc2] = await Promise.all([page.waitForEvent('filechooser'), page.click('[data-act="w-pick"][data-k="photo"]')]);
+  await fc2.setFiles(tall);
+  w = await waitUntil(async () => { const x = await wdoc(page, I.w.Tipo); return x.photoSrc === 'galeria' ? x : null; }, 8000);
+  const ph3 = w && await page.evaluate(async (id) => { const b = await RT.assets.get(id); const bm = await createImageBitmap(b); return { w: bm.width, h: bm.height }; }, w.photoId);
+  check(ph3 && ph3.w === 480 && ph3.h === 480, 'una foto vertical de la galería queda cuadrada y pequeña');
+  // Un .MOV del iPhone que llega sin tipo.
+  await page.waitForSelector('[data-act="w-pick"][data-k="video"]');
+  [fc2] = await Promise.all([page.waitForEvent('filechooser'), page.click('[data-act="w-pick"][data-k="video"]')]);
+  await fc2.setFiles({ name: 'IMG_0412.MOV', mimeType: '', buffer: fs.readFileSync(clip) });
+  w = await waitUntil(async () => { const x = await wdoc(page, I.w.Tipo); return x.videoType === 'video/quicktime' ? x : null; }, 8000);
+  check(w && w.videoType === 'video/quicktime', 'un .MOV sin tipo se guarda como video de iPhone');
+  // Uno demasiado pesado: avisa y no lo sube.
+  await page.waitForSelector('[data-act="w-pick"][data-k="video"]');
+  const before = w.videoId;
+  [fc2] = await Promise.all([page.waitForEvent('filechooser'), page.click('[data-act="w-pick"][data-k="video"]')]);
+  await fc2.setFiles({ name: 'largo.mp4', mimeType: 'video/mp4', buffer: Buffer.alloc(46 * 1048576) });
+  await page.waitForFunction(() => /Recórtalo en Fotos/.test(document.querySelector('#toast').textContent), null, { timeout: 8000 }).catch(() => {});
+  check(/pesa 46(\.0)? MB.*Recórtalo en Fotos/.test(await txt(page, '#toast')) && (await wdoc(page, I.w.Tipo)).videoId === before, 'un video muy pesado no se sube y dice cómo recortarlo');
+  // Compartir el video.
+  await page.click('[data-act="w-video-share"]');
+  await page.waitForSelector('.ready');
+  check(/Video - Tipo Carlet - ENZO\.mov/.test(await txt(page, '.ready')), '«Compartir el video» lo prepara con el nombre del obrero');
+  await page.click('.sheet-h [data-act="sheet-close"]');
+
   console.log('problemas:', problems.length ? problems : 'ninguno');
   await browser.close();
   server.close();

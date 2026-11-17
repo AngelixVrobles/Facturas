@@ -10,7 +10,7 @@ const LIB = {
   qrgen: 'js/qr.js',
 };
 const PDF_CREATOR = 'Facturas de Proyectos';
-const APP_VERSION = '1.33.0';
+const APP_VERSION = '1.33.1';
 const SVG = (d) => `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ICON = {
   lock: SVG('<rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>'),
@@ -3790,7 +3790,7 @@ function openWorkers() {
   const act = all.filter((w) => w.active !== false), gone = all.filter((w) => w.active === false);
   openSheet(`${sheetHead('Obreros de ' + esc(p.name))}<div class="sheet-b">
     <p class="hint">Escribe y pasa a otra casilla: se guarda solo. El pago por día es para el resumen de la quincena (RD$).</p>
-    ${act.length ? `<p class="usage">Foto y video: <b>${act.filter(wMediaDone).length} de ${act.length}</b> listos. Toca la cara (o las iniciales) de cada uno para tomarle la foto y grabarle el video diciendo su nombre.</p>` : ''}
+    ${act.length ? `<p class="usage">Foto y video: <b>${act.filter(wMediaDone).length} de ${act.length}</b> listos. Toca la cara (o las iniciales) de cada uno para tomarle la foto y el video diciendo su nombre, o para subirlos de la galería si ya los tienes.</p>` : ''}
     <div class="w-list">${act.map(row).join('') || '<p class="hint">Todavía no hay obreros.</p>'}</div>
     ${edit ? `<form id="w-add" class="w-row add" autocomplete="off"><input id="w-name" maxlength="60" placeholder="Nombre" required><input id="w-role" list="dl-roles" maxlength="40" placeholder="Función"><input id="w-pay" class="mono" inputmode="decimal" maxlength="10" placeholder="Pago/día"><button type="submit" class="btn primary sm">Agregar</button></form>` : ''}
     ${gone.length ? `<details class="edit"><summary>Ya no trabajan aquí (${gone.length})</summary><div class="w-list">${gone.map(row).join('')}</div></details>` : ''}
@@ -3862,24 +3862,25 @@ function openWorkerCard(id) {
   const edit = canEdit(), who = (s) => (s ? ' por ' + s : '');
   const photo = w.photoId ? `<img class="wc-photo" src="${esc(assetUrl(w.photoId))}" alt="Foto de ${esc(w.name)}">` : `<div class="wc-photo none"><span>${esc(wInitials(w.name))}</span></div>`;
   const vid = w.videoId
-    ? `<video class="wc-video" id="wc-video" controls playsinline preload="metadata"></video><p class="usage">Grabado el ${esc(fmtDate(String(w.videoAt || '').slice(0, 10)))}${esc(who(w.videoBy))}${isNum(w.videoSecs) ? ` · ${w.videoSecs} s` : ''}</p>`
-    : '<p class="hint">Todavía no tiene video. Pídele que mire a la cámara y diga su nombre completo.</p>';
+    ? `<video class="wc-video" id="wc-video" controls playsinline preload="metadata"></video><p class="usage">${w.videoSrc === 'galeria' ? 'Subido de la galería' : 'Grabado'} el ${esc(fmtDate(String(w.videoAt || '').slice(0, 10)))}${esc(who(w.videoBy))}${isNum(w.videoSecs) ? ` · ${w.videoSecs} s` : ''}${isNum(w.videoBytes) ? ` · ${esc(fmtBytes(w.videoBytes))}` : ''}</p>`
+    : '<p class="hint">Todavía no tiene video. Grábalo aquí (que mire a la cámara y diga su nombre completo) o, si ya lo tienes en el teléfono, súbelo de la galería.</p>';
   const next = edit ? wNextMissing(w) : null;
   openSheet(`${sheetHead(esc(w.name || 'Obrero'))}<div class="sheet-b wcard">
     <p class="usage">${esc([w.role, D_projName(w.projectId), w.active === false ? 'ya no trabaja aquí' : ''].filter(Boolean).join(' · '))}</p>
     <div class="wc-media">${photo}</div>
     ${w.photoId ? `<p class="usage wc-c">Foto del ${esc(fmtDate(String(w.photoAt || '').slice(0, 10)))}${esc(who(w.photoBy))}</p>` : ''}
-    ${edit ? `<div class="actions wc-c"><button type="button" class="btn${w.photoId ? '' : ' primary'}" data-act="w-photo" data-id="${esc(w.id)}">${w.photoId ? 'Cambiar la foto' : 'Tomar la foto'}</button></div>` : ''}
+    ${edit ? `<div class="actions wc-c"><button type="button" class="btn${w.photoId ? '' : ' primary'}" data-act="w-photo" data-id="${esc(w.id)}">${w.photoId ? 'Tomar otra foto' : 'Tomar la foto'}</button><button type="button" class="btn" data-act="w-pick" data-k="photo">Subir de la galería</button></div>` : ''}
     <div id="wc-cam" hidden></div>
     <h3 class="h2">Video diciendo su nombre</h3>
     ${vid}
-    ${edit ? `<div class="actions"><button type="button" class="btn${w.videoId || !w.photoId ? '' : ' primary'}" data-act="w-video" data-id="${esc(w.id)}">${w.videoId ? 'Grabar otra vez' : 'Grabar el video'}</button></div>` : ''}
+    <div class="actions">${edit ? `<button type="button" class="btn${w.videoId || !w.photoId ? '' : ' primary'}" data-act="w-video" data-id="${esc(w.id)}">${w.videoId ? 'Grabar otra vez' : 'Grabar el video'}</button><button type="button" class="btn" data-act="w-pick" data-k="video">Subir de la galería</button>` : ''}${w.videoId ? `<button type="button" class="btn" data-act="w-video-share" data-id="${esc(w.id)}">${ICON.share} Compartir el video</button>` : ''}</div>
     <input type="file" id="wc-photo-in" accept="image/*" capture="user" hidden><input type="file" id="wc-video-in" accept="video/*" capture="user" hidden>
+    <input type="file" id="wc-photo-pick" accept="image/*" hidden><input type="file" id="wc-video-pick" accept="video/*" hidden>
   </div>${next ? `<div class="sheet-f"><button type="button" class="btn block" data-act="w-card" data-id="${esc(next.id)}">Siguiente sin foto o video: ${esc(next.name)} ${ICON.right}</button></div>` : ''}`, { type: 'wcard', id });
   if (w.videoId) RT.assets.objectUrl(w.videoId).then((u) => {
     const v = $('#wc-video');
     if (!v) return;
-    if (u) v.src = u; else v.outerHTML = '<p class="msg warn"><span>No se pudo abrir el video. Si se grabó en otro teléfono, puede que todavía no haya bajado de la nube.</span></p>';
+    if (u) { v.onerror = () => { v.outerHTML = '<p class="msg warn"><span>Este aparato no puede reproducir este video. Usa «Compartir el video» para verlo o mandarlo.</span></p>'; }; v.src = u; } else v.outerHTML = '<p class="msg warn"><span>No se pudo abrir el video. Si se grabó en otro teléfono, puede que todavía no haya bajado de la nube.</span></p>';
   }).catch(() => {});
 }
 function wcamStop() {
@@ -3922,7 +3923,7 @@ async function wcamOpen(id, kind) {
 function squareJpeg(src, w, h, size = 480) {
   const s = Math.min(w, h), c = document.createElement('canvas');
   c.width = c.height = Math.min(size, s);
-  c.getContext('2d').drawImage(src, (w - s) / 2, (h - s) / 2, s, s, 0, 0, c.width, c.height);
+  c.getContext('2d').drawImage(src, (w - s) / 2, h > w ? (h - s) * 0.3 : (h - s) / 2, s, s, 0, 0, c.width, c.height);
   return canvasToJpeg(c, 0.85);
 }
 async function wcamShot() {
@@ -3957,7 +3958,9 @@ function wcamRecord() {
   tick();
   c.timer = setInterval(tick, 250);
 }
-async function wFileMedia(kind, file) {
+const W_VIDEO_MAX = 45 * 1048576;
+const VIDEO_EXT = { mov: 'video/quicktime', mp4: 'video/mp4', m4v: 'video/mp4', webm: 'video/webm', '3gp': 'video/3gpp' };
+async function wFileMedia(kind, file, src) {
   const id = S.sheet && S.sheet.type === 'wcard' ? S.sheet.id : null;
   if (!id || !file) return;
   try {
@@ -3966,22 +3969,33 @@ async function wFileMedia(kind, file) {
       const img = await new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = rej; im.src = url; });
       const blob = await squareJpeg(img, img.naturalWidth, img.naturalHeight);
       URL.revokeObjectURL(url);
-      await saveWorkerMedia(id, 'photo', blob);
+      await saveWorkerMedia(id, 'photo', blob, null, src);
     } else {
-      if (file.size > 25 * 1048576) { toast(`El video pesa ${fmtBytes(file.size)}. Grábalo más corto (unos ${W_VIDEO_SECS} segundos).`); return; }
+      if (file.size > W_VIDEO_MAX) { toast(`El video pesa ${fmtBytes(file.size)} (el máximo es ${fmtBytes(W_VIDEO_MAX)}). Recórtalo en Fotos (Editar) para que quede de unos segundos y súbelo otra vez.`); return; }
+      if (file.type && !/^video\//.test(file.type)) { toast('Ese archivo no es un video.'); return; }
       const secs = await new Promise((res) => { const u = URL.createObjectURL(file), v = document.createElement('video'); v.preload = 'metadata'; v.onloadedmetadata = () => { URL.revokeObjectURL(u); res(isFinite(v.duration) ? Math.max(1, Math.round(v.duration)) : null); }; v.onerror = () => { URL.revokeObjectURL(u); res(null); }; v.src = u; setTimeout(() => res(null), 4000); });
-      await saveWorkerMedia(id, 'video', file.type ? file : new Blob([file], { type: 'video/mp4' }), secs);
+      const type = file.type || VIDEO_EXT[String(file.name || '').split('.').pop().toLowerCase()] || 'video/mp4';
+      await saveWorkerMedia(id, 'video', file.type ? file : new Blob([file], { type }), secs, src);
     }
   } catch (e) { console.error(e); toast(kind === 'photo' ? 'No se pudo leer esa foto.' : 'No se pudo guardar ese video.'); }
 }
-async function saveWorkerMedia(id, kind, blob, secs) {
+async function shareWorkerVideo(id) {
+  const w = S.workers.find((x) => x.id === id);
+  if (!w || !w.videoId) return;
+  try {
+    const b = await getBlob(w.videoId);
+    const ext = { 'video/quicktime': 'mov', 'video/webm': 'webm', 'video/3gpp': '3gp' }[String(b.type).split(';')[0]] || 'mp4';
+    deliverFile(b, fileSafe(`Video - ${w.name || 'obrero'}${w.projectId ? ' - ' + D_projName(w.projectId) : ''}`) + '.' + ext);
+  } catch (e) { console.error(e); toast('No se pudo abrir el video. Si se grabó en otro teléfono, puede que todavía no haya bajado de la nube.'); }
+}
+async function saveWorkerMedia(id, kind, blob, secs, src = 'camara') {
   const w = S.workers.find((x) => x.id === id);
   if (!w) return;
   toast(kind === 'photo' ? 'Guardando la foto…' : 'Guardando el video…');
   try {
     const up = await assets.upload(blob, { type: blob.type || (kind === 'photo' ? 'image/jpeg' : 'video/mp4') });
     const now = new Date().toISOString(), by = (S.settings && S.settings.preparedBy) || '';
-    const upd = kind === 'photo' ? { photoId: up.id, photoAt: now, photoBy: by } : { videoId: up.id, videoAt: now, videoBy: by, videoType: up.contentType, videoSecs: isNum(secs) ? secs : null, videoBytes: up.sizeBytes };
+    const upd = kind === 'photo' ? { photoId: up.id, photoAt: now, photoBy: by, photoSrc: src } : { videoId: up.id, videoAt: now, videoBy: by, videoType: up.contentType, videoSecs: isNum(secs) ? secs : null, videoBytes: up.sizeBytes, videoSrc: src };
     if (!(await write(() => db.doc('workers/' + id).update(upd), kind === 'photo' ? 'Foto guardada' : 'Video guardado'))) return;
     setTimeout(() => { if (S.sheet && S.sheet.type === 'wcard' && S.sheet.id === id) openWorkerCard(id); }, 200);
   } catch (e) { console.error(e); toast(kind === 'photo' ? 'No se pudo guardar la foto.' : 'No se pudo guardar el video.'); }
@@ -6747,6 +6761,8 @@ function onClick(e) {
     case 'w-card': openWorkerCard(id); break;
     case 'w-photo': wcamOpen(id, 'photo'); break;
     case 'w-video': wcamOpen(id, 'video'); break;
+    case 'w-pick': { wcamStop(); const b = $('#wc-cam'); if (b) { b.hidden = true; b.innerHTML = ''; } const i = $(t.dataset.k === 'photo' ? '#wc-photo-pick' : '#wc-video-pick'); if (i) i.click(); break; }
+    case 'w-video-share': shareWorkerVideo(id); break;
     case 'cam-shot': wcamShot(); break;
     case 'cam-rec': wcamRecord(); break;
     case 'cam-cancel': { wcamStop(); const b = $('#wc-cam'); if (b) { b.hidden = true; b.innerHTML = ''; } break; }
@@ -6971,6 +6987,7 @@ async function hintCreate(id, btn) {
 function onChange(e) {
   const t = e.target;
   if (t.id === 'wc-photo-in' || t.id === 'wc-video-in') { const f = t.files[0]; t.value = ''; if (f) wFileMedia(t.id === 'wc-photo-in' ? 'photo' : 'video', f); return; }
+  if (t.id === 'wc-photo-pick' || t.id === 'wc-video-pick') { const f = t.files[0]; t.value = ''; if (f) wFileMedia(t.id === 'wc-photo-pick' ? 'photo' : 'video', f, 'galeria'); return; }
   if (t.id === 'f-proj') { $('#f-newproj-wrap').hidden = t.value !== '__new'; if (t.value === '__new') $('#f-newproj').focus(); }
   if (t.id === 'f-order' || t.id === 'mo-add') {
     const box = $(t.id === 'f-order' ? '#f-order-prev' : '#mo-prev'), D = derive(), o = t.value ? D.orderById.get(t.value) : null;
