@@ -10,7 +10,7 @@ const LIB = {
   qrgen: 'js/qr.js',
 };
 const PDF_CREATOR = 'Facturas de Proyectos';
-const APP_VERSION = '1.34.0';
+const APP_VERSION = '1.35.0';
 const SVG = (d) => `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ICON = {
   lock: SVG('<rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>'),
@@ -2043,6 +2043,51 @@ function trExcel() {
 const COND_SEGS = [['esperando', 'Sin factura'], ['confactura', 'Con factura'], ['todos', 'Todos']];
 const condSupKey = (c) => (c.rnc && RD.normRnc(c.rnc) ? 'r:' + RD.normRnc(c.rnc) : 'n:' + norm(c.supplier || ''));
 const condWhen = (c) => String(c.date || '') + '|' + String(c.createdAt || '');
+/* ---------- precios de los conduces (transporte de material) ---------- */
+// Muchos conduces llegan sin precio. Se juntan por proveedor y material (Caliche amarillo 5 MT = 5 m³); si otro conduce
+// igual ya tiene precio, se propone ese (por viaje) para ponérselo a los demás. Si ninguno tiene, se escribe una vez.
+const condMatKey = (m) => norm(m).replace(/(\d)\s*(m|mt|mts|m3|mc|metros?|metro cubico|metros cubicos)\b/g, '$1 m3').replace(/\b(mt|mts|m3|mc|metros?)\b/g, 'm3').replace(/\s+/g, ' ').trim();
+const condTrips = (c) => (isNum(c.trips) && c.trips > 0 ? c.trips : 1);
+function condPriceGroups(D) {
+  const m = new Map();
+  for (const c of D.conduces) {
+    if (c.ai === 'pending' || !condMatKey(c.material)) continue;
+    const k = condSupKey(c) + '|' + condMatKey(c.material) + '|' + normCur(c.currency);
+    if (!m.has(k)) m.set(k, { key: k, supplier: c.supplier || 'Proveedor sin nombre', material: c.material, priced: [], missing: [] });
+    (isNum(c.total) && c.total > 0 ? m.get(k).priced : m.get(k).missing).push(c);
+  }
+  return [...m.values()].filter((g) => g.missing.length).map((g) => {
+    // El precio por viaje que más se repite (si empatan, el del conduce más nuevo).
+    const cnt = new Map();
+    for (const c of [...g.priced].sort((a, b) => condWhen(b).localeCompare(condWhen(a)))) { const u = round2(c.total / condTrips(c)); cnt.set(u, (cnt.get(u) || 0) + 1); }
+    const best = [...cnt].sort((a, b) => b[1] - a[1])[0];
+    const from = best ? g.priced.filter((c) => round2(c.total / condTrips(c)) === best[0]) : [];
+    return { ...g, price: best ? best[0] : null, from, other: cnt.size > 1 };
+  }).sort((a, b) => b.missing.length - a.missing.length || a.supplier.localeCompare(b.supplier));
+}
+function condPriceHTML(D) {
+  const gs = condPriceGroups(D);
+  if (!gs.length || !canEdit()) return '';
+  const n = gs.reduce((t, g) => t + g.missing.length, 0);
+  const rows = gs.map((g, k) => {
+    const nums = g.missing.slice().sort(condSort).map((c) => c.number || 's/n').join(', ');
+    const head = `<div class="cp-top"><b>${esc(g.material)}</b><small>${esc(g.supplier)} · ${esc(plural(g.missing.length, 'conduce sin precio', 'conduces sin precio'))}: ${esc(nums)}</small></div>`;
+    const known = g.price != null ? `<p class="usage">Otros conduces iguales tienen <b>${esc(money(g.price, g.missing[0].currency))}</b> por viaje (${esc(g.from.slice(0, 3).map((c) => c.number || 's/n').join(', '))}${g.from.length > 3 ? '…' : ''})${g.other ? '; hay otros con precio distinto' : ''}.</p>` : '<p class="usage">Ningún conduce de este material tiene precio todavía.</p>';
+    return `<div class="cp-g" data-k="${esc(g.key)}">${head}${known}<div class="cp-act"><label class="cp-in"><span>Precio por viaje</span><input class="mono" inputmode="decimal" maxlength="14" data-cp="${k}" value="${g.price != null ? esc(amountInput(g.price)) : ''}" placeholder="0.00"></label><button type="button" class="btn sm primary" data-act="cp-apply" data-k="${esc(g.key)}">Ponérselo a ${g.missing.length === 1 ? 'este' : `los ${g.missing.length}`}</button></div></div>`;
+  }).join('');
+  return `<details class="card cp-card" id="cp-card"${S.cpOpen === false ? '' : ' open'}><summary><b>Conduces sin precio</b> <span class="n">${n}</span></summary><p class="hint">Por proveedor y material. Si otro conduce igual ya tiene precio, sale aquí; revísalo y pónselo a los demás. El total de cada uno es el precio por viaje por sus viajes.</p>${rows}</details>`;
+}
+async function applyCondPrice(key, btn) {
+  const D = derive(), g = condPriceGroups(D).find((x) => x.key === key);
+  if (!g) return;
+  const inp = btn.closest('.cp-g').querySelector('input'), price = parseAmount(inp.value.trim());
+  if (price == null || price <= 0 || price >= 1e9) { toast('Escribe el precio por viaje solo con números.'); inp.focus(); return; }
+  const before = g.missing.map((c) => [c.id, { total: c.total ?? null, priceFrom: c.priceFrom || '' }]);
+  const ok = await write(async () => { for (const c of g.missing) await db.doc('conduces/' + c.id).update({ total: round2(price * condTrips(c)), priceFrom: g.price != null && round2(price) === g.price ? 'igual' : 'mano' }); });
+  if (!ok) return;
+  scheduleLink();
+  toastAct(`Precio puesto a ${plural(g.missing.length, 'conduce', 'conduces')}`, 'Deshacer', () => write(async () => { for (const [id, v] of before) await db.doc('conduces/' + id).update(v); }, 'Precios quitados'));
+}
 function renderConduces(D) {
   const el = $('#c-list');
   if (S.condProject !== 'all' && S.condProject !== 'none' && !D.projById.has(S.condProject) && S.got.projects) S.condProject = 'all';
@@ -2060,6 +2105,8 @@ function renderConduces(D) {
     if (noneN || S.condProject === 'none') chips.push(`<button type="button" class="chip" data-act="cprojf" data-p="none" aria-pressed="${S.condProject === 'none'}"><i class="dot ring"></i><span>Sin proyecto</span></button>`);
     ch.innerHTML = chips.join('');
   } else { ch.hidden = true; ch.innerHTML = ''; }
+  const cpBox = $('#c-price');
+  if (cpBox) { const html = S.got.conduces ? condPriceHTML(D) : ''; if (cpBox.dataset.sig !== html) { const typing = cpBox.contains(document.activeElement) && document.activeElement.tagName === 'INPUT'; if (!typing) { cpBox.dataset.sig = html; cpBox.innerHTML = html; } } }
   const sum = $('#c-sum');
   if (!S.got.conduces) { el.innerHTML = S.dbState === 'absent' ? '' : '<p class="loading">Cargando conduces…</p>'; sum.innerHTML = ''; return; }
   if (!D.conduces.length) {
@@ -6785,6 +6832,7 @@ function onClick(e) {
     case 'att-blank': attExport('blank'); break;
     case 'cond-list': closeSheet(); S.tab = 'conduces'; S.condFilter = 'esperando'; S.paymentId = null; renderAll(); window.scrollTo(0, 0); break;
     case 'cfilter': S.condFilter = t.dataset.f; renderAll(); break;
+    case 'cp-apply': applyCondPrice(t.dataset.k, t); break;
     case 'sort': toggleSort(t.dataset.scope, t.dataset.k); renderAll(); break;
     case 'sel': break; // la casilla se maneja en «change»
     case 'sel-cell': { const b = t.querySelector('input'); if (b && e.target === t) { b.checked = !b.checked; b.dispatchEvent(new Event('change', { bubbles: true })); } break; }
