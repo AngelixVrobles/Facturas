@@ -100,7 +100,7 @@ const answers = [];
   await page.click('[data-tab="ordenes"]');
   await page.waitForSelector('#o-seg button');
   const segs = await page.$$eval('#o-seg button', (b) => b.map((x) => x.textContent));
-  check(segs.join('|') === 'Sin factura1|Con factura2|Todas3', 'Órdenes: 1 sin factura y 2 con factura (' + segs.join(' | ') + ')');
+  check(segs.join('|') === 'Sin factura1|Con conduce0|Con factura2|Todas3', 'Órdenes: 1 sin factura y 2 con factura (' + segs.join(' | ') + ')');
   await page.click('[data-act="ofilter"][data-f="sinfactura"]');
   await settle(page, 300);
   const sf = await txt(page, '#o-list');
