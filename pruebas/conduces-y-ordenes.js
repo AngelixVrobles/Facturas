@@ -130,21 +130,33 @@ const sheetTxt = (page) => txt(page, '.sheet');
   let c3 = await waitUntil(async () => { const c = await condDoc(page, I.c3); return c.orderId === I.o10 ? c : null; }, 5000);
   check(c3 && c3.orderAuto === false, 'el conduce queda enlazado a la orden elegida a mano');
 
-  // 5) Pedir las facturas: cada orden con sus conduces.
+  // 5) Las órdenes con conduce (transporte de material) van aparte: no cuentan como facturas que faltan.
   await page.click('[data-act="tab"][data-tab="ordenes"]');
   await page.click('#o-seg [data-f="sinfactura"]');
-  await page.waitForSelector('[data-act="ask-inv"]');
-  const askBtns = await page.$$('[data-act="ask-inv"]');
-  let askText = '';
-  for (const b of askBtns) {
-    await b.click();
-    await page.waitForSelector('#ask-text');
-    const t = await page.inputValue('#ask-text');
-    await page.click('.sheet-h [data-act="sheet-close"]');
-    if (/Ferretería Ochoa|OC-0010/.test(t)) askText = t;
-  }
-  console.log('     mensaje:', JSON.stringify(askText));
-  check(/OC-0010 .*\(conduce 777\)/.test(askText), 'el mensaje para pedir la factura dice qué conduces de esa orden ya llegaron');
+  await settle(page, 300);
+  const segN = async (f) => Number(await page.textContent(`#o-seg [data-f="${f}"] .n`));
+  check(await segN('sinfactura') === 1 && await segN('conconduce') === 3 && await segN('confactura') === 0, 'Órdenes: 1 sin factura y 3 con conduce');
+  const sinf = await txt(page, '#o-list');
+  check(/OC-0011/.test(sinf) && !/OC-0009|OC-0010|OC-0012/.test(sinf), '«Sin factura» solo tiene la orden que no tiene ni factura ni conduce');
+  await page.click('[data-act="ask-inv"]');
+  await page.waitForSelector('#ask-text');
+  const askText = await page.inputValue('#ask-text');
+  await page.click('.sheet-h [data-act="sheet-close"]');
+  check(/OC-0011/.test(askText) && !/OC-0012/.test(askText), 'al pedir la factura no se mencionan las órdenes que vinieron con conduce');
+  await page.click('#o-seg [data-f="conconduce"]');
+  await settle(page, 300);
+  const conc = await txt(page, '#o-list');
+  console.log('     con conduce:', conc.slice(0, 300));
+  check(/No llevan factura hasta que se haga el pago/.test(conc) && /OC-0009/.test(conc) && /OC-0010/.test(conc) && /OC-0012/.test(conc) && !/OC-0011/.test(conc), '«Con conduce» tiene las órdenes que llegaron con conduce');
+  check(/Agregados del Norte\s*1 orden · 2 conduces · RD\$ ?14,000\.00/.test(conc) && /4 conduces por RD\$ ?24,500\.00/.test(conc), 'por proveedor, con lo que suman sus conduces');
+  await page.click('[data-act="tab"][data-tab="facturas"]');
+  await settle(page, 300);
+  const todo = await txt(page, '#todo');
+  check(/1 orden sin factura/.test(todo), '«Para hacer» solo cuenta como faltante la orden sin conduce');
+  await page.click('[data-act="tab"][data-tab="ordenes"]');
+  await page.click('#o-seg [data-f="todas"]');
+  await settle(page, 300);
+  check(/Con conduce/.test(await txt(page, '#o-list')) || /conduce/.test(await txt(page, '#o-list')), 'en «Todas» se ve qué órdenes tienen conduce');
 
   // 6) Desde la orden: enlazar un conduce y quitarlo.
   await page.click('#o-seg [data-f="todas"]');
@@ -205,7 +217,9 @@ const sheetTxt = (page) => txt(page, '.sheet');
   await page.click('#o-seg [data-f="todas"]').catch(() => {});
   await settle(page, 400);
   const cards = await txt(page, '#o-list');
-  check(/llegó 1 conduce/.test(cards) && /llegó 2 conduces/.test(cards), 'en el teléfono, la tarjeta de la orden dice cuántos conduces llegaron');
+  await page.screenshot({ path: path.join(OUT, 'ordenes-tel.png') });
+  check(await page.$$eval('#o-seg button', (l) => l.every((b) => b.scrollWidth <= b.clientWidth + 1)), 'en el teléfono caben las cuatro pestañas de Órdenes');
+  check(/Con conduce/.test(cards) && /1 conduce por RD\$ ?9,000\.00, la factura llega con el pago/.test(cards) && /2 conduces por RD\$ ?14,000\.00, la factura llega con el pago/.test(cards), 'en el teléfono, la tarjeta de la orden dice «Con conduce», cuántos y por cuánto');
   await page.evaluate(() => { const b = document.querySelector('[data-act="tab"][data-tab="conduces"]'); if (b) b.click(); });
   await page.click('#c-seg [data-f="todos"]');
   await settle(page, 400);

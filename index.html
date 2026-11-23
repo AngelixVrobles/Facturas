@@ -333,6 +333,8 @@ body.locked .toast { top: calc(14px + env(safe-area-inset-top, 0px)); bottom: au
 
 /* Órdenes de compra */
 .seg.seg3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.seg.seg4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.seg.seg4 button span:first-child { font-size: 13px; }
 .ord { width: 100%; text-align: left; display: flex; flex-direction: column; gap: 3px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 12px 14px; }
 .ord:hover { border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); }
 .ord-top { display: flex; align-items: center; gap: 10px; }
@@ -824,7 +826,7 @@ input[type="date"]::-webkit-calendar-picker-indicator { margin: 0 0 0 4px; paddi
 
   <section id="v-ordenes" class="view" hidden>
     <button type="button" class="btn primary block" data-act="new-order" id="o-new">Nueva orden de compra</button>
-    <div class="seg seg3" id="o-seg" role="group" aria-label="Órdenes con o sin factura"></div>
+    <div class="seg seg4" id="o-seg" role="group" aria-label="Órdenes con o sin factura"></div>
     <div class="chips" id="o-chips" role="group" aria-label="Proyecto" hidden></div>
     <label class="search-box">
       <span class="sr">Buscar órdenes</span>
