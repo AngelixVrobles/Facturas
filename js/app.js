@@ -10,7 +10,7 @@ const LIB = {
   qrgen: 'js/qr.js',
 };
 const PDF_CREATOR = 'Facturas de Proyectos';
-const APP_VERSION = '1.35.0';
+const APP_VERSION = '1.35.1';
 const SVG = (d) => `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ICON = {
   lock: SVG('<rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>'),
@@ -101,7 +101,7 @@ const DEFAULT_ORDER_NOTE = 'Toda factura recibida por compras deberá estar acom
 
 const S = {
   tab: 'facturas', filter: 'pendientes', projectFilter: 'all', search: '', paymentId: null,
-  projects: [], invoices: [], payments: [], orders: [], conduces: [], workers: [], asistencia: [], suppliers: [], envios: [], papelera: [], traslados: [], settings: {}, attRules: {}, digi: {}, bk: {}, inf: {}, envioPending: null, got: { projects: false, invoices: false, payments: false, orders: false, conduces: false, workers: false, asistencia: false, suppliers: false, envios: false, papelera: false, traslados: false },
+  projects: [], invoices: [], payments: [], orders: [], conduces: [], workers: [], asistencia: [], suppliers: [], envios: [], papelera: [], traslados: [], settings: {}, attRules: {}, digi: {}, bk: {}, inf: {}, condCfg: {}, envioPending: null, got: { projects: false, invoices: false, payments: false, orders: false, conduces: false, workers: false, asistencia: false, suppliers: false, envios: false, papelera: false, traslados: false },
   attProject: '', attSheet: '', attDay: 0, orderFilter: 'todas', orderSearch: '', orderProject: 'all', condFilter: 'esperando', condSearch: '', condProject: 'all', trProject: 'all', trSearch: '', sort: { inv: null, cond: null, ord: null, tr: null }, sel: new Set(), todoAll: false, focus: null, invOrder: 'all', dateFilter: '', dateFrom: '', dateTo: '', showAll: new Set(),
   dbState: 'loading', aiState: 'ok', queue: [], sheet: null, payDel: false, busyPdf: false, pdfMsg: '',
   updateReg: null, updating: false, ready: null, restoreFile: null,
@@ -2044,49 +2044,69 @@ const COND_SEGS = [['esperando', 'Sin factura'], ['confactura', 'Con factura'], 
 const condSupKey = (c) => (c.rnc && RD.normRnc(c.rnc) ? 'r:' + RD.normRnc(c.rnc) : 'n:' + norm(c.supplier || ''));
 const condWhen = (c) => String(c.date || '') + '|' + String(c.createdAt || '');
 /* ---------- precios de los conduces (transporte de material) ---------- */
-// Muchos conduces llegan sin precio. Se juntan por proveedor y material (Caliche amarillo 5 MT = 5 m³); si otro conduce
-// igual ya tiene precio, se propone ese (por viaje) para ponérselo a los demás. Si ninguno tiene, se escribe una vez.
-const condMatKey = (m) => norm(m).replace(/(\d)\s*(m|mt|mts|m3|mc|metros?|metro cubico|metros cubicos)\b/g, '$1 m3').replace(/\b(mt|mts|m3|mc|metros?)\b/g, 'm3').replace(/\s+/g, ' ').trim();
+// Los conduces que esperan factura y no tienen precio. Se juntan por proveedor y material (sin contar los metros:
+// «Relleno 5 MT» y «Relleno 10 m³» son el mismo material). El precio del metro cúbico sale de los que ya tienen precio
+// (todo el dinero entre todos los metros) y a cada uno se le pone ese precio por sus metros.
+// Los proveedores que no llevan precio en el conduce (por ejemplo, una ferretería) se pueden quitar de aquí.
+const M3_RE = /(\d+(?:[.,]\d+)?)\s*(?:metros?\s*c[uú]bicos?|metros?|mts|mt|mc|m\s*3|m³|m)(?![a-záéíóúñ])/i;
 const condTrips = (c) => (isNum(c.trips) && c.trips > 0 ? c.trips : 1);
+const m3Num = (x) => Number(String(x).replace(',', '.'));
+// Los metros del conduce: los de «Cantidad» o, si no, los del material por sus viajes.
+function condM3(c) {
+  const q = M3_RE.exec(String(c.qty || ''));
+  if (q && m3Num(q[1]) > 0) return m3Num(q[1]);
+  const m = M3_RE.exec(String(c.material || ''));
+  return m && m3Num(m[1]) > 0 ? round2(m3Num(m[1]) * condTrips(c)) : null;
+}
+const condMatKey = (m) => norm(m).replace(/\b\d+(?: \d+)?\s*(metros? cubicos?|metros?|mts|mt|mc|m3|m)?\b/g, ' ').replace(/\b(metros? cubicos?|mts|mt|mc|m3)\b/g, ' ').replace(/\s+/g, ' ').trim();
+const condNoPrice = () => new Set((S.condCfg && S.condCfg.noPrice) || []);
 function condPriceGroups(D) {
-  const m = new Map();
+  const hide = condNoPrice(), m = new Map();
   for (const c of D.conduces) {
-    if (c.ai === 'pending' || !condMatKey(c.material)) continue;
+    if (c.ai === 'pending' || hide.has(condSupKey(c)) || !condMatKey(c.material)) continue;
     const k = condSupKey(c) + '|' + condMatKey(c.material) + '|' + normCur(c.currency);
-    if (!m.has(k)) m.set(k, { key: k, supplier: c.supplier || 'Proveedor sin nombre', material: c.material, priced: [], missing: [] });
-    (isNum(c.total) && c.total > 0 ? m.get(k).priced : m.get(k).missing).push(c);
+    if (!m.has(k)) m.set(k, { key: k, sup: condSupKey(c), supplier: c.supplier || 'Proveedor sin nombre', material: String(c.material || '').replace(M3_RE, '').replace(/\s+/g, ' ').trim() || c.material, priced: [], missing: [] });
+    const g = m.get(k);
+    if (isNum(c.total) && c.total > 0) { if (condM3(c)) g.priced.push(c); } else if (!c.invoiceId) g.missing.push(c);
   }
   return [...m.values()].filter((g) => g.missing.length).map((g) => {
-    // El precio por viaje que más se repite (si empatan, el del conduce más nuevo).
-    const cnt = new Map();
-    for (const c of [...g.priced].sort((a, b) => condWhen(b).localeCompare(condWhen(a)))) { const u = round2(c.total / condTrips(c)); cnt.set(u, (cnt.get(u) || 0) + 1); }
-    const best = [...cnt].sort((a, b) => b[1] - a[1])[0];
-    const from = best ? g.priced.filter((c) => round2(c.total / condTrips(c)) === best[0]) : [];
-    return { ...g, price: best ? best[0] : null, from, other: cnt.size > 1 };
-  }).sort((a, b) => b.missing.length - a.missing.length || a.supplier.localeCompare(b.supplier));
+    const money0 = g.priced.reduce((t, c) => t + c.total, 0), m3 = g.priced.reduce((t, c) => t + condM3(c), 0);
+    return { ...g, price: m3 > 0 ? round2(money0 / m3) : null, m3, noM3: g.missing.filter((c) => !condM3(c)) };
+  }).sort((a, b) => a.supplier.localeCompare(b.supplier) || b.missing.length - a.missing.length);
 }
 function condPriceHTML(D) {
-  const gs = condPriceGroups(D);
-  if (!gs.length || !canEdit()) return '';
+  if (!canEdit()) return '';
+  const gs = condPriceGroups(D), hidden = [...condNoPrice()];
+  if (!gs.length && !hidden.length) return '';
+  const names = new Map(D.conduces.map((c) => [condSupKey(c), c.supplier || 'Proveedor sin nombre']));
   const n = gs.reduce((t, g) => t + g.missing.length, 0);
-  const rows = gs.map((g, k) => {
-    const nums = g.missing.slice().sort(condSort).map((c) => c.number || 's/n').join(', ');
-    const head = `<div class="cp-top"><b>${esc(g.material)}</b><small>${esc(g.supplier)} · ${esc(plural(g.missing.length, 'conduce sin precio', 'conduces sin precio'))}: ${esc(nums)}</small></div>`;
-    const known = g.price != null ? `<p class="usage">Otros conduces iguales tienen <b>${esc(money(g.price, g.missing[0].currency))}</b> por viaje (${esc(g.from.slice(0, 3).map((c) => c.number || 's/n').join(', '))}${g.from.length > 3 ? '…' : ''})${g.other ? '; hay otros con precio distinto' : ''}.</p>` : '<p class="usage">Ningún conduce de este material tiene precio todavía.</p>';
-    return `<div class="cp-g" data-k="${esc(g.key)}">${head}${known}<div class="cp-act"><label class="cp-in"><span>Precio por viaje</span><input class="mono" inputmode="decimal" maxlength="14" data-cp="${k}" value="${g.price != null ? esc(amountInput(g.price)) : ''}" placeholder="0.00"></label><button type="button" class="btn sm primary" data-act="cp-apply" data-k="${esc(g.key)}">Ponérselo a ${g.missing.length === 1 ? 'este' : `los ${g.missing.length}`}</button></div></div>`;
+  const rows = gs.map((g) => {
+    const cur = g.missing[0].currency, nums = g.missing.slice().sort(condSort).map((c) => c.number || 's/n').join(', ');
+    const info = g.price != null ? `${money(g.price, cur)} el m³ (de ${plural(g.priced.length, 'conduce', 'conduces')}, ${fmtQty(round2(g.m3))} m³)` : 'ninguno tiene precio';
+    return `<div class="cp-g"><div class="cp-txt"><b>${esc(g.material)}</b> <small>${esc(g.supplier)} · ${esc(plural(g.missing.length, 'sin precio', 'sin precio'))} (${esc(nums)}) · ${esc(info)}${g.noM3.length ? ` · ${esc(plural(g.noM3.length, 'no dice', 'no dicen'))} los metros` : ''}</small></div><div class="cp-act"><input class="mono" inputmode="decimal" maxlength="14" aria-label="Precio por metro cúbico" placeholder="RD$/m³" value="${g.price != null ? esc(amountInput(g.price)) : ''}"><button type="button" class="btn sm primary" data-act="cp-apply" data-k="${esc(g.key)}">Poner</button><button type="button" class="link cp-no" data-act="cp-hide" data-k="${esc(g.sup)}" title="Este proveedor no lleva precio en el conduce">No lleva</button></div></div>`;
   }).join('');
-  return `<details class="card cp-card" id="cp-card"${S.cpOpen === false ? '' : ' open'}><summary><b>Conduces sin precio</b> <span class="n">${n}</span></summary><p class="hint">Por proveedor y material. Si otro conduce igual ya tiene precio, sale aquí; revísalo y pónselo a los demás. El total de cada uno es el precio por viaje por sus viajes.</p>${rows}</details>`;
+  const hid = hidden.length ? `<p class="usage cp-hid">No llevan precio: ${hidden.map((k) => `${esc(names.get(k) || k)} <button type="button" class="link" data-act="cp-show" data-k="${esc(k)}">mostrar</button>`).join(' · ')}</p>` : '';
+  return `<details class="card cp-card" id="cp-card"${S.cpOpen ? ' open' : ''}><summary><b>Conduces sin precio</b> <span class="n">${n}</span><small>${esc(gs.slice(0, 3).map((g) => g.material).join(', '))}${gs.length > 3 ? '…' : ''}</small></summary><p class="hint">Solo los que esperan factura. Precio por m³ de los iguales que ya lo tienen; a cada uno se le pone por sus metros.</p>${rows}${hid}</details>`;
 }
 async function applyCondPrice(key, btn) {
   const D = derive(), g = condPriceGroups(D).find((x) => x.key === key);
   if (!g) return;
   const inp = btn.closest('.cp-g').querySelector('input'), price = parseAmount(inp.value.trim());
-  if (price == null || price <= 0 || price >= 1e9) { toast('Escribe el precio por viaje solo con números.'); inp.focus(); return; }
-  const before = g.missing.map((c) => [c.id, { total: c.total ?? null, priceFrom: c.priceFrom || '' }]);
-  const ok = await write(async () => { for (const c of g.missing) await db.doc('conduces/' + c.id).update({ total: round2(price * condTrips(c)), priceFrom: g.price != null && round2(price) === g.price ? 'igual' : 'mano' }); });
+  if (price == null || price <= 0 || price >= 1e9) { toast('Escribe el precio del metro cúbico solo con números.'); inp.focus(); return; }
+  const list = g.missing.filter((c) => condM3(c));
+  if (!list.length) { toast('Esos conduces no dicen cuántos metros son. Ábrelos y escribe la cantidad (ej. 5 m³).'); return; }
+  const before = list.map((c) => [c.id, { total: c.total ?? null, priceFrom: c.priceFrom || '', priceM3: c.priceM3 ?? null }]);
+  const ok = await write(async () => { for (const c of list) await db.doc('conduces/' + c.id).update({ total: round2(price * condM3(c)), priceM3: round2(price), priceFrom: g.price != null && round2(price) === g.price ? 'igual' : 'mano' }); });
   if (!ok) return;
   scheduleLink();
-  toastAct(`Precio puesto a ${plural(g.missing.length, 'conduce', 'conduces')}`, 'Deshacer', () => write(async () => { for (const [id, v] of before) await db.doc('conduces/' + id).update(v); }, 'Precios quitados'));
+  const skip = g.missing.length - list.length;
+  toastAct(`Precio puesto a ${plural(list.length, 'conduce', 'conduces')}${skip ? ` (${skip} sin metros)` : ''}`, 'Deshacer', () => write(async () => { for (const [id, v] of before) await db.doc('conduces/' + id).update(v); }, 'Precios quitados'));
+}
+function setCondNoPrice(key, on) {
+  const set = condNoPrice();
+  if (on) set.add(key); else set.delete(key);
+  const data = { ...(S.condCfg || {}), noPrice: [...set], updatedAt: new Date().toISOString() };
+  write(() => db.doc('settings/conduces').set(data), on ? 'Listo: ese proveedor no sale aquí' : 'Vuelve a salir aquí').then((ok) => { if (ok) { S.condCfg = data; renderAll(); } });
 }
 function renderConduces(D) {
   const el = $('#c-list');
@@ -6833,6 +6853,8 @@ function onClick(e) {
     case 'cond-list': closeSheet(); S.tab = 'conduces'; S.condFilter = 'esperando'; S.paymentId = null; renderAll(); window.scrollTo(0, 0); break;
     case 'cfilter': S.condFilter = t.dataset.f; renderAll(); break;
     case 'cp-apply': applyCondPrice(t.dataset.k, t); break;
+    case 'cp-hide': setCondNoPrice(t.dataset.k, true); break;
+    case 'cp-show': setCondNoPrice(t.dataset.k, false); break;
     case 'sort': toggleSort(t.dataset.scope, t.dataset.k); renderAll(); break;
     case 'sel': break; // la casilla se maneja en «change»
     case 'sel-cell': { const b = t.querySelector('input'); if (b && e.target === t) { b.checked = !b.checked; b.dispatchEvent(new Event('change', { bubbles: true })); } break; }
@@ -7170,6 +7192,7 @@ function bind() {
   staticFields = new Set($$('.view input, .view textarea'));
   document.addEventListener('focusout', () => { if (heldRender) setTimeout(() => { if (heldRender && !typingInView()) { heldRender = false; scheduleRender(); } }, 250); });
   document.addEventListener('change', onChange);
+  document.addEventListener('toggle', (e) => { if (e.target && e.target.id === 'cp-card') S.cpOpen = e.target.open; }, true);
   document.addEventListener('input', onInput);
   document.addEventListener('submit', onSubmit);
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { if (!$('#viewer').hidden) closeViewer(); else if (S.sheet) closeSheet(); } });
@@ -7240,6 +7263,7 @@ function subscribe() {
   db.doc('settings/asistencia').onSnapshot((snap) => { S.attRules = (snap.exists && snap.data()) || {}; scheduleRender(); }, (err) => console.warn(err));
   db.doc('settings/respaldos').onSnapshot((snap) => { S.bk = (snap.exists && snap.data()) || {}; scheduleRender(); }, (err) => console.warn(err));
   db.doc('settings/digitacion').onSnapshot((snap) => { S.digi = (snap.exists && snap.data()) || {}; scheduleRender(); }, (err) => console.warn(err));
+  db.doc('settings/conduces').onSnapshot((snap) => { S.condCfg = (snap.exists && snap.data()) || {}; scheduleRender(); }, (err) => console.warn(err));
   db.doc('settings/informe').onSnapshot((snap) => { S.inf = (snap.exists && snap.data()) || {}; scheduleRender(); }, (err) => console.warn(err));
   const done = () => { if (S.got.projects && S.got.invoices && S.got.payments && S.got.orders && S.got.conduces && S.got.workers && S.got.asistencia && S.got.suppliers && S.got.envios && S.got.papelera && S.got.traslados && S.dbState === 'loading') { S.dbState = 'ready'; setTimeout(retryOffline, 1500); setTimeout(() => { fixCreditSigns().catch((e) => console.warn(e)); fixAttRules().catch((e) => console.warn(e)); fixPayNumbers().catch((e) => console.warn(e)); scheduleLink(); purgeTrash(false).catch((e) => console.warn(e)); measureStorage(); }, 2500); } };
   for (const name of ['projects', 'invoices', 'payments', 'orders', 'conduces', 'workers', 'asistencia', 'suppliers', 'envios', 'papelera', 'traslados']) {

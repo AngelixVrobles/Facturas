@@ -762,15 +762,18 @@ input[type="date"]::-webkit-calendar-picker-indicator { margin: 0 0 0 4px; paddi
 .cam { position: relative; border-radius: 14px; overflow: hidden; background: #000; }
 .cam video { width: 100%; display: block; max-height: 420px; object-fit: cover; transform: scaleX(-1); }
 .cam-rec { position: absolute; top: 10px; left: 10px; background: #b42318; color: #fff; padding: 4px 10px; border-radius: 999px; font: 700 13px/1.3 var(--font-data); }
-.cp-card { margin-bottom: 12px; }
-.cp-card > summary { cursor: pointer; display: flex; align-items: center; gap: 8px; font-size: 16px; }
-.cp-card > summary .n { background: var(--warn-bg); color: var(--warn); border-radius: 999px; padding: 1px 9px; font: 600 13px var(--font-data); }
-.cp-g { border-top: 1px solid var(--line); padding: 10px 0; display: flex; flex-direction: column; gap: 6px; }
-.cp-top b { display: block; }
-.cp-top small { color: var(--muted); font-size: 13px; }
-.cp-act { display: flex; gap: 8px; align-items: end; flex-wrap: wrap; }
-.cp-in { display: flex; flex-direction: column; gap: 3px; font-size: 12.5px; color: var(--muted); }
-.cp-in input { width: 150px; border: 1px solid var(--line); border-radius: 8px; padding: 8px; background: var(--surface); color: var(--ink); font-size: 15px; }
+.cp-card { margin-bottom: 12px; padding: 10px 14px; }
+.cp-card > summary { cursor: pointer; display: flex; align-items: center; gap: 8px; font-size: 15px; min-width: 0; }
+.cp-card > summary small { color: var(--muted); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.cp-card > summary .n { background: var(--warn-bg); color: var(--warn); border-radius: 999px; padding: 1px 9px; font: 600 13px var(--font-data); flex: none; }
+.cp-card .hint { margin: 6px 0; font-size: 13px; }
+.cp-g { border-top: 1px solid var(--line); padding: 7px 0; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.cp-txt { flex: 1 1 280px; min-width: 0; font-size: 14px; line-height: 1.35; }
+.cp-txt small { color: var(--muted); font-size: 12.5px; }
+.cp-act { display: flex; gap: 6px; align-items: center; flex: none; }
+.cp-act input { width: 110px; border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; background: var(--surface); color: var(--ink); font-size: 14px; }
+.cp-no { font-size: 12.5px; color: var(--muted); }
+.cp-hid { margin: 6px 0 0; }
 .ready { display: flex; gap: 12px; align-items: center; background: var(--paid-bg); border-radius: 12px; padding: 14px; }
 .ready svg { color: var(--paid); width: 26px; height: 26px; }
 .ready span { display: flex; flex-direction: column; min-width: 0; }
