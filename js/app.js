@@ -10,7 +10,7 @@ const LIB = {
   qrgen: 'js/qr.js',
 };
 const PDF_CREATOR = 'Facturas de Proyectos';
-const APP_VERSION = '1.36.0';
+const APP_VERSION = '1.37.0';
 const SVG = (d) => `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ICON = {
   lock: SVG('<rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>'),
@@ -95,7 +95,7 @@ const AI_ERR = {
   offline: 'No hay internet en este momento.',
 };
 const AI_STOP = new Set(['bad_key', 'no_credit', 'no_workspace', 'cors_blocked', 'bad_model']);
-const ORDER_SEGS = [['sinfactura', 'Sin factura'], ['conconduce', 'Con conduce'], ['confactura', 'Con factura'], ['todas', 'Todas']];
+const ORDER_SEGS = [['sinfactura', 'Sin factura'], ['transporte', 'Transporte'], ['confactura', 'Con factura'], ['todas', 'Todas']];
 const UNITS = ['Unidad', 'Funda', 'Saco', 'Galón', 'Cubeta', 'Caja', 'Rollo', 'Metro', 'Pie', 'Pulgada', 'Libra', 'Quintal', 'Plancha', 'Varilla', 'Tubo', 'Lámina', 'Juego', 'Par', 'Litro', 'm²', 'm³', 'Viaje', 'Servicio'];
 const DEFAULT_ORDER_NOTE = 'Toda factura recibida por compras deberá estar acompañada, como mínimo, de una fotocopia de la orden de compra debidamente autorizada y sellada. Esta orden debe presentarse junto con la factura para su recepción, verificación y trámite.';
 
@@ -544,16 +544,47 @@ const COND_ORDER_WHY = {
   libre: 'es la única de este proveedor que todavía esperaba ese material (las otras ya están completas)',
   reciente: 'es la orden más reciente de este proveedor que todavía esperaba ese material',
 };
+// Transporte de material (camiones de caliche, relleno, tierra…): entrega solo conduces, uno por viaje, y la factura al
+// final, con el pago. La ferretería, en cambio, entrega el conduce junto con su factura. Se sabe por la ficha del
+// proveedor («Transporte de material») o, si la ficha no lo dice, por el nombre (Transporte, Agregados, Volteo…).
+const TRANSPORT_RE = /\b(transportes?|agregados?|volteos?|camion(es)?|acarreos?)\b/;
+let trSupCache = { ref: null, m: new Map() };
+function supIsTransport(name) {
+  const k = norm(name || '');
+  if (!k) return false;
+  if (trSupCache.ref !== S.suppliers) trSupCache = { ref: S.suppliers, m: new Map() };
+  if (trSupCache.m.has(k)) return trSupCache.m.get(k);
+  const sp = S.suppliers.find((x) => x.name && sameName(x.name, name));
+  const v = sp && typeof sp.transport === 'boolean' ? sp.transport : TRANSPORT_RE.test(k);
+  trSupCache.m.set(k, v);
+  return v;
+}
+const isTransportOrder = (o) => !!o && supIsTransport(o.supplier);
+async function setSupTransport(name, v) {
+  const sp = S.suppliers.find((x) => x.name && sameName(x.name, name)), now = new Date().toISOString();
+  const ok = await write(() => (sp ? db.doc('suppliers/' + sp.id).update({ transport: v, updatedAt: now })
+    : db.collection('suppliers').doc().set({ name: String(name).slice(0, 120), rnc: '', phone: '', bank: '', accountType: '', account: '', personaFisica: false, creditDays: null, notes: '', transport: v, createdAt: now, updatedAt: now })),
+  v ? `${name}: transporte de material (la factura llega al final)` : `${name}: entrega el conduce con su factura`);
+  if (!ok) return;
+  trSupCache.ref = null;
+  scheduleLink();
+  renderAll();
+  setTimeout(() => { if (S.sheet && S.sheet.type === 'order' && S.sheet.id && !S.sheet.dirty) openOrder(S.sheet.id, true); }, 200);
+}
 // Lo que pidió la orden y lo que ya llegó con sus conduces. El material de transporte va por viajes: el camión lleva
 // 5 m³, así que una orden de 10 m³ son 2 conduces. Se cuenta en m³ (o en viajes, si la orden los pide así).
 const TRIP_M3 = 5;
 function orderLoad(o, D, plus) {
+  // Solo el transporte de material se cuenta por viajes; la ferretería entrega el conduce con su factura.
+  if (!isTransportOrder(o)) return { has: false, transport: false, m3: 0, trips: 0, got: 0, gotTrips: 0, n: orderConds(o, D).length, full: false, over: false, left: 0, leftTrips: 0, need: 0, txt: '', count: '', line: '', state: '', short: '', perTrip: TRIP_M3 };
   let m3 = 0, trips = 0;
   for (const it of o.items || []) {
     const q = qtyOf(it.qty, it.unit);
     if (!q || !(q.n > 0)) continue;
-    if (q.u === 'm3') m3 += q.n;
-    else if (q.u === 'viaje') { const per = M3_RE.exec(String(it.desc || '')); if (per && m3Num(per[1]) > 0) m3 += q.n * m3Num(per[1]); else trips += q.n; }
+    if (q.u === 'm3') { m3 += q.n; continue; }
+    // «2 Viaje Tierra negra 5 m³» o «1 Camión de caliche 10 m3»: la cantidad por lo que dice la descripción.
+    const per = M3_RE.exec(String(it.desc || ''));
+    if (per && m3Num(per[1]) > 0) m3 += q.n * m3Num(per[1]); else if (q.u === 'viaje') trips += q.n;
   }
   const cs = orderConds(o, D), known = cs.filter((c) => condM3(c) > 0);
   // Si un conduce no dice los metros, cuenta como sus viajes por lo que lleva cada viaje (el de los otros conduces, o 5 m³).
@@ -575,7 +606,7 @@ function orderLoad(o, D, plus) {
   const line = !has ? '' : m3 > 0 ? `${count} (${txt})` : count;
   const state = !has ? '' : over ? 'llegó de más' : full ? 'completa' : m3 > 0 ? faltan(miss, 'conduce', 'conduces') : faltan(left, 'viaje', 'viajes');
   const short = !has || full ? '' : m3 > 0 ? (miss === 1 ? 'Falta 1 conduce' : `Faltan ${miss} conduces`) : left === 1 ? 'Falta 1 viaje' : `Faltan ${left} viajes`;
-  return { has, m3, trips, got, gotTrips, n: cs.length, full, over, left, leftTrips, need, txt, count, line, state, short, perTrip };
+  return { has, transport: true, m3, trips, got, gotTrips, n: cs.length, full, over, left, leftTrips, need, txt, count, line, state, short, perTrip };
 }
 // La orden de un conduce que llegó sin decirla: de su proveedor, abierta (sin factura), en su obra, de antes del conduce,
 // del mismo material y que todavía espera material. Si es una sola, esa; si hay varias que se miden en m³ o viajes,
@@ -1103,7 +1134,7 @@ function orderTableHTML(items, D) {
   const val = (o, k) => (k === 'est' ? orderEst(o) || -Infinity : k === 'date' ? o.date || '' : k === 'supplier' ? norm(o.supplier || '') : k === 'status' ? ORDER_LABEL[o.status] || '' : orderNo(o));
   const rows = sortRows('ord', items, val).map((o) => {
     const invs = D.invByOrder.get(o.id) || [], est = orderEst(o);
-    return `<tr data-act="open-order" data-id="${esc(o.id)}"><td class="c-main"><button type="button" class="row-btn mono" data-act="open-order" data-id="${esc(o.id)}">${esc(orderNo(o))}</button></td><td>${esc(fmtDate(o.date) || '—')}</td><td>${esc(o.supplier || '—')}</td><td><span class="pill o-${o.status}">${ORDER_LABEL[o.status]}</span></td><td class="r mono">${(o.items || []).length}</td><td class="r mono">${est ? esc(money(est)) : '—'}</td><td>${invs.length ? esc(plural(invs.length, 'factura', 'facturas')) : orderConds0(o, D).length ? (() => { const l = orderLoad(o, D); return `<span class="pill cond${l.has && (!l.full || l.over) ? ' half' : ''}">${esc(l.has ? l.count : plural(orderConds0(o, D).length, 'conduce', 'conduces'))}</span>${l.has && l.m3 ? ` <small class="${l.full && !l.over ? '' : 'o-half'}">${esc(l.txt)}</small>` : ''}`; })() : '—'}</td></tr>`;
+    return `<tr data-act="open-order" data-id="${esc(o.id)}"><td class="c-main"><button type="button" class="row-btn mono" data-act="open-order" data-id="${esc(o.id)}">${esc(orderNo(o))}</button></td><td>${esc(fmtDate(o.date) || '—')}</td><td>${esc(o.supplier || '—')}</td><td><span class="pill o-${o.status}">${ORDER_LABEL[o.status]}</span></td><td class="r mono">${(o.items || []).length}</td><td class="r mono">${est ? esc(money(est)) : '—'}</td><td>${invs.length ? esc(plural(invs.length, 'factura', 'facturas')) : o.status !== 'anulada' && isTransportOrder(o) ? (() => { const l = orderLoad(o, D), k = orderConds0(o, D).length; return `${trPillsHTML(l, k).replace('<span class="pill pendiente">Falta la factura</span>', '')}<small class="${!l.has || (l.full && !l.over) ? '' : 'o-half'}">${esc(l.has ? (l.full && !l.over ? `${l.count} · falta la factura` : l.line) : k ? plural(k, 'conduce', 'conduces') : 'esperando material')}</small>`; })() : orderConds0(o, D).length ? `<span class="pill cond">${esc(plural(orderConds0(o, D).length, 'conduce', 'conduces'))}</span><small class="o-half">falta la factura</small>` : '—'}</td></tr>`;
   }).join('');
   return `<table class="tbl ord-tbl"><colgroup><col class="w-ord"><col class="w-date"><col><col class="w-st"><col class="w-trips"><col class="w-amt"><col class="w-ncf"></colgroup><thead><tr>${thHTML('ord', 'number', 'Orden')}${thHTML('ord', 'date', 'Fecha')}${thHTML('ord', 'supplier', 'Proveedor')}${thHTML('ord', 'status', 'Estado')}${thHTML('ord', '', 'Artículos', 'r')}${thHTML('ord', 'est', 'Estimado', 'r')}${thHTML('ord', '', 'Facturas')}</tr></thead><tbody>${rows}</tbody></table>`;
 }
@@ -1271,7 +1302,7 @@ function renderTodo(D) {
   if (soon.length) rows.push(row(soon.length, `${plural(soon.length, 'factura vence', 'facturas vencen')} esta semana · <b class="mono">${esc(totalStr(soon))}</b>`, b('focus', 'Ver', ' data-f="porvencer"')));
   if (toSign.length) rows.push(row(toSign.length, plural(toSign.length, 'orden por firmar', 'órdenes por firmar'), b('go-orders', 'Ver', ' data-f="porfirmar"')));
   const half = ordersHalf(D);
-  if (half.length) rows.push(row(half.length, `${half.length === 1 ? 'orden con conduce quedó a medias' : 'órdenes con conduce quedaron a medias'}: ${esc(half.slice(0, 2).map((x) => `${orderNo(x.o)} (${x.l.count})`).join(', '))}${half.length > 2 ? '…' : ''}. Falta material o subir un conduce`, b('go-orders', 'Ver', ' data-f="conconduce"')));
+  if (half.length) rows.push(row(half.length, `${half.length === 1 ? 'orden con conduce quedó a medias' : 'órdenes con conduce quedaron a medias'}: ${esc(half.slice(0, 2).map((x) => `${orderNo(x.o)} (${x.l.count})`).join(', '))}${half.length > 2 ? '…' : ''}. Falta material o subir un conduce`, b('go-orders', 'Ver', ' data-f="transporte"')));
   if (waiting.length) rows.push(row(waiting.length, plural(waiting.length, 'orden sin factura: te falta esa factura', 'órdenes sin factura: te faltan esas facturas'), b('go-orders', 'Ver', ' data-f="sinfactura"')));
   if (ready.length) rows.push(row(ready.length, `${plural(ready.length, 'factura lista', 'facturas listas')} para pagar · <b class="mono">${esc(totalStr(ready, 'toPay'))}</b>`, b('pay-ready', 'Armar pago', '', ' primary'), 'ok'));
   if (approvalOn()) {
@@ -1405,7 +1436,8 @@ function renderPayDetail(D, pay) {
 const orderHasInv = (o, D) => (D.invByOrder.get(o.id) || []).length > 0;
 // Órdenes de transporte de material: llegan con conduces y la factura viene cuando se paga. No es que falte la factura.
 const orderConds0 = (o, D) => (D.condByOrder && D.condByOrder.get(o.id)) || [];
-const orderWaitsInv = (o, D) => o.status !== 'anulada' && !orderHasInv(o, D) && !orderConds0(o, D).length;
+// Las facturas que faltan: las de las órdenes sin factura, menos las de transporte (esa factura llega al final, con el pago).
+const orderWaitsInv = (o, D) => o.status !== 'anulada' && !orderHasInv(o, D) && !isTransportOrder(o);
 const daysSince = (iso) => (ymd(iso) ? Math.round((ymd(todayISO()) - ymd(iso)) / 864e5) : null);
 const agoText = (iso) => { const d = daysSince(iso); return d == null || d < 0 ? '' : d === 0 ? 'de hoy' : d === 1 ? 'de ayer' : `hace ${d} días`; };
 function missingBySupplier(list, D) {
@@ -1439,13 +1471,29 @@ function openAskInvoices(key) {
   </div><div class="sheet-f">${wa ? `<button type="button" class="btn primary" data-act="ask-wa" data-tel="${esc(wa)}">Abrir WhatsApp</button>` : ''}${canShare ? `<button type="button" class="btn${wa ? '' : ' primary'}" data-act="ask-share">${ICON.share} Compartir</button>` : ''}<button type="button" class="btn${wa || canShare ? '' : ' primary'}" data-act="ask-copy">Copiar</button></div>`, { type: 'ask', id: key });
 }
 
+// Las etiquetas de una orden de transporte que espera su factura: completa, a medias, de más o esperando el material.
+function trPillsHTML(l, n) {
+  if (l.has) {
+    if (l.over) return '<span class="pill warn">Llegó de más</span>';
+    if (l.full) return '<span class="pill pagada">Completa</span><span class="pill pendiente">Falta la factura</span>';
+    if (n) return `<span class="pill warn">${esc(l.short)}</span>`;
+  } else if (n) return '<span class="pill cond">Con conduce</span>';
+  return '<span class="pill minor">Esperando material</span>';
+}
 function orderCardHTML(o, D, opts = {}) {
-  const invs = D.invByOrder.get(o.id) || [], cs = orderConds0(o, D), load = cs.length ? orderLoad(o, D) : null;
+  const invs = D.invByOrder.get(o.id) || [], cs = orderConds0(o, D), tr = !invs.length && o.status !== 'anulada' && isTransportOrder(o);
+  const load = tr ? orderLoad(o, D) : null;
   const n = (o.items || []).length;
   const its = (o.items || []).filter((x) => x && (x.desc || x.qty));
   const what = its.length ? itemLine(its[0]) + (n > 1 ? ` y ${n - 1} más` : '') : '';
-  const meta = [opts.hideProject ? '' : o.project ? o.project.name : 'Sin proyecto', fmtDate(o.date), orderEst(o) ? 'estimado ' + money(orderEst(o)) : '', invs.length ? plural(invs.length, 'factura', 'facturas') : o.status === 'anulada' || cs.length ? '' : ['sin factura', agoText(o.date)].filter(Boolean).join(', '), ...(!cs.length ? [] : invs.length ? [plural(cs.length, 'conduce', 'conduces')] : [load.has ? `${load.line}, ${load.state}` : plural(cs.length, 'conduce', 'conduces'), cs.some((c) => isNum(c.total)) ? totalStr(cs, 'total') : '', 'la factura llega con el pago'])].filter(Boolean).join(' · ');
-  return `<button type="button" class="ord" data-act="open-order" data-id="${esc(o.id)}"><span class="ord-top"><b class="mono">${esc(orderNo(o))}</b><span class="pill o-${o.status}">${ORDER_LABEL[o.status]}</span>${cs.length && !invs.length ? '<span class="pill cond">Con conduce</span>' : ''}${load && load.has && !invs.length && !load.full ? `<span class="pill warn">${esc(load.short)}</span>` : ''}${load && load.over && !invs.length ? '<span class="pill warn">Llegó de más</span>' : ''}</span><span class="ord-sup">${esc(opts.hideSupplier ? what || 'Sin detalle' : o.supplier || 'Sin proveedor')}</span>${!opts.hideSupplier && what ? `<span class="ord-what">${esc(what)}</span>` : ''}<span class="ord-meta">${esc(meta)}</span></button>`;
+  const money0 = cs.some((c) => isNum(c.total)) ? totalStr(cs, 'total') : '';
+  const state = invs.length ? [plural(invs.length, 'factura', 'facturas'), cs.length ? plural(cs.length, 'conduce', 'conduces') : '']
+    : o.status === 'anulada' ? []
+    : tr ? [load.has ? load.line : cs.length ? plural(cs.length, 'conduce', 'conduces') : 'esperando material', money0, load.has && load.full && !load.over ? 'falta la factura (llega con el pago)' : 'la factura llega con el pago']
+    : [['sin factura', agoText(o.date)].filter(Boolean).join(', '), cs.length ? plural(cs.length, 'conduce', 'conduces') : ''];
+  const meta = [opts.hideProject ? '' : o.project ? o.project.name : 'Sin proyecto', fmtDate(o.date), orderEst(o) ? 'estimado ' + money(orderEst(o)) : '', ...state].filter(Boolean).join(' · ');
+  const pills = tr ? trPillsHTML(load, cs.length) : cs.length && !invs.length && o.status !== 'anulada' ? '<span class="pill cond">Con conduce</span>' : '';
+  return `<button type="button" class="ord" data-act="open-order" data-id="${esc(o.id)}"><span class="ord-top"><b class="mono">${esc(orderNo(o))}</b><span class="pill o-${o.status}">${ORDER_LABEL[o.status]}</span>${pills}</span><span class="ord-sup">${esc(opts.hideSupplier ? what || 'Sin detalle' : o.supplier || 'Sin proveedor')}</span>${!opts.hideSupplier && what ? `<span class="ord-what">${esc(what)}</span>` : ''}<span class="ord-meta">${esc(meta)}</span></button>`;
 }
 function renderOrdenes(D) {
   const el = $('#o-list');
@@ -1453,10 +1501,11 @@ function renderOrdenes(D) {
   if (S.orderProject !== 'all' && S.orderProject !== 'none' && !D.projById.has(S.orderProject) && S.got.projects) S.orderProject = 'all';
   const inProj = (o) => S.orderProject === 'all' || (S.orderProject === 'none' ? !o.project : o.projectId === S.orderProject);
   const base = D.orders.filter(inProj);
-  const groupOf = (o) => (o.status === 'anulada' ? 'anuladas' : orderHasInv(o, D) ? 'confactura' : orderConds0(o, D).length ? 'conconduce' : 'sinfactura');
+  const groupOf = (o) => (o.status === 'anulada' ? 'anuladas' : orderHasInv(o, D) ? 'confactura' : isTransportOrder(o) ? 'transporte' : 'sinfactura');
   const toSignOf = (o) => o.status === 'borrador' || o.status === 'enviada';
-  if (!['sinfactura', 'conconduce', 'confactura', 'todas', 'porfirmar'].includes(S.orderFilter)) S.orderFilter = 'todas';
-  const counts = { sinfactura: 0, conconduce: 0, confactura: 0, todas: base.length };
+  if (S.orderFilter === 'conconduce') S.orderFilter = 'transporte';
+  if (!['sinfactura', 'transporte', 'confactura', 'todas', 'porfirmar'].includes(S.orderFilter)) S.orderFilter = 'todas';
+  const counts = { sinfactura: 0, transporte: 0, confactura: 0, todas: base.length };
   for (const o of base) if (counts[groupOf(o)] != null) counts[groupOf(o)]++;
   $('#o-seg').innerHTML = ORDER_SEGS.map(([k, label]) => `<button type="button" data-act="ofilter" data-f="${k}" aria-pressed="${S.orderFilter === k}"><span>${label}</span><span class="n">${counts[k]}</span></button>`).join('');
   // Proyectos que tienen órdenes (y el elegido), para filtrar.
@@ -1480,12 +1529,15 @@ function renderOrdenes(D) {
   const note = S.orderFilter === 'porfirmar' ? `<p class="hint o-note">Solo las que faltan por firmar (${list.length}). <button type="button" class="link" data-act="ofilter" data-f="todas">Ver todas</button></p>` : S.orderFilter === 'sinfactura' && list.length ? `<p class="hint o-note">Estas son las facturas que te faltan: ${plural(list.length, 'orden no tiene', 'órdenes no tienen')} factura${(() => { const e = round2(list.reduce((t, o) => t + (orderEst(o) || 0), 0)); return e ? ' (estimado ' + esc(money(e)) + ')' : ''; })()}. Van por proveedor, para pedírselas.</p>` : '';
   if (q) list = list.filter((o) => norm([orderNo(o), o.supplier, o.requestedBy, o.project && o.project.name, (o.items || []).map((x) => x.desc).join(' ')].join(' ')).includes(q));
   if (!list.length) { el.innerHTML = `<div class="empty"><p>${q ? 'Nada coincide con tu búsqueda.' : S.orderProject !== 'all' ? 'No hay órdenes de este proyecto en esta lista.' : 'No hay órdenes en esta lista.'}</p></div>`; return; }
-  if (S.orderFilter === 'conconduce') {
+  if (S.orderFilter === 'transporte') {
     const allC = list.flatMap((o) => orderConds0(o, D));
-    el.innerHTML = `<p class="hint o-note">Órdenes que llegaron con conduce (por ejemplo, transporte de material). No llevan factura hasta que se haga el pago: no se cuentan como facturas que faltan. Cada viaje es un conduce: una orden de 10 m³ se completa con 2 conduces de 5 m³. Entre todas: ${esc(plural(allC.length, 'conduce', 'conduces'))}${allC.some((c) => isNum(c.total)) ? ' por <b class="mono">' + esc(totalStr(allC, 'total')) + '</b>' : ''}.</p>`
+    const loads = new Map(list.map((o) => [o.id, orderLoad(o, D)]));
+    const nFull = list.filter((o) => { const l = loads.get(o.id); return l.has && l.full && !l.over; }).length;
+    el.innerHTML = `<p class="hint o-note">Transporte de material: entrega solo conduces, uno por viaje (una orden de 10 m³ son 2 conduces de 5 m³; una de 5 m³, 1 conduce), y la factura llega al final, con el pago. Por eso aquí no cuentan como facturas que faltan. Cuando una orden tiene todos sus conduces queda <b>Completa</b>: solo le falta la factura.${nFull ? ` Completas: ${nFull}.` : ''} Entre todas: ${esc(plural(allC.length, 'conduce', 'conduces'))}${allC.some((c) => isNum(c.total)) ? ' por <b class="mono">' + esc(totalStr(allC, 'total')) + '</b>' : ''}.</p>`
       + missingBySupplier(list, D).map((g) => { const cs = g.items.flatMap((o) => orderConds0(o, D)); const items = [...g.items].sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
-        const half = g.items.filter((o) => { const l = orderLoad(o, D); return l.has && !l.full; }).length;
-        return `<section class="group"><h2 class="group-h"><span class="gname">${esc(g.name)}</span><span class="gmeta">${esc([plural(g.items.length, 'orden', 'órdenes'), plural(cs.length, 'conduce', 'conduces'), cs.some((c) => isNum(c.total)) ? totalStr(cs, 'total') : '', half ? `${half} a medias` : ''].filter(Boolean).join(' · '))}</span></h2><div class="list">${items.map((o) => orderCardHTML(o, D, { hideSupplier: true })).join('')}</div></section>`; }).join('');
+        const full = g.items.filter((o) => { const l = loads.get(o.id); return l.has && l.full && !l.over; }).length;
+        const half = g.items.filter((o) => { const l = loads.get(o.id); return l.has && !l.full && l.n; }).length;
+        return `<section class="group"><h2 class="group-h"><span class="gname">${esc(g.name)}</span><span class="gmeta">${esc([plural(g.items.length, 'orden', 'órdenes'), plural(cs.length, 'conduce', 'conduces'), cs.some((c) => isNum(c.total)) ? totalStr(cs, 'total') : '', full ? plural(full, 'completa', 'completas') : '', half ? `${half} a medias` : ''].filter(Boolean).map((x) => x.replace(/ /g, '\u00a0')).join(' · '))}</span></h2><div class="list">${items.map((o) => orderCardHTML(o, D, { hideSupplier: true })).join('')}</div></section>`; }).join('');
     return;
   }
   // Sin factura: por proveedor (la más vieja primero), con el botón para pedirle las facturas.
@@ -2123,7 +2175,7 @@ const condNoPrice = () => new Set((S.condCfg && S.condCfg.noPrice) || []);
 function condPriceGroups(D) {
   const hide = condNoPrice(), m = new Map();
   for (const c of D.conduces) {
-    if (c.ai === 'pending' || hide.has(condSupKey(c)) || !condMatKey(c.material)) continue;
+    if (c.ai === 'pending' || !supIsTransport(c.supplier) || hide.has(condSupKey(c)) || !condMatKey(c.material)) continue;
     const k = condSupKey(c) + '|' + condMatKey(c.material) + '|' + normCur(c.currency);
     if (!m.has(k)) m.set(k, { key: k, sup: condSupKey(c), supplier: c.supplier || 'Proveedor sin nombre', material: String(c.material || '').replace(M3_RE, '').replace(/\s+/g, ' ').trim() || c.material, priced: [], missing: [] });
     const g = m.get(k);
@@ -2146,7 +2198,7 @@ function condPriceHTML(D) {
     return `<div class="cp-g"><div class="cp-txt"><b>${esc(g.material)}</b> <small>${esc(g.supplier)} · ${esc(plural(g.missing.length, 'sin precio', 'sin precio'))} (${esc(nums)}) · ${esc(info)}${g.noM3.length ? ` · ${esc(plural(g.noM3.length, 'no dice', 'no dicen'))} los metros` : ''}</small></div><div class="cp-act"><input class="mono" inputmode="decimal" maxlength="14" aria-label="Precio por metro cúbico" placeholder="RD$/m³" value="${g.price != null ? esc(amountInput(g.price)) : ''}"><button type="button" class="btn sm primary" data-act="cp-apply" data-k="${esc(g.key)}">Poner</button><button type="button" class="link cp-no" data-act="cp-hide" data-k="${esc(g.sup)}" title="Este proveedor no lleva precio en el conduce">No lleva</button></div></div>`;
   }).join('');
   const hid = hidden.length ? `<p class="usage cp-hid">No llevan precio: ${hidden.map((k) => `${esc(names.get(k) || k)} <button type="button" class="link" data-act="cp-show" data-k="${esc(k)}">mostrar</button>`).join(' · ')}</p>` : '';
-  return `<details class="card cp-card" id="cp-card"${S.cpOpen ? ' open' : ''}><summary><b>Conduces sin precio</b> <span class="n">${n}</span><small>${esc(gs.slice(0, 3).map((g) => g.material).join(', '))}${gs.length > 3 ? '…' : ''}</small></summary><p class="hint">Solo los que esperan factura. Precio por m³ de los iguales que ya lo tienen; a cada uno se le pone por sus metros.</p>${rows}${hid}</details>`;
+  return `<details class="card cp-card" id="cp-card"${S.cpOpen ? ' open' : ''}><summary><b>Conduces sin precio</b> <span class="n">${n}</span><small>${esc(gs.slice(0, 3).map((g) => g.material).join(', '))}${gs.length > 3 ? '…' : ''}</small></summary><p class="hint">Transporte de material, de los conduces que esperan factura. Precio por m³ de los iguales que ya lo tienen; a cada uno se le pone por sus metros.</p>${rows}${hid}</details>`;
 }
 async function applyCondPrice(key, btn) {
   const D = derive(), g = condPriceGroups(D).find((x) => x.key === key);
@@ -4763,7 +4815,7 @@ function openSuppliers() {
     g.set(k, x);
   }
   const sugg = [...g.values()].sort((a, b) => b.n - a.n).slice(0, 12);
-  const rows = D.suppliers.map((s) => `<button type="button" class="o-pick" data-act="sup-open" data-id="${esc(s.id)}"><span><b>${esc(s.name || 'Sin nombre')}</b><small>${esc([s.rnc ? 'RNC ' + RD.fmtRnc(s.rnc) : '', isNum(s.creditDays) && s.creditDays > 0 ? `crédito ${s.creditDays} días` : 'de contado', s.bank || ''].filter(Boolean).join(' · '))}</small></span>${ICON.right}</button>`).join('');
+  const rows = D.suppliers.map((s) => `<button type="button" class="o-pick" data-act="sup-open" data-id="${esc(s.id)}"><span><b>${esc(s.name || 'Sin nombre')}</b><small>${esc([s.rnc ? 'RNC ' + RD.fmtRnc(s.rnc) : '', supIsTransport(s.name) ? 'transporte de material' : '', isNum(s.creditDays) && s.creditDays > 0 ? `crédito ${s.creditDays} días` : 'de contado', s.bank || ''].filter(Boolean).join(' · '))}</small></span>${ICON.right}</button>`).join('');
   openSheet(`${sheetHead('Proveedores')}<div class="sheet-b">
     <p class="hint">La ficha guarda el RNC, el teléfono, la cuenta de banco (sale en el pago, para la transferencia) y los días de crédito (la app avisa las facturas por vencer y las vencidas).</p>
     ${rows ? `<div class="o-picks">${rows}</div>` : '<p class="hint">Todavía no hay fichas.</p>'}
@@ -4792,6 +4844,7 @@ function openSupplier(id, preset = {}) {
       <div class="field full"><label for="sp-acct">No. de cuenta</label><input id="sp-acct" class="mono" inputmode="numeric" maxlength="30" value="${esc(d.account || '')}"${dis}></div>
       <div class="field"><label for="sp-credit">Días de crédito</label><input id="sp-credit" class="mono" inputmode="numeric" maxlength="3" placeholder="0 = de contado" value="${esc(isNum(d.creditDays) ? String(d.creditDays) : '')}"${dis}></div>
       <label class="field check-row"><input type="checkbox" id="sp-pf"${d.personaFisica ? ' checked' : ''}${dis}><span>Es persona física</span></label>
+      <label class="field full check-row"><input type="checkbox" id="sp-tr"${(typeof d.transport === 'boolean' ? d.transport : TRANSPORT_RE.test(norm(d.name || ''))) ? ' checked' : ''}${dis}><span>Transporte de material<small>Entrega solo conduces, uno por viaje, y la factura al final, con el pago. (La ferretería entrega el conduce con su factura.)</small></span></label>
       <div class="field full"><label for="sp-notes">Notas</label><textarea id="sp-notes" rows="2" maxlength="300"${dis}>${esc(d.notes || '')}</textarea></div>
     </div>
     ${s && edit ? `<div><button type="button" class="btn danger sm" data-act="sup-del" data-id="${esc(s.id)}">${ICON.trash} Eliminar ficha</button></div>` : ''}
@@ -4805,7 +4858,7 @@ async function saveSupplier(f) {
   if (rnc && rnc.length !== 9 && rnc.length !== 11) { toast('El RNC debe tener 9 dígitos (u 11 si es cédula).'); return; }
   const cr = $('#sp-credit').value.trim();
   const credit = cr === '' ? null : Math.max(0, Math.min(365, parseInt(cr, 10) || 0));
-  const data = { name: name.slice(0, 120), rnc, phone: $('#sp-phone').value.trim().slice(0, 20), bank: $('#sp-bank').value.trim().slice(0, 40), accountType: $('#sp-acct-type').value, account: $('#sp-acct').value.trim().slice(0, 30), creditDays: credit, personaFisica: $('#sp-pf').checked, notes: $('#sp-notes').value.trim().slice(0, 300), updatedAt: new Date().toISOString() };
+  const data = { name: name.slice(0, 120), rnc, phone: $('#sp-phone').value.trim().slice(0, 20), bank: $('#sp-bank').value.trim().slice(0, 40), accountType: $('#sp-acct-type').value, account: $('#sp-acct').value.trim().slice(0, 30), creditDays: credit, personaFisica: $('#sp-pf').checked, transport: $('#sp-tr').checked, notes: $('#sp-notes').value.trim().slice(0, 300), updatedAt: new Date().toISOString() };
   const dupe = S.suppliers.find((s) => s.id !== id && ((rnc && RD.normRnc(s.rnc) === rnc) || sameName(s.name, name)));
   if (dupe) { toast(`Ya hay una ficha de ${dupe.name}.`); return; }
   const ok = await write(() => (id ? db.doc('suppliers/' + id).update(data) : db.collection('suppliers').doc().set({ ...data, createdAt: new Date().toISOString() })), 'Proveedor guardado');
@@ -5454,15 +5507,19 @@ function uniqList(list) { const seen = new Set(); const out = []; for (const v o
 function orderSig(o, D) { return JSON.stringify([o.status, o.signedFileId, o.signedAt, o.updatedAt, o.number, (D.invByOrder.get(o.id) || []).map((i) => [i.id, i.supplier, i.number, i.amount, (i.conduces || []).map((c) => [c.id, c.material, c.qty, c.trips])]), orderConds(o, D).map((c) => [c.id, c.number, c.material, c.qty, c.trips, c.total, c.invoiceId, c.orderVia])]); }
 // Los conduces de la orden (lo que ya llegó), y enlazar uno que llegó sin decir de qué orden es.
 function orderCondBoxHTML(o, D, edit) {
-  const cs = orderConds(o, D);
+  const cs = orderConds(o, D), tr = isTransportOrder(o), hasInv = orderHasInv(o, D);
   const waiting = edit ? D.conduces.filter((c) => !c.order && c.ai !== 'pending') : [];
-  if (!cs.length && !waiting.length) return '';
+  if (!cs.length && !waiting.length && !tr) return '';
   const rows = cs.map((c) => `<div class="o-cond">${condRowHTML(c, false, c.invoiceId ? 'con factura' : 'sin factura')}${edit && c.orderVia === 'conduce' ? `<button type="button" class="btn ghost sm" data-act="order-unlink-cond" data-id="${esc(c.id)}" data-order="${esc(o.id)}">Quitar</button>` : ''}</div>`).join('');
   const load = orderLoad(o, D);
-  const prog = load.has && cs.length ? `<p class="o-load${load.full && !load.over ? ' ok' : ''}">Llegaron <b>${esc(load.line)}</b>: ${esc(load.state)}.${!load.full ? ` Esta orden lleva ${esc(plural(load.need, 'conduce', 'conduces'))} (uno por viaje): si ya llegó, súbelo y enlázalo aquí abajo.` : ''}</p>` : '';
+  const prog = !load.has || !cs.length ? ''
+    : load.full && !load.over ? `<p class="o-load ok"><b>Completa:</b> ${esc(load.line)}.${hasInv ? '' : ' Solo le falta la factura, que llega al final, con el pago.'}</p>`
+    : `<p class="o-load">Llegaron <b>${esc(load.line)}</b>: ${esc(load.state)}.${!load.full ? ` Esta orden lleva ${esc(plural(load.need, 'conduce', 'conduces'))} (uno por viaje): si ya llegó, súbelo y enlázalo aquí abajo.` : ''}</p>`;
+  // Si es transporte (la factura llega al final) o ferretería (el conduce viene con su factura); se puede cambiar.
+  const kind = o.supplier && edit ? `<p class="usage o-kind">${tr ? 'Transporte de material: entrega solo conduces y la factura al final, con el pago.' : 'Este proveedor entrega el conduce con su factura.'} <button type="button" class="link" data-act="sup-transport" data-name="${esc(o.supplier)}" data-v="${tr ? '0' : '1'}">${tr ? 'No es transporte' : 'Es transporte de material'}</button></p>` : '';
   const sum = cs.length ? `${prog}<p class="usage">${esc(plural(cs.length, 'conduce', 'conduces'))}${cs.some((c) => isNum(c.total)) ? ' · ' + esc(totalStr(cs, 'total')) : ''}${cs.some((c) => !c.invoiceId) ? ' · ' + esc(plural(cs.filter((c) => !c.invoiceId).length, 'espera', 'esperan')) + ' su factura' : ''}</p>` : `<p class="hint">Todavía no tiene conduces. Cuando llegue el material, cada viaje trae su conduce${load.has && load.m3 ? ` (esta orden de ${esc(fmtQty(load.m3))} m³ lleva ${esc(plural(load.need, 'conduce', 'conduces'))}, uno por viaje de ${TRIP_M3} m³)` : ''}; se enlaza solo si menciona la orden o si esta es la orden de ese proveedor y material que espera.</p>`;
   const link = waiting.length ? `<div><button type="button" class="btn sm" data-act="order-link-cond-open" data-id="${esc(o.id)}">${ICON.plus} Enlazar un conduce</button></div><div id="o-cond-box" hidden></div>` : '';
-  return `<div class="card" id="o-conds"><h2>Conduces de esta orden</h2>${sum}${rows ? `<div class="cond-list">${rows}</div>` : ''}${link}</div>`;
+  return `<div class="card" id="o-conds"><h2>Conduces de esta orden</h2>${sum}${rows ? `<div class="cond-list">${rows}</div>` : ''}${link}${kind}</div>`;
 }
 // Los conduces sin orden que tienen que ver con esta orden: mismo proveedor, mismo material, misma obra y de la fecha
 // de la orden en adelante; primero los de la fecha de sus otros conduces (los 2 viajes suelen ser del mismo día).
@@ -7102,6 +7159,7 @@ function onClick(e) {
     case 'order-unlink-inv': removeOrderFromInv(id, t.dataset.order).then(() => refreshOrderInvBox(t.dataset.order)); break;
     case 'order-link-cond-open': { const box = $('#o-cond-box'), o = derive().orderById.get(id); if (box && o) { box.hidden = false; box.innerHTML = orderCondPickHTML(o, derive()); box.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } break; }
     case 'order-link-cond': setCondOrder(id, t.dataset.order).then(() => refreshOrderCondBox(t.dataset.order)); break;
+    case 'sup-transport': setSupTransport(t.dataset.name, t.dataset.v === '1'); break;
     case 'order-link-conds': { const ids = $$('#o-cond-box input[data-cpk]:checked').map((x) => x.value); if (!ids.length) { toast('Marca los conduces de esta orden.'); break; } setCondOrders(ids, t.dataset.order).then(() => refreshOrderCondBox(t.dataset.order)); break; }
     case 'order-unlink-cond': setCondOrder(id, null).then(() => refreshOrderCondBox(t.dataset.order)); break;
     case 'nube-connect': nubeConnect(t); break;

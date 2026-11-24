@@ -147,7 +147,7 @@ svg.i { width: 20px; height: 20px; flex: none; }
 .group { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
 .group-h { display: flex; flex-wrap: wrap; row-gap: 2px; align-items: center; gap: 8px; margin: 0; padding: 0 2px; font: 750 15px/1.25 var(--font-display); font-stretch: 108%; min-width: 0; }
 .group-h .gname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.group-h .gmeta { margin-left: auto; font: 500 13px var(--font-data); color: var(--muted); white-space: nowrap; }
+.group-h .gmeta { margin-left: auto; font: 500 13px var(--font-data); color: var(--muted); white-space: normal; text-align: right; min-width: 0; }
 .list { display: flex; flex-direction: column; gap: 8px; }
 .inv { width: 100%; display: grid; grid-template-columns: 54px minmax(0, 1fr); gap: 12px; align-items: start; text-align: left; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 10px; }
 .inv:hover { border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); }
@@ -750,13 +750,16 @@ input[type="date"]::-webkit-calendar-picker-indicator { margin: 0 0 0 4px; paddi
 .o-pick.chk .num { margin-left: auto; }
 .o-pick.far { opacity: 0.72; }
 .pill.cond.half { color: var(--warn); background: var(--warn-bg); }
+.o-kind { margin: 8px 0 0; }
+.check-row small { display: block; color: var(--muted); font-size: 12.5px; margin-top: 2px; }
+.ord-tbl td:last-child .pill + small { margin-top: 3px; }
 .o-load { margin: 4px 0 8px; padding: 8px 10px; border-radius: 10px; background: var(--warn-bg); color: var(--ink); font-size: 14px; }
 .o-load.ok { background: var(--paid-bg); }
-.ord-tbl .w-ncf { width: 17%; }
+.ord-tbl .w-ncf { width: 20%; }
 .ord-tbl .c-main { display: table-cell; }
 .ord-tbl td:last-child { white-space: normal; }
 .ord-tbl td:last-child .pill { white-space: nowrap; }
-.ord-tbl td:last-child small { display: block; margin-top: 2px; color: var(--muted); font: 12px var(--font-data); }
+.ord-tbl td:last-child small { display: block; margin-top: 2px; color: var(--muted); font: 12.5px/1.3 var(--font-body); }
 .ord-tbl td:last-child small.o-half { color: var(--warn); }
 .o-cond { display: flex; gap: 8px; align-items: center; }
 .o-cond > .cond-row { flex: 1; min-width: 0; }

@@ -1,4 +1,4 @@
-// Material por viajes: una orden de 10 m³ lleva obligatoriamente 2 conduces de 5 m³. Enlace solo con varias órdenes abiertas, «1 de 2 conduces», a medias y de más, enlazar los que tienen que ver desde la orden, proponer el otro desde el conduce y aviso en la factura.
+// Transporte de material: una orden de 10 m³ lleva 2 conduces de 5 m³ (y una de 5 m³, uno); con todos queda «Completa» y solo le falta la factura, que llega al final. La ferretería entrega el conduce con su factura.
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -94,14 +94,14 @@ const condsBy = async (page) => { const l = await docs(page, 'conduces'); return
 
   // 2) Las órdenes dicen cuánto llegó.
   await page.evaluate(() => document.querySelector('.tabs [data-tab="ordenes"]').click());
-  await page.click('#o-seg [data-f="conconduce"]');
+  await page.click('#o-seg [data-f="transporte"]');
   await settle(page, 400);
   const list = await txt(page, '#o-list');
   console.log('     con conduce:', list.slice(0, 500));
-  check(/Cada viaje es un conduce: una orden de 10 m³ se completa con 2 conduces de 5 m³/.test(list), 'la pestaña explica que cada viaje es un conduce');
-  check((list.match(/2 de 2 conduces \(10 de 10 m³\), completa/g) || []).length === 4, 'las órdenes completas dicen «2 de 2 conduces (10 de 10 m³), completa»');
-  check(/OC-0037[^]*?Falta 1 conduce[^]*?1 de 2 conduces \(5 de 10 m³\), falta 1 conduce/.test(list), 'la de tierra negra (2 viajes de 5 m³) dice «1 de 2 conduces», falta 1');
-  check(/5 órdenes · 9 conduces · 1 a medias/.test(list), 'el proveedor dice cuántas quedaron a medias');
+  check(/Transporte de material: entrega solo conduces, uno por viaje \(una orden de 10 m³ son 2 conduces de 5 m³; una de 5 m³, 1 conduce\), y la factura llega al final, con el pago/.test(list), 'la pestaña «Transporte» explica que cada viaje es un conduce y la factura llega al final');
+  check((list.match(/Completa\s*Falta la factura/g) || []).length === 4 && (list.match(/2 de 2 conduces \(10 de 10 m³\) · falta la factura \(llega con el pago\)/g) || []).length === 4, 'las órdenes con sus 2 conduces salen «Completa» y «Falta la factura»');
+  check(/OC-0037[^]*?Falta 1 conduce[^]*?1 de 2 conduces \(5 de 10 m³\) · la factura llega con el pago/.test(list), 'la de tierra negra (2 viajes de 5 m³) dice «Falta 1 conduce» y «1 de 2 conduces»');
+  check(/5\s+órdenes · 9\s+conduces · 4\s+completas · 1\s+a\s+medias/.test(list), 'el proveedor dice cuántas están completas y cuántas a medias');
   await page.screenshot({ path: path.join(OUT, 'ordenes.png') });
   await page.click(`#o-list [data-act="open-order"][data-id="${I.t37}"]`);
   await page.waitForSelector('#o-conds');
@@ -109,7 +109,7 @@ const condsBy = async (page) => { const l = await docs(page, 'conduces'); return
   await page.click('.sheet-h [data-act="sheet-close"]');
   await page.click(`#o-list [data-act="open-order"][data-id="${I.c51}"]`);
   await page.waitForSelector('#o-conds');
-  check(/Llegaron 2 de 2 conduces \(10 de 10 m³\): completa\./.test(await txt(page, '#o-conds')), 'la completa: «Llegaron 2 de 2 conduces (10 de 10 m³): completa»');
+  check(/Completa: 2 de 2 conduces \(10 de 10 m³\)\. Solo le falta la factura, que llega al final, con el pago\./.test(await txt(page, '#o-conds')), 'en la orden completa: «Completa … Solo le falta la factura»');
   await page.click('.sheet-h [data-act="sheet-close"]');
 
   // 3) «Para hacer» avisa la que quedó a medias.
@@ -131,9 +131,9 @@ const condsBy = async (page) => { const l = await docs(page, 'conduces'); return
   await page.waitForSelector('#cond-form', { state: 'detached' });
   await waitUntil(async () => (await condsBy(page))('40200').orderId === I.c51, 5000);
   await page.evaluate(() => document.querySelector('.tabs [data-tab="ordenes"]').click());
-  await page.click('#o-seg [data-f="conconduce"]');
+  await page.click('#o-seg [data-f="transporte"]');
   await settle(page, 400);
-  check(/OC-0051[^]*?Llegó de más[^]*?3 de 2 conduces \(15 de 10 m³\), llegó de más/.test(await txt(page, '#o-list')), 'con 3 conduces la orden de 10 m³ dice «3 de 2 conduces», llegó de más');
+  check(/OC-0051[^]*?Llegó de más[^]*?3 de 2 conduces \(15 de 10 m³\) · la factura llega con el pago/.test(await txt(page, '#o-list')), 'con 3 conduces la orden de 10 m³ dice «Llegó de más» y «3 de 2 conduces»');
   await page.click(`#o-list [data-act="open-order"][data-id="${I.c51}"]`);
   await page.waitForSelector('#o-conds');
   check(/Los conduces traen 15 m³ de Caliche amarillo y la orden pidió 10/.test(await txt(page, '.sheet')), 'y en la orden avisa: «Los conduces traen 15 m³ … y la orden pidió 10» (cuenta los metros del material)');
@@ -156,8 +156,8 @@ const condsBy = async (page) => { const l = await docs(page, 'conduces'); return
   await page.click('[data-act="order-link-conds"]');
   await waitUntil(async () => (await condsBy(page))('40300').orderId === I.t37, 5000);
   check((await condsBy(page))('40300').orderId === I.t37, '«Enlazar los marcados» lo enlaza');
-  await waitUntil(async () => /Llegaron 2 de 2 conduces \(10 de 10 m³\): completa/.test(await txt(page, '.sheet')), 5000);
-  check(/Llegaron 2 de 2 conduces \(10 de 10 m³\): completa/.test(await txt(page, '.sheet')), 'y la orden queda completa');
+  await waitUntil(async () => /Completa: 2 de 2 conduces \(10 de 10 m³\)/.test(await txt(page, '.sheet')), 5000);
+  check(/Completa: 2 de 2 conduces \(10 de 10 m³\)/.test(await txt(page, '.sheet')), 'y la orden queda completa');
   await page.click('.sheet-h [data-act="sheet-close"]');
 
   // 6) Desde el conduce: al ponerle a mano una orden de 10 m³, propone el otro conduce que tiene que ver.
@@ -207,8 +207,58 @@ const condsBy = async (page) => { const l = await docs(page, 'conduces'); return
   await page.evaluate(() => document.querySelector('[data-act="tab"][data-tab="ordenes"]').click());
   await page.click('#o-seg [data-f="todas"]');
   await settle(page, 500);
-  check(/2 de 2 conduces\s*10 de 10 m³/.test(await txt(page, `#o-list tr[data-id="${I.t37}"]`)), 'en la computadora, la tabla dice «2 de 2 conduces 10 de 10 m³»');
+  check(/Completa\s*2 de 2 conduces · falta la factura/.test(await txt(page, `#o-list tr[data-id="${I.t37}"]`)), 'en la computadora, la tabla dice «Completa · 2 de 2 conduces · falta la factura»');
   await page.screenshot({ path: path.join(OUT, 'pc.png') });
+
+  // 9) Una orden de 5 m³ queda completa con un solo conduce.
+  await page.setViewportSize({ width: 390, height: 844 });
+  const extra = await page.evaluate(async (b) => {
+    const db = RT.db;
+    const r = db.collection('orders').doc(); await r.set({ number: 80, date: '2026-11-22', projectId: b.projectId, supplier: b.supplier, requestedBy: 'Ing. Peña', items: [{ qty: 5, unit: 'm³', desc: 'Relleno' }], status: 'autorizada', signedAt: '2026-11-22', createdAt: '2026-11-22T08:00:00.000Z' });
+    await db.collection('conduces').doc().set({ ...b, number: '40600', date: '2026-11-22', material: 'Relleno 5 MT', createdAt: '2026-11-22T15:00:00.000Z' });
+    // La ferretería: su conduce viene con la factura; si la factura no llegó, falta.
+    const g = db.collection('orders').doc(); await g.set({ number: 90, date: '2026-11-22', projectId: b.projectId, supplier: 'Ferretería Gama', requestedBy: 'Ing. Peña', items: [{ qty: 20, unit: 'Funda', desc: 'Cemento gris' }], status: 'autorizada', signedAt: '2026-11-22', createdAt: '2026-11-22T08:00:00.000Z' });
+    await db.collection('conduces').doc().set({ ...b, supplier: 'Ferretería Gama', number: '501', date: '2026-11-22', material: 'Cemento gris 20 fundas', createdAt: '2026-11-22T16:00:00.000Z' });
+    return { o80: r.id, o90: g.id };
+  }, cbase);
+  await page.reload();
+  await waitUntil(async () => (await condsBy(page))('40600').orderId === extra.o80 && (await condsBy(page))('501').orderId === extra.o90, 15000);
+  check((await condsBy(page))('40600').orderId === extra.o80 && (await condsBy(page))('501').orderId === extra.o90, 'cada conduce se enlaza a su orden (el de 5 m³ y el de la ferretería)');
+  await page.evaluate(() => document.querySelector('.tabs [data-tab="ordenes"]').click());
+  await page.click('#o-seg [data-f="transporte"]');
+  await settle(page, 400);
+  const tr2 = await txt(page, '#o-list');
+  check(/OC-0080\s*Firmada\s*Completa\s*Falta la factura[^]*?1 de 1 conduce \(5 de 5 m³\) · falta la factura \(llega con el pago\)/.test(tr2), 'la orden de 5 m³ sale «Completa» con un solo conduce (y «Falta la factura»)');
+  check(!/OC-0090/.test(tr2), 'la de la ferretería no está en «Transporte»');
+  await page.click('#o-seg [data-f="sinfactura"]');
+  await settle(page, 400);
+  const sinf = await txt(page, '#o-list');
+  check(/OC-0090\s*Firmada\s*Con conduce[^]*?sin factura/.test(sinf) && !/OC-00(35|37|39|43|51|60|80)/.test(sinf), '«Sin factura» tiene la de la ferretería (llegó el conduce, falta su factura) y ninguna de transporte');
+  await page.click(`#o-list [data-act="open-order"][data-id="${extra.o90}"]`);
+  await page.waitForSelector('#o-conds');
+  check(/Este proveedor entrega el conduce con su factura\.\s*Es transporte de material/.test(await txt(page, '#o-conds')) && !/de 1 conduce|de 2 conduces/.test(await txt(page, '#o-conds')), 'en la orden de la ferretería no se cuentan viajes: dice que el conduce viene con su factura');
+  // Si un proveedor sí es de transporte, se marca desde la orden.
+  await page.click('[data-act="sup-transport"]');
+  await waitUntil(async () => ((await docs(page, 'suppliers')).find((x) => /Gama/.test(x.name)) || {}).transport === true, 5000);
+  check(((await docs(page, 'suppliers')).find((x) => /Gama/.test(x.name)) || {}).transport === true, '«Es transporte de material» lo guarda en la ficha del proveedor');
+  await page.click('.sheet-h [data-act="sheet-close"]');
+  await page.click('#o-seg [data-f="transporte"]');
+  await settle(page, 400);
+  check(/OC-0090/.test(await txt(page, '#o-list')), 'y la orden pasa a «Transporte»');
+  await page.click(`#o-list [data-act="open-order"][data-id="${extra.o90}"]`);
+  await page.waitForSelector('[data-act="sup-transport"]');
+  await page.click('[data-act="sup-transport"]');
+  await waitUntil(async () => ((await docs(page, 'suppliers')).find((x) => /Gama/.test(x.name)) || {}).transport === false, 5000);
+  await page.click('.sheet-h [data-act="sheet-close"]');
+  await page.click('#o-seg [data-f="sinfactura"]');
+  await settle(page, 400);
+  check(/OC-0090/.test(await txt(page, '#o-list')), '«No es transporte» la devuelve a «Sin factura»');
+  await page.evaluate(() => document.querySelector('.tabs [data-tab="facturas"]').click());
+  await settle(page, 300);
+  await page.click('[data-act="todo-all"]').catch(() => {});
+  await settle(page, 200);
+  check(/1\s*orden sin factura/.test(await txt(page, '#todo')), '«Para hacer» cuenta como faltante solo la factura de la ferretería');
+  await page.screenshot({ path: path.join(OUT, 'transporte.png') });
 
   console.log('problemas:', problems.length ? problems : 'ninguno');
   await browser.close();

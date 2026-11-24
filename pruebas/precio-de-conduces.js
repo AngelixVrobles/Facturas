@@ -1,4 +1,4 @@
-// Conduces sin precio: solo los que esperan factura, precio por metro cúbico de los iguales (dinero entre metros), por sus metros, «No lleva» por proveedor.
+// Conduces sin precio (solo transporte de material): los que esperan factura, precio por metro cúbico de los iguales (dinero entre metros), por sus metros, «No lleva» por proveedor.
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -72,6 +72,7 @@ const cOf = async (page) => { const l = await docs(page, 'conduces'); return (n)
     await add({ number: '40062', material: 'Caliche amarillo 5 m³' });
     await add({ number: '39999', material: 'Relleno 5 MT', invoiceId: inv.id });
     await add({ number: '501', supplier: 'Ferretería Gama', material: 'Cemento gris 10 fundas' });
+    await add({ number: '601', supplier: 'Transporte Rodríguez', material: 'Arena gruesa 5 m³' });
   });
   await page.reload();
   await page.click('[data-act="backup-later"]').catch(() => {});
@@ -85,14 +86,15 @@ const cOf = async (page) => { const l = await docs(page, 'conduces'); return (n)
   console.log('     relleno:', rel.replace(/\s+/g, ' '));
   check(/RD\$ ?866\.67 el m³ \(de 2 conduces, 15 m³\)/.test(rel) && /4 sin precio \(39764, 39770, 39771, 39772\)/.test(rel) && /1 no dice los metros/.test(rel), 'precio del m³ = todo el dinero entre todos los metros (13,000 / 15 = 866.67)');
   check(!/39999/.test(await txt(page, '#cp-card')), 'el conduce que ya tiene factura no sale');
+  check(!/Cemento gris|Ferretería Gama/.test(await txt(page, '#cp-card')), 'la ferretería no sale (entrega el conduce con su factura): solo el transporte de material');
   const hRow = await g(/^Relleno/).evaluate((e) => e.getBoundingClientRect().height);
   check(hRow < 80, `cada material ocupa poco (${Math.round(hRow)} px)`);
   await page.screenshot({ path: path.join(OUT, 'apartado.png') });
-  // Ferretería Gama no lleva precio.
-  await g(/Cemento gris/).locator('[data-act="cp-hide"]').click();
-  await waitUntil(async () => !/Cemento gris/.test(await txt(page, '#cp-card .cp-g, #cp-card')) || /No llevan precio: Ferretería Gama/.test(await txt(page, '#cp-card')), 5000);
+  // Un transportista que no pone precio en el conduce: «No lleva».
+  await g(/Arena gruesa/).locator('[data-act="cp-hide"]').click();
+  await waitUntil(async () => /No llevan precio: Transporte Rodríguez/.test(await txt(page, '#cp-card')), 5000);
   await settle(page, 300);
-  check(/No llevan precio: Ferretería Gama/.test(await txt(page, '#cp-card')) && await g(/Cemento gris/).count() === 0, '«No lleva» quita a la ferretería del apartado');
+  check(/No llevan precio: Transporte Rodríguez/.test(await txt(page, '#cp-card')) && await g(/Arena gruesa/).count() === 0, '«No lleva» quita a ese proveedor del apartado');
   check(((await page.evaluate(async () => (await RT.db.doc('settings/conduces').get()).data())) || {}).noPrice.length === 1, 'se guarda (y pasa a los otros teléfonos)');
   // Poner el precio: cada uno por sus metros.
   await g(/^Relleno/).locator('[data-act="cp-apply"]').click();
@@ -111,10 +113,10 @@ const cOf = async (page) => { const l = await docs(page, 'conduces'); return (n)
   await page.click('#toast .toast-act');
   await waitUntil(async () => (await cOf(page))('40062').total == null, 5000);
   check((await cOf(page))('39945').total == null, '«Deshacer» les quita el precio');
-  // Mostrar otra vez a la ferretería.
+  // Mostrarlo otra vez.
   await page.click('[data-act="cp-show"]');
-  await waitUntil(async () => (await g(/Cemento gris/).count()) === 1, 5000);
-  check(await g(/Cemento gris/).count() === 1, '«mostrar» vuelve a poner a la ferretería');
+  await waitUntil(async () => (await g(/Arena gruesa/).count()) === 1, 5000);
+  check(await g(/Arena gruesa/).count() === 1, '«mostrar» lo vuelve a poner');
   // En el teléfono también cabe.
   await page.setViewportSize({ width: 390, height: 844 });
   await settle(page, 500);
