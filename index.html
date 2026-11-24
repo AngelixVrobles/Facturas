@@ -751,6 +751,26 @@ input[type="date"]::-webkit-calendar-picker-indicator { margin: 0 0 0 4px; paddi
 .o-pick.far { opacity: 0.72; }
 .pill.cond.half { color: var(--warn); background: var(--warn-bg); }
 .o-kind { margin: 8px 0 0; }
+.cr-new-line { margin: 2px 0 12px; }
+.cr-card h2 { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.cr-card .cr-sum { color: var(--paid); font-size: 0.95em; }
+.cr-g { display: flex; flex-direction: column; gap: 6px; padding: 10px 0; border-top: 1px solid var(--line); }
+.cr-card .hint + .cr-g { border-top: 0; }
+.cr-top { display: flex; justify-content: space-between; gap: 10px; }
+.cr-it small { display: block; color: var(--muted); font-size: 12.5px; }
+.cr-pay .cr-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid var(--line); }
+.cr-pay .cr-t { display: flex; flex-direction: column; align-items: flex-start; flex: 1; min-width: 0; text-align: left; }
+.cr-pay .cr-t small { color: var(--muted); font-size: 12.5px; }
+.cr-neg { color: var(--paid); white-space: nowrap; }
+.cr-pay button.cr-t { text-decoration: none; color: var(--ink); }
+.cr-pay button.cr-t b { color: var(--accent); }
+.cr-status { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; padding: 10px 12px; border-radius: 12px; background: var(--paid-bg); }
+.cr-status b { font-size: 20px; }
+.cr-status small { color: var(--muted); }
+.cr-status.done { background: var(--surface-2); }
+.cr-uses { margin: 6px 0 0; padding-left: 18px; font-size: 14px; }
+.cr-uses li { margin: 3px 0; }
+
 .check-row small { display: block; color: var(--muted); font-size: 12.5px; margin-top: 2px; }
 .ord-tbl td:last-child .pill + small { margin-top: 3px; }
 .o-load { margin: 4px 0 8px; padding: 8px 10px; border-radius: 10px; background: var(--warn-bg); color: var(--ink); font-size: 14px; }
@@ -842,7 +862,7 @@ input[type="date"]::-webkit-calendar-picker-indicator { margin: 0 0 0 4px; paddi
   </section>
 
   <section id="v-conduces" class="view" hidden>
-    <div class="seg seg3" id="c-seg" role="group" aria-label="Estado de los conduces"></div>
+    <div class="seg seg4" id="c-seg" role="group" aria-label="Estado de los conduces"></div>
     <div class="chips" id="c-chips" role="group" aria-label="Proyecto" hidden></div>
     <label class="search-box">
       <span class="sr">Buscar conduces</span>

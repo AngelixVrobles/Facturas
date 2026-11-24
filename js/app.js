@@ -10,7 +10,7 @@ const LIB = {
   qrgen: 'js/qr.js',
 };
 const PDF_CREATOR = 'Facturas de Proyectos';
-const APP_VERSION = '1.37.0';
+const APP_VERSION = '1.38.0';
 const SVG = (d) => `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ICON = {
   lock: SVG('<rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>'),
@@ -81,7 +81,7 @@ const SEGS = [['pendientes', 'Pendientes'], ['listas', 'Listas'], ['todas', 'Tod
 const PAY_METHODS = ['Efectivo', 'Transferencia', 'Tarjeta', 'Cheque'];
 const PAY_MODE_LABEL = { '': 'Se paga en un pago de la app (a crédito)', directo: 'Ya se pagó (al contado o por fuera)', reponer: 'Se pagó al contado y hay que reponérselo a quien pagó' };
 const payText = (i) => (i.payMode === 'directo' ? ['Ya pagada', i.payMethod ? i.payMethod.toLowerCase() : '', i.paidDate ? 'el ' + fmtDate(i.paidDate) : '', i.paidBy ? 'pagó ' + i.paidBy : ''].filter(Boolean).join(' · ') : i.payMode === 'reponer' ? `Al contado: reponerle a ${i.paidBy || 'quien lo pagó'}` : 'En un pago (a crédito)');
-const Q_LABEL = { espera: 'En espera', preparando: 'Preparando…', subiendo: 'Guardando…', leyendo: 'Leyendo la factura…', lista: 'Lista', qr: 'Lista: datos del QR de la DGII', xml: 'Lista: datos del XML', manual: 'Guardada; llena los datos', orden: 'Orden firmada', conduce: 'Conduce', error: 'No se pudo agregar' };
+const Q_LABEL = { espera: 'En espera', preparando: 'Preparando…', subiendo: 'Guardando…', leyendo: 'Leyendo la factura…', lista: 'Lista', qr: 'Lista: datos del QR de la DGII', xml: 'Lista: datos del XML', manual: 'Guardada; llena los datos', orden: 'Orden firmada', conduce: 'Conduce', devolucion: 'Hoja de devolución', error: 'No se pudo agregar' };
 const CUR_PREFIX = { DOP: 'RD$', USD: 'US$', EUR: '€' };
 const ORDER_LABEL = { borrador: 'Borrador', enviada: 'Por firmar', autorizada: 'Firmada', anulada: 'Anulada' };
 // Por qué no se pudo usar la clave de API, en palabras del usuario (lo que se arregla en la consola).
@@ -101,8 +101,8 @@ const DEFAULT_ORDER_NOTE = 'Toda factura recibida por compras deberá estar acom
 
 const S = {
   tab: 'facturas', filter: 'pendientes', projectFilter: 'all', search: '', paymentId: null,
-  projects: [], invoices: [], payments: [], orders: [], conduces: [], workers: [], asistencia: [], suppliers: [], envios: [], papelera: [], traslados: [], settings: {}, attRules: {}, digi: {}, bk: {}, inf: {}, condCfg: {}, envioPending: null, got: { projects: false, invoices: false, payments: false, orders: false, conduces: false, workers: false, asistencia: false, suppliers: false, envios: false, papelera: false, traslados: false },
-  attProject: '', attSheet: '', attDay: 0, orderFilter: 'todas', orderSearch: '', orderProject: 'all', condFilter: 'esperando', condSearch: '', condProject: 'all', trProject: 'all', trSearch: '', sort: { inv: null, cond: null, ord: null, tr: null }, sel: new Set(), todoAll: false, focus: null, invOrder: 'all', dateFilter: '', dateFrom: '', dateTo: '', showAll: new Set(),
+  projects: [], invoices: [], payments: [], orders: [], conduces: [], workers: [], asistencia: [], suppliers: [], envios: [], papelera: [], traslados: [], creditos: [], settings: {}, attRules: {}, digi: {}, bk: {}, inf: {}, condCfg: {}, envioPending: null, got: { projects: false, invoices: false, payments: false, orders: false, conduces: false, workers: false, asistencia: false, suppliers: false, envios: false, papelera: false, traslados: false, creditos: false },
+  attProject: '', attSheet: '', attDay: 0, orderFilter: 'todas', orderSearch: '', orderProject: 'all', condFilter: 'esperando', crAll: false, condSearch: '', condProject: 'all', trProject: 'all', trSearch: '', sort: { inv: null, cond: null, ord: null, tr: null }, sel: new Set(), todoAll: false, focus: null, invOrder: 'all', dateFilter: '', dateFrom: '', dateTo: '', showAll: new Set(),
   dbState: 'loading', aiState: 'ok', queue: [], sheet: null, payDel: false, busyPdf: false, pdfMsg: '',
   updateReg: null, updating: false, ready: null, restoreFile: null,
 };
@@ -193,7 +193,7 @@ function derive() {
     let aiSt = c.ai || 'off';
     if (aiSt === 'pending' && !aiBusy('c:' + c.id) && now - (Date.parse(c.createdAt) || 0) > 120000) aiSt = 'failed';
     const k = condKey(c);
-    return { ...c, ai: aiSt, invoiceId: c.invoiceId && invIds.has(c.invoiceId) ? c.invoiceId : null, project: projById.get(c.projectId) || null, dup: k ? cdups.get(k) > 1 : false };
+    return { ...c, equipo: condIsEquip(c), ai: aiSt, invoiceId: c.invoiceId && invIds.has(c.invoiceId) ? c.invoiceId : null, project: projById.get(c.projectId) || null, dup: k ? cdups.get(k) > 1 : false };
   }).sort(condSort);
   const condByInv = new Map();
   for (const c of conduces) if (c.invoiceId) { const a = condByInv.get(c.invoiceId) || []; a.push(c); condByInv.set(c.invoiceId, a); }
@@ -220,7 +220,15 @@ function derive() {
     c.orderVia = own ? 'conduce' : c.order ? 'factura' : '';
     if (c.order) { const a = condByOrder.get(c.order.id) || []; a.push(c); condByOrder.set(c.order.id, a); }
   }
-  return { projects: projects.map((p) => projById.get(p.id)), projById, invoices, orders, orderById, invByOrder, condByOrder, namesByRnc, firstOrderAt, conduces, condByInv, suppliers, supByRnc, supFor, envios, companyRnc: RD.normRnc(S.settings.companyRnc) };
+  // Saldo a favor: lo de cada devolución, menos lo descontado en los pagos y lo que el proveedor devolvió.
+  const crUses = new Map();
+  for (const p of S.payments) for (const x of Array.isArray(p.credits) ? p.credits : []) if (x && x.id && isNum(x.amount) && x.amount > 0) { const a = crUses.get(x.id) || []; a.push({ pay: p, amount: x.amount }); crUses.set(x.id, a); }
+  const credits = (S.creditos || []).map((c) => {
+    const uses = crUses.get(c.id) || [], used = round2(uses.reduce((t, u) => t + u.amount, 0)), refunded = c.refund && isNum(c.refund.amount) ? c.refund.amount : 0;
+    return { ...c, uses, used, refunded, balance: round2(Math.max(0, (isNum(c.amount) ? c.amount : 0) - used - refunded)), project: projById.get(c.projectId) || null };
+  }).sort((a, b) => String(b.date || b.createdAt || '').localeCompare(String(a.date || a.createdAt || '')));
+  const creditById = new Map(credits.map((c) => [c.id, c]));
+  return { projects: projects.map((p) => projById.get(p.id)), projById, invoices, orders, orderById, invByOrder, condByOrder, credits, creditById, namesByRnc, firstOrderAt, conduces, condByInv, suppliers, supByRnc, supFor, envios, companyRnc: RD.normRnc(S.settings.companyRnc) };
 }
 function reviewFlags(i, D) {
   const r = [];
@@ -994,6 +1002,7 @@ function renderAll() {
   refreshInvoiceSheet(D);
   refreshOrderSheet(D);
   refreshCondSheet(D);
+  refreshCreditSheet(D);
   refreshTrSheet();
 }
 
@@ -1283,7 +1292,7 @@ function renderTodo(D) {
     : row(unread.length, `${plural(unread.length, 'factura', 'facturas')} sin datos. Con la clave de API se llenan solas.`, b('settings', 'Ajustes')));
   if (review.length) rows.push(row(review.length, plural(review.length, 'factura con algo que revisar', 'facturas con algo que revisar'), b('focus', 'Ver', ' data-f="revisar"'), 'warn'));
   if (noOrd.length) rows.push(row(noOrd.length, plural(noOrd.length, 'factura sin orden de compra', 'facturas sin orden de compra'), b('focus', 'Ver', ' data-f="sinorden"'), 'warn'));
-  const condWait = D.conduces.filter((c) => !c.invoiceId && c.ai !== 'pending');
+  const condWait = D.conduces.filter((c) => !c.invoiceId && c.ai !== 'pending' && !c.equipo);
   if (condWait.length) rows.push(row(condWait.length, plural(condWait.length, 'conduce esperando su factura', 'conduces esperando su factura'), b('cond-list', 'Ver')));
   // Digitadora: se le mandan las de cada día al final del día.
   const toDigi = pendingDigi(D), today = todayISO(), late = digiLate();
@@ -1301,6 +1310,8 @@ function renderTodo(D) {
   if (overdue.length) rows.push(row(overdue.length, `${plural(overdue.length, 'factura vencida', 'facturas vencidas')} · <b class="mono">${esc(totalStr(overdue))}</b>`, b('focus', 'Ver', ' data-f="vencidas"'), 'warn'));
   if (soon.length) rows.push(row(soon.length, `${plural(soon.length, 'factura vence', 'facturas vencen')} esta semana · <b class="mono">${esc(totalStr(soon))}</b>`, b('focus', 'Ver', ' data-f="porvencer"')));
   if (toSign.length) rows.push(row(toSign.length, plural(toSign.length, 'orden por firmar', 'órdenes por firmar'), b('go-orders', 'Ver', ' data-f="porfirmar"')));
+  const crLive = D.credits.filter((c) => c.balance > 0.005);
+  if (crLive.length) rows.push(row(crLive.length, `${crLive.length === 1 ? 'devolución con saldo a favor' : 'devoluciones con saldo a favor'}: <b class="mono">${esc(crBalStr(crLive))}</b>. Se descuenta en el próximo pago a ${crLive.length === 1 ? 'ese proveedor' : 'esos proveedores'}`, b('tab', 'Ver', ' data-tab="pagos"'), 'ok'));
   const half = ordersHalf(D);
   if (half.length) rows.push(row(half.length, `${half.length === 1 ? 'orden con conduce quedó a medias' : 'órdenes con conduce quedaron a medias'}: ${esc(half.slice(0, 2).map((x) => `${orderNo(x.o)} (${x.l.count})`).join(', '))}${half.length > 2 ? '…' : ''}. Falta material o subir un conduce`, b('go-orders', 'Ver', ' data-f="transporte"')));
   if (waiting.length) rows.push(row(waiting.length, plural(waiting.length, 'orden sin factura: te falta esa factura', 'órdenes sin factura: te faltan esas facturas'), b('go-orders', 'Ver', ' data-f="sinfactura"')));
@@ -1332,7 +1343,7 @@ function renderQueue() {
   const q = S.queue;
   if (!q.length) { el.hidden = true; el.innerHTML = ''; return; }
   const left = q.filter((x) => !x.done).length;
-  const cls = { espera: 'q-busy', preparando: 'q-busy', subiendo: 'q-busy', leyendo: 'q-busy', lista: 'q-ok', qr: 'q-ok', xml: 'q-ok', orden: 'q-ok', conduce: 'q-ok', manual: 'q-manual', error: 'q-error' };
+  const cls = { espera: 'q-busy', preparando: 'q-busy', subiendo: 'q-busy', leyendo: 'q-busy', lista: 'q-ok', qr: 'q-ok', xml: 'q-ok', orden: 'q-ok', conduce: 'q-ok', devolucion: 'q-ok', manual: 'q-manual', error: 'q-error' };
   el.hidden = false;
   el.innerHTML = `<div class="q-head"><b>${left ? `Procesando ${left} de ${q.length}…` : `Listo: ${plural(q.length, 'archivo', 'archivos')}`}</b>${left ? '' : '<button type="button" class="btn sm ghost" data-act="queue-clear">Ocultar</button>'}</div><ul class="q-list">${q.map((x) => `<li class="${cls[x.state]}"><span class="q-dot"></span><span class="q-name">${esc(x.name)}</span><span class="q-state">${esc(Q_LABEL[x.state] + (x.msg ? ': ' + x.msg : ''))}</span></li>`).join('')}</ul>`;
 }
@@ -1370,7 +1381,7 @@ function renderPagos(D, pay) {
   const pays = [...S.payments].sort((a, b) => (order[a.status] ?? 0) - (order[b.status] ?? 0) || String(b.date || '').localeCompare(String(a.date || '')) || String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
   const pendN = D.invoices.filter((i) => i.status === 'pendiente').length;
   const head = canEdit() ? `<button type="button" class="btn primary block" data-act="new-pay">${ICON.plus} Nuevo pago</button><p class="hint">Un pago junta las facturas que vas a presentar juntas. ${pendN ? `Tienes ${plural(pendN, 'factura pendiente', 'facturas pendientes')} de acomodar.` : 'Ahorita no tienes facturas pendientes.'}</p>` : '';
-  const rep = reponerHTML(D);
+  const rep = creditsCardHTML(D) + reponerHTML(D);
   if (!pays.length) {
     el.innerHTML = head + rep + '<div class="empty"><h2>Todavía no hay pagos</h2><p>Cuando te toque presentar facturas, crea un pago, elige cuáles entran y comparte el PDF o el Excel. Después lo marcas como presentado y, cuando paguen, como pagado.</p></div>';
     return;
@@ -1379,12 +1390,286 @@ function renderPagos(D, pay) {
     const invs = payInvoices(p, D);
     const projN = new Set(invs.map((i) => (i.project ? i.project.id : 'none'))).size;
     const st = PAY_LABEL[p.status] ? p.status : 'armando';
-    return `<button type="button" class="pay" data-act="open-pay" data-id="${esc(p.id)}"><span class="pay-name">${esc(p.name || 'Pago')}</span><span class="stamp ${st}">${PAY_LABEL[st]}</span><span class="pay-meta">${[fmtDate(p.date), plural(invs.length, 'factura', 'facturas'), invs.length ? plural(projN, 'proyecto', 'proyectos') : ''].filter(Boolean).join(' · ')}</span><span class="pay-total">${esc(totalStr(invs, 'toPay'))}</span></button>`;
+    return `<button type="button" class="pay" data-act="open-pay" data-id="${esc(p.id)}"><span class="pay-name">${esc(p.name || 'Pago')}</span><span class="stamp ${st}">${PAY_LABEL[st]}</span><span class="pay-meta">${[fmtDate(p.date), plural(invs.length, 'factura', 'facturas'), invs.length ? plural(projN, 'proyecto', 'proyectos') : ''].filter(Boolean).join(' · ')}</span><span class="pay-total">${esc(payNet(p, D, invs).netStr)}</span></button>`;
   }).join('')}</div>`;
 }
 
+/* ---------- saldo a favor (devoluciones) ---------- */
+// Se devolvió algo que ya se había pagado y el proveedor entregó una hoja de devolución con el monto: ese monto queda a
+// favor de la empresa. Se descuenta en el próximo pago a ese proveedor (sale en el PDF del pago, con la hoja anexa) o se
+// anota si lo devolvió en efectivo, cheque o transferencia.
+const crNo = (c) => (c && c.number ? 'No. ' + c.number : 'sin número');
+const crLabel = (c) => `devolución ${crNo(c)}${ymd(c.date) ? ' del ' + fmtDate(c.date) : ''}`;
+const crSupOf = (c, name, rnc) => (!!rnc && !!c.rnc && RD.normRnc(rnc) === RD.normRnc(c.rnc)) || (!!name && !!c.supplier && sameName(c.supplier, name));
+const crBalStr = (list) => totalStr(list.map((c) => ({ amount: c.balance, currency: c.currency })));
+function payCredits(pay, D) {
+  return (Array.isArray(pay.credits) ? pay.credits : []).map((x) => ({ c: x && D.creditById.get(x.id), amount: x && isNum(x.amount) ? x.amount : 0 })).filter((x) => x.c && x.amount > 0);
+}
+// El total del pago: las facturas, menos el saldo a favor que se le descontó.
+function payNet(pay, D, invs = payInvoices(pay, D)) {
+  const cr = payCredits(pay, D), gross = sumBy(invs, 'toPay'), credit = new Map();
+  for (const x of cr) { const k = normCur(x.c.currency); credit.set(k, round2((credit.get(k) || 0) + x.amount)); }
+  const net = new Map([...gross].map(([k, v]) => [k, round2(v)]));
+  for (const [k, v] of credit) net.set(k, round2((net.get(k) || 0) - v));
+  const str = (m) => (m.size ? [...m].map(([k, v]) => money(round2(v), k)).join(' + ') : money(0));
+  return { invs, cr, gross, credit, net, grossStr: str(gross), creditStr: str(credit), netStr: str(net) };
+}
+// Lo que todavía se le paga a ese proveedor en este pago (no se descuenta más saldo del que se le debe).
+function paySupRemaining(pay, D, c, invs = payInvoices(pay, D)) {
+  const owed = invs.filter((i) => crSupOf(c, i.supplier, i.rnc) && normCur(i.currency) === normCur(c.currency)).reduce((t, i) => t + (isNum(i.toPay) ? i.toPay : 0), 0);
+  const applied = payCredits(pay, D).filter((x) => x.c.id !== c.id && crSupOf(c, x.c.supplier, x.c.rnc) && normCur(x.c.currency) === normCur(c.currency)).reduce((t, x) => t + x.amount, 0);
+  return round2(Math.max(0, owed - applied));
+}
+function payCreditsHTML(pay, D, invs, canChange) {
+  const cr = payCredits(pay, D);
+  const avail = D.credits.filter((c) => c.balance > 0.005 && !cr.some((x) => x.c.id === c.id) && invs.some((i) => crSupOf(c, i.supplier, i.rnc)));
+  if (!cr.length && !avail.length) return '';
+  const rows = cr.map((x) => `<div class="cr-row"><button type="button" class="link cr-t" data-act="cr-open" data-id="${esc(x.c.id)}"><b>${esc(x.c.supplier || 'Proveedor')}</b><small>${esc(crLabel(x.c))}</small></button><b class="mono cr-neg">−${esc(money(x.amount, x.c.currency))}</b>${canChange ? `<button type="button" class="btn ghost sm" data-act="pay-cr-rm" data-id="${esc(x.c.id)}">Quitar</button>` : ''}</div>`).join('');
+  const offer = avail.map((c) => {
+    const amt = round2(Math.min(c.balance, paySupRemaining(pay, D, c, invs)));
+    return `<div class="cr-row offer"><span class="cr-t"><b>${esc(c.supplier || 'Proveedor')}</b><small>Tiene ${esc(money(c.balance, c.currency))} a favor (${esc(crLabel(c))})</small></span>${canChange && amt > 0 ? `<button type="button" class="btn sm primary" data-act="pay-cr-add" data-id="${esc(c.id)}">Descontar ${esc(money(amt, c.currency))}</button>` : ''}</div>`;
+  }).join('');
+  return `<div class="card cr-pay" id="cr-pay"><h2>Saldo a favor</h2>${cr.length ? `<p class="usage">Se descuenta de lo que se le paga a ese proveedor. En el PDF sale el descuento y la hoja de devolución va anexa.</p>${rows}` : ''}${avail.length ? `<p class="usage">${cr.length ? 'También hay' : 'Hay'} saldo a favor con ${avail.length === 1 ? 'un proveedor' : 'proveedores'} de este pago${canChange ? '' : ' (se descuenta mientras el pago está por presentar)'}:</p>${offer}` : ''}</div>`;
+}
+async function payCreditAdd(payId, crId) {
+  const D = derive(), pay = S.payments.find((p) => p.id === payId), c = D.creditById.get(crId);
+  if (!pay || !c) return;
+  const amt = round2(Math.min(c.balance, paySupRemaining(pay, D, c)));
+  if (!(amt > 0)) { toast('A ese proveedor no le queda nada por cobrar en este pago.'); return; }
+  const list = [...(Array.isArray(pay.credits) ? pay.credits : []).filter((x) => x && x.id !== crId), { id: crId, amount: amt }];
+  await write(() => db.doc('payments/' + payId).update({ credits: list }), `Descontados ${money(amt, c.currency)} de saldo a favor`);
+}
+async function payCreditRm(payId, crId) {
+  const pay = S.payments.find((p) => p.id === payId);
+  if (!pay) return;
+  await write(() => db.doc('payments/' + payId).update({ credits: (pay.credits || []).filter((x) => x && x.id !== crId) }), 'Saldo a favor quitado del pago');
+}
+// En «Pagos»: lo que los proveedores deben por devoluciones, por proveedor.
+function creditsCardHTML(D) {
+  const edit = canEdit(), live = D.credits.filter((c) => c.balance > 0.005), done = D.credits.length - live.length;
+  if (!D.credits.length) return edit ? `<div class="cr-new-line"><button type="button" class="btn sm" data-act="cr-new">${ICON.plus} Registrar una devolución (saldo a favor)</button></div>` : '';
+  const show = S.crAll ? D.credits : live;
+  const groups = new Map();
+  for (const c of show) { const k = RD.normRnc(c.rnc) || 'n:' + (supKey(c.supplier) || norm(c.supplier) || '?'); if (!groups.has(k)) groups.set(k, { name: c.supplier || 'Proveedor sin nombre', items: [] }); groups.get(k).items.push(c); }
+  const state = (c) => (c.balance > 0.005 ? (c.used || c.refunded ? `queda ${money(c.balance, c.currency)} de ${money(c.amount, c.currency)}` : 'sin usar') : c.refunded && !c.used ? 'te lo devolvieron' : 'ya se descontó');
+  const rows = [...groups.values()].map((g) => `<div class="cr-g"><div class="cr-top"><b>${esc(g.name)}</b><b class="mono">${esc(crBalStr(g.items))}</b></div>${g.items.map((c) => `<button type="button" class="o-inv cr-it" data-act="cr-open" data-id="${esc(c.id)}"><span class="grow">${esc([crLabel(c), c.project ? c.project.name : ''].filter(Boolean).join(' · '))}<small>${esc(state(c))}</small></span><b class="mono">${esc(money(c.amount, c.currency))}</b></button>`).join('')}</div>`).join('');
+  return `<div class="card cr-card" id="cr-card"><h2>Saldo a favor${live.length ? ` <span class="mono cr-sum">${esc(crBalStr(live))}</span>` : ''}</h2><p class="hint">Devoluciones de lo que ya se pagó: el proveedor te lo debe. Al armar el próximo pago a ese proveedor sale la opción de descontarlo; si te lo devuelven en efectivo, se anota en la devolución.</p>${rows || '<p class="usage">No queda saldo a favor.</p>'}<div class="actions">${edit ? `<button type="button" class="btn sm" data-act="cr-new">${ICON.plus} Registrar una devolución</button>` : ''}${done ? `<button type="button" class="link" data-act="cr-all">${S.crAll ? 'Ocultar las ya usadas' : `Ver las ya usadas (${done})`}</button>` : ''}</div></div>`;
+}
+function crSig(c) { return JSON.stringify([c.supplier, c.rnc, c.number, c.date, c.amount, c.currency, c.projectId, c.invoiceId, c.concept, c.notes, c.fileId, c.refund, c.used, (c.uses || []).map((u) => u.pay.id + ':' + u.amount + ':' + u.pay.status)]); }
+function openCredit(id, keepScroll) {
+  const D = derive(), c = id ? D.creditById.get(id) : null;
+  if (id && !c) return;
+  const edit = canEdit(), dis = edit ? '' : ' disabled';
+  const pf = S.projectFilter !== 'all' && S.projectFilter !== 'none' ? S.projectFilter : '';
+  const d = c || { supplier: '', rnc: '', number: '', date: todayISO(), amount: null, currency: 'DOP', projectId: pf, invoiceId: '', concept: '', notes: '', fileId: '', fileType: '', thumbId: '' };
+  const tid = d.thumbId || (String(d.fileType || '').startsWith('image/') ? d.fileId : null);
+  const preview = d.fileId ? `<button type="button" class="preview" data-act="cr-view" data-id="${esc(c ? c.id : '')}">${tid ? `<img src="${esc(assetUrl(tid))}" alt="">` : '<span class="ph">PDF</span>'}<span class="preview-tag">Hoja de devolución · Ver</span></button>` : '';
+  const projOpts = D.projects.map((p) => `<option value="${esc(p.id)}"${p.id === d.projectId ? ' selected' : ''}>${esc(p.name)}</option>`).join('');
+  const invs = D.invoices.filter((i) => i.amount > 0 && (!d.supplier || crSupOf(d, i.supplier, i.rnc) || i.id === d.invoiceId)).sort(sortByDateDesc).slice(0, 200);
+  const invOpts = invs.map((i) => `<option value="${esc(i.id)}"${i.id === d.invoiceId ? ' selected' : ''}>${esc([i.supplier || 'Factura', i.number ? RD.normNcf(i.number) : '', fmtDate(i.date), money(i.amount, i.currency)].filter(Boolean).join(' · '))}</option>`).join('');
+  const sups = uniqList([...S.suppliers.map((x) => x.name), ...S.invoices.map((x) => x.supplier)]).slice(0, 300);
+  const cur = normCur(d.currency);
+  let status = '';
+  if (c) {
+    const uses = c.uses.map((u) => `<li><button type="button" class="link" data-act="open-pay" data-id="${esc(u.pay.id)}">${esc([payNo(u.pay), u.pay.name || 'Pago'].filter(Boolean).join(' · '))}</button> <span class="usage">(${esc(PAY_LABEL[u.pay.status] || 'Por presentar')})</span>: −${esc(money(u.amount, c.currency))}</li>`).join('');
+    const refund = c.refund && isNum(c.refund.amount) ? `<li>Te lo devolvieron: ${esc(money(c.refund.amount, c.currency))}${c.refund.how ? ' en ' + esc(String(c.refund.how).toLowerCase()) : ''}${ymd(c.refund.date) ? ' el ' + esc(fmtDate(c.refund.date)) : ''}${edit ? ` <button type="button" class="link" data-act="cr-refund-rm" data-id="${esc(c.id)}">Quitar</button>` : ''}</li>` : '';
+    status = `<div class="cr-status ${c.balance > 0.005 ? '' : 'done'}"><span>${c.balance > 0.005 ? 'Disponible' : 'Saldo'}</span><b class="mono">${esc(money(c.balance, c.currency))}</b><small>de ${esc(money(c.amount, c.currency))}</small></div>${uses || refund ? `<ul class="cr-uses">${uses}${refund}</ul>` : '<p class="usage">Todavía no se ha descontado en ningún pago.</p>'}`;
+    if (edit && c.balance > 0.005 && !c.refund) status += `<details class="edit cr-rf"><summary>¿Te lo devolvieron en efectivo, cheque o transferencia?</summary><div class="fields"><div class="field"><label for="cr-rf-amt">Monto</label><input id="cr-rf-amt" class="mono" inputmode="decimal" maxlength="16" value="${esc(amountInput(c.balance))}"></div><div class="field"><label for="cr-rf-date">Fecha</label><input id="cr-rf-date" type="date" value="${esc(todayISO())}"></div><div class="field full"><label for="cr-rf-how">Cómo</label><select id="cr-rf-how"><option>Efectivo</option><option>Cheque</option><option>Transferencia</option></select></div><div class="actions full"><button type="button" class="btn sm primary" data-act="cr-refund" data-id="${esc(c.id)}">Anotar la devolución</button></div></div></details>`;
+  }
+  const del = c && edit ? (c.uses.length ? '<p class="usage">Está descontada en un pago: para borrarla, quítala primero de ese pago.</p>' : `<div><button type="button" class="btn danger sm" data-act="cr-del">${ICON.trash} Eliminar</button></div><div id="cr-del-box" hidden><div class="confirm"><p>¿Eliminar esta devolución? Se va a la papelera (con su foto) y ahí se puede recuperar por 30 días.</p><div class="actions"><button type="button" class="btn danger solid" data-act="cr-del-yes" data-id="${esc(c.id)}">Eliminar</button><button type="button" class="btn" data-act="cr-del-no">Cancelar</button></div></div></div>`) : '';
+  const html = `<form id="cr-form" data-id="${esc(c ? c.id : '')}" autocomplete="off">${sheetHead(c ? 'Devolución ' + esc(crNo(c)) : 'Registrar una devolución')}
+    <div class="sheet-b">
+      ${c ? '' : '<p class="hint">Cuando se devuelve algo que ya se pagó, el proveedor entrega una hoja de devolución con el monto: queda <b>a favor</b> de la empresa y se descuenta en el próximo pago a ese proveedor.</p>'}
+      <div id="cr-prev">${preview}</div>
+      ${edit ? `<div><button type="button" class="btn sm" data-act="cr-file">${ICON.plus} ${d.fileId ? 'Cambiar la foto de la hoja' : 'Agregar la foto de la hoja'}</button></div><input type="file" id="cr-file-in" accept="image/*,application/pdf" hidden>` : ''}
+      <div id="cr-ai"></div>
+      ${status}
+      <div class="fields">
+        <div class="field full"><label for="cr-sup">Proveedor</label><input id="cr-sup" list="dl-crsup" maxlength="120" value="${esc(d.supplier || '')}"${dis}></div>
+        <div class="field"><label for="cr-rnc">RNC</label><input id="cr-rnc" class="mono" inputmode="numeric" maxlength="15" value="${esc(RD.normRnc(d.rnc))}"${dis}></div>
+        <div class="field"><label for="cr-num">No. de la hoja</label><input id="cr-num" class="mono" maxlength="30" value="${esc(d.number || '')}"${dis}></div>
+        <div class="field"><label for="cr-date">Fecha</label><input id="cr-date" type="date" value="${esc(d.date || '')}"${dis}></div>
+        <div class="field"><label for="cr-amt">Monto a favor</label><input id="cr-amt" class="mono" inputmode="decimal" maxlength="16" placeholder="0.00" value="${esc(amountInput(d.amount))}"${dis}></div>
+        <div class="field"><label for="cr-cur">Moneda</label><select id="cr-cur"${dis}>${['DOP', 'USD'].map((k) => `<option value="${k}"${cur === k ? ' selected' : ''}>${CUR_PREFIX[k]}</option>`).join('')}</select></div>
+        <div class="field"><label for="cr-proj">Obra</label><select id="cr-proj"${dis}><option value="">Sin obra</option>${projOpts}</select></div>
+        <div class="field full"><label for="cr-inv">Factura de lo devuelto (si se sabe)</label><select id="cr-inv"${dis}><option value="">—</option>${invOpts}</select></div>
+        <div class="field full"><label for="cr-what">Qué se devolvió</label><textarea id="cr-what" rows="2" maxlength="300" placeholder="Ej.: 2 tubos de 4&quot; y 1 llave de paso"${dis}>${esc(d.concept || '')}</textarea></div>
+        <div class="field full"><label for="cr-notes">Notas</label><textarea id="cr-notes" rows="2" maxlength="300"${dis}>${esc(d.notes || '')}</textarea></div>
+      </div>
+      ${del}
+    </div>
+    ${edit ? '<div class="sheet-f"><button type="submit" class="btn primary block" id="cr-save">Guardar</button></div>' : ''}
+  </form><datalist id="dl-crsup">${sups.map((v) => `<option value="${esc(v)}"></option>`).join('')}</datalist>`;
+  const prevScroll = keepScroll && $('.sheet-b') ? $('.sheet-b').scrollTop : 0;
+  openSheet(html, { type: 'cr', id: c ? c.id : 'new', dirty: false, sig: c ? crSig(c) : '' });
+  if (keepScroll && $('.sheet-b')) $('.sheet-b').scrollTop = prevScroll;
+}
+function refreshCreditSheet(D) {
+  const sh = S.sheet;
+  if (!sh || sh.type !== 'cr' || sh.id === 'new' || sh.dirty) return;
+  const c = D.creditById.get(sh.id);
+  if (!c) { if (S.got.creditos) closeSheet(); return; }
+  if (crSig(c) !== sh.sig) openCredit(c.id, true);
+}
+async function saveCredit(f) {
+  const id = f.dataset.id || '';
+  const amt = parseAmount($('#cr-amt').value.trim());
+  if (amt == null || amt <= 0 || amt >= 1e10) { toast('Escribe el monto a favor (el de la hoja de devolución).'); $('#cr-amt').focus(); return; }
+  const sup = $('#cr-sup').value.trim();
+  if (!sup) { toast('Escribe el proveedor.'); $('#cr-sup').focus(); return; }
+  const rnc = RD.normRnc($('#cr-rnc').value);
+  if (rnc && rnc.length !== 9 && rnc.length !== 11) { toast('El RNC debe tener 9 dígitos (u 11 si es cédula).'); return; }
+  const date = $('#cr-date').value, now = new Date().toISOString();
+  const data = { supplier: sup.slice(0, 120), rnc, number: $('#cr-num').value.trim().replace(/^(no\.?|n[º°o]\.?|#)\s*/i, '').slice(0, 30), date: ymd(date) ? date : todayISO(), amount: round2(amt), currency: $('#cr-cur').value || 'DOP', projectId: $('#cr-proj').value || null, invoiceId: $('#cr-inv').value || null, concept: $('#cr-what').value.trim().slice(0, 300), notes: $('#cr-notes').value.trim().slice(0, 300), updatedAt: now };
+  if (f.dataset.file) Object.assign(data, { fileId: f.dataset.file, fileType: f.dataset.ftype || 'image/jpeg', thumbId: f.dataset.thumb || null, pages: Number(f.dataset.pages) || 1 });
+  if (id) {
+    const c = derive().creditById.get(id);
+    if (c && round2(c.used + c.refunded) > data.amount + 0.005) { toast(`Ya se usaron ${money(round2(c.used + c.refunded), c.currency)} de esta devolución: el monto no puede ser menor.`); return; }
+  }
+  if (!rnc) { const sp = S.suppliers.find((x) => x.name && sameName(x.name, sup)); if (sp && sp.rnc) data.rnc = RD.normRnc(sp.rnc); }
+  // Sin obra escogida: la de la factura de lo devuelto.
+  if (!data.projectId && data.invoiceId) { const inv = S.invoices.find((x) => x.id === data.invoiceId); if (inv && inv.projectId) data.projectId = inv.projectId; }
+  const btn = $('#cr-save');
+  if (btn) btn.disabled = true;
+  const ok = await write(() => (id ? db.doc('creditos/' + id).update(data) : db.collection('creditos').doc().set({ ...data, refund: null, createdAt: now, by: whoAmI() })), id ? 'Devolución guardada' : 'Devolución registrada: queda como saldo a favor');
+  if (ok) closeSheet(); else if (btn) btn.disabled = false;
+}
+async function creditRefund(id) {
+  const c = derive().creditById.get(id);
+  if (!c) return;
+  const amt = parseAmount($('#cr-rf-amt').value.trim()), date = $('#cr-rf-date').value, how = $('#cr-rf-how').value;
+  if (amt == null || amt <= 0 || amt > c.balance + 0.005) { toast(`Escribe cuánto te devolvieron (hasta ${money(c.balance, c.currency)}).`); return; }
+  await write(() => db.doc('creditos/' + id).update({ refund: { amount: round2(amt), date: ymd(date) ? date : todayISO(), how }, updatedAt: new Date().toISOString() }), 'Anotado: te devolvieron el saldo');
+}
+async function creditRefundRm(id) { await write(() => db.doc('creditos/' + id).update({ refund: null, updatedAt: new Date().toISOString() }), 'Quitado'); }
+async function deleteCredit(id) {
+  const c = S.creditos.find((x) => x.id === id), dc = derive().creditById.get(id);
+  if (!c) return;
+  if (dc && dc.uses.length) { toast('Está descontada en un pago: quítala primero de ese pago.'); return; }
+  if (!(await write(async () => { await toTrash('credito', c, [crLabel(c), c.supplier, money(c.amount, c.currency)].filter(Boolean).join(' · ')); await db.doc('creditos/' + id).delete(); }))) return;
+  closeSheet();
+  toastAct('Devolución movida a la papelera', 'Deshacer', () => undoTrash('credito', id));
+}
+// La foto (o el PDF) de la hoja: se guarda y, con la clave de API, se leen sus datos.
+const CR_FIELDS = ['proveedor', 'rnc_proveedor', 'numero', 'fecha', 'monto', 'moneda', 'factura_referencia', 'articulos'];
+const CR_SCHEMA = {
+  type: 'object',
+  properties: { proveedor: { type: 'string' }, rnc_proveedor: { type: 'string' }, numero: { type: 'string' }, fecha: { type: 'string' }, monto: { type: 'string' }, moneda: { type: 'string', enum: ['DOP', 'USD', 'EUR', ''] }, factura_referencia: { type: 'string' }, articulos: { type: 'string' } },
+  required: CR_FIELDS,
+  additionalProperties: false,
+};
+function buildCrPrompt(text, withImage) {
+  const t = String(text || '').trim();
+  return [
+    'Lee esta hoja de devolución de República Dominicana: el proveedor recibió de vuelta mercancía que ya se había pagado y deja ese monto a favor del cliente. Saca sus datos.',
+    withImage ? 'La imagen adjunta es una foto de la hoja; puede estar llenada a mano.' : `Este es el texto de la hoja en PDF:\n<<<\n${t.slice(0, 9000)}\n>>>`,
+    withImage && t ? `Texto que se pudo sacar del mismo archivo (puede estar incompleto):\n<<<\n${t.slice(0, 4000)}\n>>>` : '',
+    'Llena cada campo así (usa "" si el dato no aparece):',
+    '- proveedor: la empresa que emite la hoja (la del membrete), no el cliente.',
+    '- rnc_proveedor: el RNC de esa empresa, solo números.',
+    '- numero: el número de la hoja de devolución (o nota de crédito), solo el número.',
+    '- fecha: la fecha de la hoja en formato AAAA-MM-DD (suele estar como DD/MM/AAAA).',
+    '- monto: el monto total devuelto o a favor del cliente, solo el número con punto decimal (ej. 5250.00).',
+    '- moneda: "DOP" si es en pesos (RD$), "USD" si es en dólares.',
+    '- factura_referencia: el NCF o el número de la factura original de lo que se devolvió, si aparece.',
+    '- articulos: lo que se devolvió, en pocas palabras (ej. "2 tubos PVC 4\\", 1 llave de paso").',
+  ].filter(Boolean).join('\n');
+}
+async function crPickFile(file) {
+  const f = $('#cr-form');
+  if (!f || !file) return;
+  try {
+    toast('Guardando la hoja…');
+    const p = await prepFile(file);
+    const up = await assets.upload(p.blob, { type: p.ftype });
+    let thumbId = null;
+    if (p.thumb) { try { thumbId = (await assets.upload(p.thumb, { type: 'image/jpeg' })).id; } catch (e) { console.warn('miniatura', e); } }
+    Object.assign(f.dataset, { file: up.id, ftype: p.ftype, thumb: thumbId || '', pages: String(p.pages || 1) });
+    const tid = thumbId || (p.ftype.startsWith('image/') ? up.id : null);
+    $('#cr-prev').innerHTML = `<button type="button" class="preview" data-act="cr-view">${tid ? `<img src="${esc(assetUrl(tid))}" alt="">` : '<span class="ph">PDF</span>'}<span class="preview-tag">Hoja de devolución · Ver</span></button>`;
+    if (S.sheet && S.sheet.type === 'cr') S.sheet.dirty = true;
+    if (ai.hasKey() && (p.aiImage || hasText(p.text))) await crReadAI(f, { image: p.aiImage, text: p.text });
+    else toast('Hoja guardada. Llena los datos y toca Guardar.');
+  } catch (e) { console.error(e); toast(upErr(e)); }
+}
+async function crReadAI(f, input) {
+  const box = $('#cr-ai');
+  if (box) box.innerHTML = `<div class="msg ok">${ICON.spark}<span>Leyendo la hoja…</span></div>`;
+  try {
+    const o = await ai.json(buildCrPrompt(input.text, !!input.image), { images: input.image ? [input.image] : [], schema: CR_SCHEMA });
+    if ($('#cr-form') !== f) return;
+    const s = (v, n) => (typeof v === 'string' ? v.trim().slice(0, n) : typeof v === 'number' ? String(v) : '');
+    const put = (sel, v) => { const el = $(sel); if (el && v && !el.value.trim()) el.value = v; };
+    put('#cr-sup', s(o.proveedor, 120));
+    const rnc = RD.normRnc(o.rnc_proveedor); if (rnc.length === 9 || rnc.length === 11) put('#cr-rnc', rnc);
+    put('#cr-num', s(o.numero, 30).replace(/^(no\.?|n[º°o]\.?|#)\s*/i, ''));
+    let dt = s(o.fecha, 10); if (!ymd(dt)) dt = RD.dmyToIso(dt); if (ymd(dt)) $('#cr-date').value = dt;
+    const m = parseAmount(s(o.monto, 40)); if (isNum(m) && m > 0 && m < 1e10) put('#cr-amt', amountInput(round2(m)));
+    if (o.moneda && $('#cr-cur')) $('#cr-cur').value = normCur(o.moneda) === 'USD' ? 'USD' : 'DOP';
+    put('#cr-what', s(o.articulos, 300));
+    // La factura de lo devuelto, por su NCF o su número.
+    const ref = s(o.factura_referencia, 40), sel = $('#cr-inv');
+    if (ref && sel && !sel.value) {
+      const n = RD.normNcf(ref), dg = ref.replace(/\D/g, '');
+      const hit = S.invoices.find((x) => x.number && (RD.normNcf(x.number) === n || (dg.length >= 4 && RD.normNcf(x.number).replace(/\D/g, '').endsWith(dg))));
+      if (hit) {
+        if (![...sel.options].some((op) => op.value === hit.id)) sel.insertAdjacentHTML('beforeend', `<option value="${esc(hit.id)}">${esc([hit.supplier || 'Factura', hit.number ? RD.normNcf(hit.number) : '', fmtDate(hit.date), money(hit.amount, hit.currency)].filter(Boolean).join(' · '))}</option>`);
+        sel.value = hit.id;
+      }
+    }
+    if (box) box.innerHTML = `<div class="msg ok">${ICON.spark}<span>Datos leídos de la hoja. Revisa que estén bien y toca <b>Guardar</b>.</span></div>`;
+  } catch (e) {
+    console.warn('lectura de la hoja', e);
+    if (box) box.innerHTML = `<div class="msg warn">${ICON.alert}<span>No se pudo leer la hoja. Llena los datos a mano.</span></div>`;
+  }
+}
+// Una «factura» que en realidad es una hoja de devolución: pasa a saldo a favor con el mismo archivo.
+async function convertToCredit(inv, out) {
+  const s = (v, n) => (typeof v === 'string' ? v.trim().slice(0, n) : typeof v === 'number' ? String(v) : '');
+  const o = out || {}, now = new Date().toISOString();
+  const amt = parseAmount(s(o.total, 40));
+  let dt = s(o.fecha, 10); if (!ymd(dt)) dt = RD.dmyToIso(dt);
+  const c = {
+    supplier: inv.supplier || s(o.proveedor, 120) || '', rnc: RD.normRnc(inv.rnc) || RD.normRnc(o.rnc_proveedor) || '', number: s(o.devolucion_numero, 30).replace(/^(no\.?|n[º°o]\.?|#)\s*/i, ''),
+    date: ymd(inv.date) ? inv.date : ymd(dt) ? dt : todayISO(), amount: isNum(inv.amount) ? Math.abs(inv.amount) : isNum(amt) ? Math.abs(round2(amt)) : null, currency: normCur(inv.currency || o.moneda),
+    projectId: inv.projectId || null, invoiceId: null, concept: inv.concept || s(o.concepto, 140), notes: '', refund: null,
+    fileId: inv.fileId, fileType: inv.fileType, thumbId: inv.thumbId || null, pages: inv.pages || 1, createdAt: inv.createdAt || now, updatedAt: now, by: whoAmI(), fromInvoice: true,
+  };
+  const ref = db.collection('creditos').doc();
+  await dbw(async () => { await ref.set(c); await db.doc('invoices/' + inv.id).delete(); });
+  convertedTo.set(inv.id, ref.id);
+  return ref.id;
+}
+async function invoiceToCredit(id) {
+  const i = S.invoices.find((x) => x.id === id);
+  if (!i) return;
+  if (S.payments.some((p) => (p.invoiceIds || []).includes(id))) { toast('Está en un pago; quítala del pago primero.'); return; }
+  try {
+    const cid = await convertToCredit(i, null);
+    closeSheet();
+    toast('Listo: quedó como devolución (saldo a favor)');
+    setTimeout(() => openCredit(cid), 450);
+  } catch (e) { console.error(e); toast(dbErr(e)); }
+}
+
+/* ---------- equipos (andamios y alquileres) ---------- */
+// Los andamios, puntales y otros equipos (casi siempre alquilados) van aparte de los materiales: llegan con su conduce,
+// a veces sin orden de compra, y lo que importa es cuánto tiempo estuvieron en la obra (para revisar la factura del
+// alquiler). Se reconocen por el material o se marcan a mano en el conduce.
+const EQUIP_RE = /\b(andamios?|crucetas?|puntal(es)?|plataformas? de andamio|encofrados?|formaletas?|mezcladoras?|vibrador(es)?|compactador(es)?|ranas? compactadora|alquiler|alquilad[oa]s?)\b/;
+const condIsEquip = (c) => c.kind === 'equipo' || (c.kind !== 'material' && EQUIP_RE.test(norm([c.material, c.qty].filter(Boolean).join(' '))));
+function equipDays(c) {
+  const a = ymd(c.date) ? c.date : String(c.createdAt || '').slice(0, 10);
+  if (!ymd(a)) return null;
+  return Math.max(1, daysBetween(a, ymd(c.returnedAt) ? c.returnedAt : todayISO()));
+}
+function equipLine(c) {
+  const n = equipDays(c);
+  return ymd(c.returnedAt) ? `devuelto el ${fmtDate(c.returnedAt)}${n ? ` (${plural(n, 'día', 'días')} en la obra)` : ''}` : `en la obra${ymd(c.date) ? ' desde el ' + fmtDate(c.date) : ''}${n ? ` (${plural(n, 'día', 'días')})` : ''}`;
+}
+
 function renderPayDetail(D, pay) {
-  const invs = payInvoices(pay, D);
+  const invs = payInvoices(pay, D), net = payNet(pay, D, invs);
   const st = PAY_LABEL[pay.status] ? pay.status : 'armando';
   const edit = canEdit();
   const order = ['armando', 'presentado', 'pagado'];
@@ -1413,11 +1698,12 @@ function renderPayDetail(D, pay) {
   const listHTML = groups.map((g) => `<section class="group"><h2 class="group-h">${dot(g)}<span class="gname">${esc(g.name)}</span><span class="gmeta">${g.items.length} · ${esc(totalStr(g.items, 'toPay'))}</span></h2>${wide() ? invTableHTML(g.items.sort(sortByDateDesc), D, 'pay', { noPick: true, rm: canRemove }) : `<div class="list">${g.items.sort(sortByDateDesc).map((i) => (canRemove ? `<div class="rowx">${cardHTML(i, D, { hideProject: true, hideStatus: true })}<button type="button" class="icon-btn" data-act="pay-rm" data-id="${esc(i.id)}" aria-label="Quitar del pago">${ICON.close}</button></div>` : cardHTML(i, D, { hideProject: true, hideStatus: true, brief: true }))).join('')}</div>`}</section>`).join('');
   $('#pd-body').innerHTML = `
     <ol class="steps" aria-label="Avance del pago"><li class="${stepCls('armando')}">Por presentar</li><li class="${stepCls('presentado')}">Presentado</li><li class="${stepCls('pagado')}">Pagado</li></ol>
-    <div class="bigtotal"><span>Total del pago · ${plural(invs.length, 'factura', 'facturas')}</span><b>${esc(totalStr(invs, 'toPay'))}</b><span>ITBIS incluido: ${esc(totalStr(invs, 'itbis'))}</span>${dates ? `<span>${esc(dates)}</span>` : ''}</div>
+    <div class="bigtotal"><span>${net.cr.length ? 'Total a pagar' : 'Total del pago'} · ${plural(invs.length, 'factura', 'facturas')}</span><b>${esc(net.netStr)}</b>${net.cr.length ? `<span>Facturas ${esc(net.grossStr)} · menos saldo a favor ${esc(net.creditStr)}</span>` : ''}<span>ITBIS incluido: ${esc(totalStr(invs, 'itbis'))}</span>${dates ? `<span>${esc(dates)}</span>` : ''}</div>
     ${warnN ? `<div class="msg warn">${ICON.alert}<span>${plural(warnN, 'factura tiene', 'facturas tienen')} algo que revisar antes de presentar (por ejemplo, falta el NCF o es de consumo).</span></div>` : ''}
     ${noOrd || unsignedOrd ? `<div class="msg warn">${ICON.alert}<span>${[noOrd ? plural(noOrd, 'factura no tiene', 'facturas no tienen') + ' orden de compra' : '', unsignedOrd ? plural(unsignedOrd, 'orden no tiene', 'órdenes no tienen') + ' la copia firmada y sellada' : ''].filter(Boolean).join(' y ')}. En el PDF van marcadas.</span></div>` : ''}
     ${apMsg}${retMsg}
     <div class="actions">${pdfBtn}${xlsBtn}${statusBtns.join('')}</div>${retBox}${undo ? `<div>${undo}</div>` : ''}
+    ${payCreditsHTML(pay, D, invs, edit && st === 'armando')}
     ${groups.length ? `<div class="card"><h2>Por proyecto</h2><div class="table-wrap"><table class="sum"><thead><tr><th>Proyecto</th><th class="num">Facturas</th><th class="num">ITBIS</th><th class="num">Total</th></tr></thead><tbody>${groups.map((g) => `<tr><td><span class="pname">${dot(g)}${esc(g.name)}</span></td><td class="num">${g.items.length}</td><td class="num">${esc(totalStr(g.items, 'itbis'))}</td><td class="num">${esc(totalStr(g.items, 'toPay'))}</td></tr>`).join('')}</tbody><tfoot><tr><td>Total</td><td class="num">${invs.length}</td><td class="num">${esc(totalStr(invs, 'itbis'))}</td><td class="num">${esc(totalStr(invs, 'toPay'))}</td></tr></tfoot></table></div></div>` : ''}
     <div class="sumline"><span class="h2">Facturas en este pago</span>${edit && st === 'armando' ? `<button type="button" class="btn sm" data-act="pick-more">${ICON.plus} Agregar pendientes</button>` : ''}</div>
     ${invs.length ? listHTML : '<div class="empty"><p>Este pago todavía no tiene facturas.</p></div>'}`;
@@ -2152,7 +2438,7 @@ function trExcel() {
 }
 
 /* ---------- apartado de conduces ---------- */
-const COND_SEGS = [['esperando', 'Sin factura'], ['confactura', 'Con factura'], ['todos', 'Todos']];
+const COND_SEGS = [['esperando', 'Sin factura'], ['confactura', 'Con factura'], ['equipos', 'Equipos'], ['todos', 'Todos']];
 const condSupKey = (c) => (c.rnc && RD.normRnc(c.rnc) ? 'r:' + RD.normRnc(c.rnc) : 'n:' + norm(c.supplier || ''));
 const condWhen = (c) => String(c.date || '') + '|' + String(c.createdAt || '');
 /* ---------- precios de los conduces (transporte de material) ---------- */
@@ -2175,7 +2461,7 @@ const condNoPrice = () => new Set((S.condCfg && S.condCfg.noPrice) || []);
 function condPriceGroups(D) {
   const hide = condNoPrice(), m = new Map();
   for (const c of D.conduces) {
-    if (c.ai === 'pending' || !supIsTransport(c.supplier) || hide.has(condSupKey(c)) || !condMatKey(c.material)) continue;
+    if (c.ai === 'pending' || c.equipo || !supIsTransport(c.supplier) || hide.has(condSupKey(c)) || !condMatKey(c.material)) continue;
     const k = condSupKey(c) + '|' + condMatKey(c.material) + '|' + normCur(c.currency);
     if (!m.has(k)) m.set(k, { key: k, sup: condSupKey(c), supplier: c.supplier || 'Proveedor sin nombre', material: String(c.material || '').replace(M3_RE, '').replace(/\s+/g, ' ').trim() || c.material, priced: [], missing: [] });
     const g = m.get(k);
@@ -2225,7 +2511,7 @@ function renderConduces(D) {
   if (S.condProject !== 'all' && S.condProject !== 'none' && !D.projById.has(S.condProject) && S.got.projects) S.condProject = 'all';
   const inProj = (c) => S.condProject === 'all' || (S.condProject === 'none' ? !c.projectId : c.projectId === S.condProject);
   const base = D.conduces.filter(inProj);
-  const counts = { esperando: base.filter((c) => !c.invoiceId).length, confactura: base.filter((c) => c.invoiceId).length, todos: base.length };
+  const counts = { esperando: base.filter((c) => !c.equipo && !c.invoiceId).length, confactura: base.filter((c) => !c.equipo && c.invoiceId).length, equipos: base.filter((c) => c.equipo).length, todos: base.length };
   $('#c-seg').innerHTML = COND_SEGS.map(([k, label]) => `<button type="button" data-act="cfilter" data-f="${k}" aria-pressed="${S.condFilter === k}"><span>${label}</span><span class="n">${counts[k]}</span></button>`).join('');
   const ch = $('#c-chips');
   const withC = D.projects.filter((p) => D.conduces.some((c) => c.projectId === p.id) || S.condProject === p.id);
@@ -2248,11 +2534,11 @@ function renderConduces(D) {
   }
   const invById = new Map(D.invoices.map((i) => [i.id, i]));
   const q = norm(S.condSearch || '');
-  let list = base.filter((c) => S.condFilter === 'todos' || (S.condFilter === 'esperando' ? !c.invoiceId : !!c.invoiceId));
+  let list = base.filter((c) => S.condFilter === 'todos' || (S.condFilter === 'equipos' ? c.equipo : !c.equipo && (S.condFilter === 'esperando' ? !c.invoiceId : !!c.invoiceId)));
   if (q) list = list.filter((c) => { const inv = invById.get(c.invoiceId), p = D.projById.get(c.projectId); return norm([c.number, c.supplier, c.material, c.qty, p && p.name, inv && inv.supplier, inv && inv.number, c.order && orderNo(c.order), fmtDate(c.date)].filter(Boolean).join(' ')).includes(q); });
   list.sort((a, b) => condWhen(b).localeCompare(condWhen(a)));
   sum.innerHTML = list.length ? `<span>${plural(list.length, 'conduce', 'conduces')} · <b class="mono">${esc(totalStr(list, 'total'))}</b></span>` : '';
-  if (!list.length) { el.innerHTML = `<div class="empty"><p>${q ? 'Nada coincide con tu búsqueda.' : S.condFilter === 'esperando' ? 'No hay conduces esperando factura.' : S.condFilter === 'confactura' ? 'Todavía no hay conduces con su factura.' : 'No hay conduces.'}</p></div>`; return; }
+  if (!list.length) { el.innerHTML = `<div class="empty"><p>${q ? 'Nada coincide con tu búsqueda.' : S.condFilter === 'esperando' ? 'No hay conduces esperando factura.' : S.condFilter === 'confactura' ? 'Todavía no hay conduces con su factura.' : S.condFilter === 'equipos' ? 'No hay equipos. Los conduces de andamios, puntales y otros equipos (alquilados o no) salen aquí solos, o márcalos como «Equipo» al abrir el conduce.' : 'No hay conduces.'}</p></div>`; return; }
   const key = 'conds-' + S.condFilter, LIM = 60;
   const all = list.length;
   if (all > LIM && !S.showAll.has(key)) list = list.slice(0, LIM);
@@ -2262,10 +2548,11 @@ function renderConduces(D) {
   const more = (c) => {
     const p = S.condProject === 'all' && c.projectId ? D.projById.get(c.projectId) : null;
     const inv = c.invoiceId ? invById.get(c.invoiceId) : null;
-    return [p ? p.name : '', c.order ? 'Orden ' + orderNo(c.order) : '', inv ? 'Factura ' + (inv.number ? RD.normNcf(inv.number) : inv.supplier || 'sin NCF') : S.condFilter === 'todos' ? 'esperando factura' : ''].filter(Boolean).join(' · ');
+    return [p ? p.name : '', c.equipo ? 'Equipo, ' + equipLine(c) : '', c.order ? 'Orden ' + orderNo(c.order) : '', inv ? 'Factura ' + (inv.number ? RD.normNcf(inv.number) : inv.supplier || 'sin NCF') : S.condFilter === 'todos' || S.condFilter === 'equipos' ? 'sin factura' : ''].filter(Boolean).join(' · ');
   };
-  el.innerHTML = (S.condFilter === 'esperando' ? '<p class="hint c-hint">Cuando llegue la factura, se le adjuntan solos si la factura menciona sus números o si suman lo mismo que la factura. Si no, ábrela y marca los que son.</p>' : '')
-    + [...groups.values()].map((g) => `<section class="group"><h2 class="group-h"><span class="gname">${esc(g.name)}</span><span class="gmeta">${g.items.length} · ${esc(totalStr(g.items, 'total'))}</span></h2>${wide() ? condTableHTML(g.items, D, invById) : `<div class="cond-list">${g.items.map((c) => condRowHTML(c, false, more(c))).join('')}</div>`}</section>`).join('')
+  const eq = S.condFilter === 'equipos';
+  el.innerHTML = (S.condFilter === 'esperando' ? '<p class="hint c-hint">Cuando llegue la factura, se le adjuntan solos si la factura menciona sus números o si suman lo mismo que la factura. Si no, ábrela y marca los que son.</p>' : eq ? '<p class="hint c-hint">Equipos y alquileres (andamios, puntales…): van aparte de los materiales y no necesitan orden de compra ni precio en el conduce. Mientras no se devuelvan, cuentan los días en la obra (para revisar la factura del alquiler); cuando los recojan, abre el conduce y pon «Se devolvió el».</p>' : '')
+    + [...groups.values()].map((g) => `<section class="group"><h2 class="group-h"><span class="gname">${esc(g.name)}</span><span class="gmeta">${esc(eq ? [plural(g.items.length, 'conduce', 'conduces'), (() => { const n = g.items.filter((c) => !ymd(c.returnedAt)).length; return n ? `${n} en la obra` : 'todo devuelto'; })()].join(' · ') : `${g.items.length} · ${totalStr(g.items, 'total')}`)}</span></h2>${wide() && !eq ? condTableHTML(g.items, D, invById) : `<div class="cond-list">${g.items.map((c) => condRowHTML(c, false, more(c))).join('')}</div>`}</section>`).join('')
     + (all > list.length ? `<button type="button" class="btn sm more" data-act="more" data-k="${esc(key)}">Ver ${all - list.length} más</button>` : '');
 }
 
@@ -2474,7 +2761,8 @@ function openInvoice(id, keepScroll) {
   if (i.notInvoice) msgs.push(`<div class="msg warn">${ICON.alert}<span>Este archivo no parece una factura. Revísalo antes de meterlo a un pago.</span></div>`);
   if (i.dup) msgs.push(`<div class="msg warn">${ICON.alert}<span>Puede estar repetida: hay otra factura del mismo proveedor con el mismo NCF.</span></div>`);
   if (i.projectHint && !i.project && edit) msgs.push(`<div class="msg hint"><span>La factura dice que es del proyecto <b>${esc(i.projectHint)}</b>, que no está en tu lista.</span><button type="button" class="link" data-act="hint-create" data-id="${esc(i.id)}">Crear “${esc(i.projectHint)}” y asignarla</button></div>`);
-  if (edit && !i.number && !i.fiscal && !i.pay && i.ai !== 'pending' && !(i.conduces || []).length) msgs.push(`<div class="msg"><span>¿Este archivo no es una factura sino un conduce (la nota de entrega del material) o la otra página de una factura? <button type="button" class="link" data-act="inv-to-cond" data-id="${esc(i.id)}">Es un conduce</button> <button type="button" class="link" data-act="inv-to-page" data-id="${esc(i.id)}">Es otra página</button></span></div>`);
+  if (edit && !i.number && !i.fiscal && !i.pay && i.ai !== 'pending' && !(i.conduces || []).length) msgs.push(`<div class="msg"><span>¿Este archivo no es una factura sino un conduce (la nota de entrega del material) o la otra página de una factura? <button type="button" class="link" data-act="inv-to-cond" data-id="${esc(i.id)}">Es un conduce</button> <button type="button" class="link" data-act="inv-to-page" data-id="${esc(i.id)}">Es otra página</button> <button type="button" class="link" data-act="inv-to-cr" data-id="${esc(i.id)}">Es una hoja de devolución</button></span></div>`);
+  for (const c of D.credits.filter((x) => x.invoiceId === i.id)) msgs.push(`<div class="msg"><span>De esta factura se devolvió mercancía: <b>${esc(money(c.amount, c.currency))}</b> quedaron a favor (${esc(crLabel(c))}${c.balance > 0.005 ? `; disponible ${esc(money(c.balance, c.currency))}` : '; ya se usó'}). <button type="button" class="link" data-act="cr-open" data-id="${esc(c.id)}">Ver</button></span></div>`);
   if (i.xmlId && i.fileType !== 'application/xml') info.push(`<div class="msg">${ICON.check}<span>También tiene su XML de factura electrónica. <button type="button" class="link" data-act="xml-view" data-id="${esc(i.id)}">Ver XML</button></span></div>`);
   const where = i.pay
     ? `<span class="pill ${i.status}">${INV_LABEL[i.status]}</span><span>En <button type="button" class="link" data-act="open-pay" data-id="${esc(i.pay.id)}">${esc(i.pay.name || 'Pago')}</button></span>`
@@ -2632,7 +2920,7 @@ function refreshInvCondBox(invId) {
     if (i) card.outerHTML = invCondBoxHTML(i, D, canEdit());
   }, 150);
 }
-function condSig(c) { return JSON.stringify([c.number, c.date, c.supplier, c.rnc, c.total, c.currency, c.material, c.qty, c.trips, c.invoiceId, c.projectId, c.projectHint, c.ai, c.auto, c.fileId, c.thumbId, c.dup, c.orderId, c.orderAuto, c.order && c.order.id]); }
+function condSig(c) { return JSON.stringify([c.kind, c.returnedAt, c.equipo, c.number, c.date, c.supplier, c.rnc, c.total, c.currency, c.material, c.qty, c.trips, c.invoiceId, c.projectId, c.projectHint, c.ai, c.auto, c.fileId, c.thumbId, c.dup, c.orderId, c.orderAuto, c.order && c.order.id]); }
 // Las órdenes para elegir en el conduce: primero las del mismo proveedor y la misma obra, y las que no tienen factura.
 function condOrderOptions(c, D) {
   const words = matWords(c.material);
@@ -2658,6 +2946,7 @@ function openConduce(id, keepScroll) {
   if (c.dup) msgs.push(`<div class="msg warn">${ICON.alert}<span>Hay otro conduce de este proveedor con el mismo número. Si es la misma foto dos veces, elimina uno para que no se pague doble.</span></div>`);
   if (inv && c.auto) msgs.push(`<div class="msg hint"><span>Se adjuntó solo a esta factura: ${esc(AUTO_WHY[c.autoWhy] || 'es del mismo proveedor')}. Si no es, elige otra en «Factura».</span></div>`);
   if (c.projectHint && !c.project) msgs.push(`<div class="msg hint"><span>El conduce dice que es del proyecto <b>${esc(c.projectHint)}</b>, que no está en tu lista.</span></div>`);
+  if (c.equipo) msgs.push(`<div class="msg"><span>Equipo ${esc(equipLine(c))}. Va aparte de los materiales (en Conduces → Equipos) y no necesita orden de compra ni precio.${ymd(c.returnedAt) ? '' : ' Cuando lo recojan, pon la fecha en «Se devolvió el».'}</span></div>`);
   if (c.order && c.orderVia === 'conduce' && c.orderAuto) msgs.push(`<div class="msg hint"><span>Se enlazó solo a la orden <b>${esc(orderNo(c.order))}</b>: ${esc(COND_ORDER_WHY[c.orderWhy] || 'es del mismo proveedor')}. Si no es, cámbiala en «Orden de compra».</span></div>`);
   if (c.order && c.orderVia === 'conduce' && inv && inv.orders.length && !inv.orders.some((o) => o.id === c.order.id)) msgs.push(`<div class="msg warn">${ICON.alert}<span>Este conduce es de la orden <b>${esc(orderNo(c.order))}</b>, pero su factura está enlazada a ${esc(inv.orders.map(orderNo).join(', '))}. Revisa cuál es la correcta.</span></div>`);
   const ordOpts = condOrderOptions(c, D).map((o) => { const l = orderHasInv(o, D) ? null : orderLoad(o, D); return `<option value="${esc(o.id)}"${c.order && o.id === c.order.id ? ' selected' : ''}>${esc(orderOptLabel(o) + (o.supplier ? ' · ' + o.supplier : '') + (l && l.has ? ` · tiene ${l.count}` : ''))}</option>`; }).join('');
@@ -2676,6 +2965,8 @@ function openConduce(id, keepScroll) {
       ${msgs.join('')}
       <div class="fields">
         <div class="field full"><label for="c-inv">Factura</label><select id="c-inv" ${dis}><option value="">Sin factura (esperando)</option>${invOpts}</select></div>
+        <div class="field"><label for="c-kind">Tipo</label><select id="c-kind" ${dis}><option value="material"${c.equipo ? '' : ' selected'}>Material</option><option value="equipo"${c.equipo ? ' selected' : ''}>Equipo o alquiler (andamios…)</option></select></div>
+        <div class="field" id="c-ret-wrap"${c.equipo ? '' : ' hidden'}><label for="c-ret">Se devolvió el</label><input id="c-ret" type="date" value="${esc(c.returnedAt || '')}" ${dis}></div>
         <div class="field full"><label for="c-ord">Orden de compra</label><select id="c-ord" ${dis}><option value="">Sin orden</option>${ordOpts}</select>${c.orderVia === 'factura' ? '<small class="usage">Es la orden de su factura.</small>' : ''}<div id="c-oprev">${c.order ? orderPreviewHTML(c.order, D, '') : ''}</div></div>
         <div class="field"><label for="c-num">No. de conduce</label><input id="c-num" class="mono" maxlength="30" value="${esc(c.number || '')}" ${dis}></div>
         <div class="field"><label for="c-date">Fecha</label><input id="c-date" type="date" value="${esc(c.date || '')}" ${dis}></div>
@@ -3025,7 +3316,7 @@ function setQ(item, state, msg) { item.state = state; if (msg !== undefined) ite
 function finishQ(item, state, msg) {
   item.done = true;
   setQ(item, state, msg || '');
-  const okStates = ['lista', 'qr', 'xml', 'orden', 'conduce'];
+  const okStates = ['lista', 'qr', 'xml', 'orden', 'conduce', 'devolucion'];
   if (S.queue.every((x) => x.done) && S.queue.every((x) => okStates.includes(x.state))) {
     setTimeout(() => { if (S.queue.every((x) => x.done)) { S.queue = S.queue.filter((x) => !okStates.includes(x.state)); renderQueue(); } }, 5000);
   }
@@ -3137,6 +3428,7 @@ async function addOne(item) {
       setQ(item, 'leyendo');
       enqueueAI({ invId: ref.id, input: { image: aiImage, text } }).then((r) => {
         if (r === 'conduce') { item.condId = convertedTo.get(ref.id) || null; finishQ(item, 'conduce', 'esperando su factura'); return; }
+        if (r === 'devolucion') { finishQ(item, 'devolucion', 'quedó como saldo a favor (en Pagos)'); return; }
         finishQ(item, r === 'done' ? (qr ? 'qr' : 'lista') : qr ? 'qr' : 'manual', note);
       });
     } else finishQ(item, qr ? 'qr' : 'manual', note);
@@ -3211,7 +3503,7 @@ const AI_SCHEMA = {
     total_corregido: { type: 'string' }, cambio_de: { type: 'string' }, condicion_pago: { type: 'string', enum: ['contado', 'credito', ''] },
     tachados: { type: 'array', items: { type: 'object', properties: { descripcion: { type: 'string' }, monto: { type: 'string' } }, required: ['descripcion', 'monto'], additionalProperties: false } },
     concepto: { type: 'string' }, proyecto: { type: 'string' }, rnc_cliente: { type: 'string' }, referencia: { type: 'string' },
-    tipo_documento: { type: 'string', enum: ['factura', 'conduce', 'otro'] }, conduces: { type: 'string' }, conduce_numero: { type: 'string' },
+    tipo_documento: { type: 'string', enum: ['factura', 'conduce', 'devolucion', 'otro'] }, devolucion_numero: { type: 'string' }, conduces: { type: 'string' }, conduce_numero: { type: 'string' },
     material: { type: 'string' }, cantidad: { type: 'string' }, viajes: { type: 'string' },
   },
   required: AI_FIELDS,
@@ -3246,7 +3538,8 @@ function buildPrompt(text, withImage) {
     '- rnc_cliente: RNC del cliente o comprador al que va dirigida la factura, solo números.',
     '- referencia: número de orden de compra (OC), contrato o cubicación, si aparece, con su etiqueta (ej. "OC-0012" o "Cubicación 4"). Si menciona varias órdenes, ponlas todas (ej. "OC-0012, OC-0013").',
     '- es_factura: false solo si el archivo claramente no es una factura, nota ni recibo.',
-    '- tipo_documento: "conduce" si es un conduce (nota de entrega o despacho de material: suele decir CONDUCE, viajes, chofer, placa, despachado por y recibido por) y no una factura; "factura" si es una factura, nota o recibo; "otro" si no es ninguno.',
+    '- tipo_documento: "conduce" si es un conduce (nota de entrega o despacho de material: suele decir CONDUCE, viajes, chofer, placa, despachado por y recibido por) y no una factura; "devolucion" si es una hoja o nota de devolución de mercancía que deja un monto a favor del cliente y NO tiene NCF de nota de crédito (si tiene NCF B04 o E34 es "factura"); "factura" si es una factura, nota o recibo; "otro" si no es ninguno.',
+    '- devolucion_numero: solo si es una hoja de devolución: su número.',
     '- conduce_numero, material, cantidad y viajes: solo si es un conduce: su número (ej. 39807), el material (ej. Grava), la cantidad con su unidad (ej. "5 m³") y la cantidad de viajes (solo el número). En un conduce, total es el total en dinero del conduce.',
     '- conduces: si es una factura y menciona números de conduce, escríbelos separados por coma (ej. "39807, 39811").',
   ].filter(Boolean).join('\n');
@@ -3335,6 +3628,9 @@ async function readWithAI(invId, input) {
   if (out && out.tipo_documento === 'conduce' && canBeConduce(cur, out)) {
     try { await convertToConduce(cur, out); return 'conduce'; } catch (e) { console.error(e); }
   }
+  if (out && out.tipo_documento === 'devolucion' && canBeConduce(cur, out)) {
+    try { await convertToCredit(cur, out); return 'devolucion'; } catch (e) { console.error(e); }
+  }
   const upd = parseAI(out, cur);
   upd.aiErr = '';
   if (!upd.orderId && !(cur.orderId && !cur.orderAuto)) {
@@ -3388,7 +3684,7 @@ async function readMany(list, quiet) {
       } catch (e) { console.warn('lectura en lote', e); }
     }
     const res = await Promise.all(jobs);
-    const ok = res.filter((r) => r === 'done' || r === 'conduce').length;
+    const ok = res.filter((r) => r === 'done' || r === 'conduce' || r === 'devolucion').length;
     const conv = res.filter((r) => r === 'conduce').length;
     const note = conv ? (conv === 1 ? ' Una era un conduce y quedó guardada como conduce.' : ` ${conv} eran conduces y quedaron guardados como conduces.`) : '';
     if (jobs.length) toast((ok === jobs.length ? `Listo: ${plural(ok, 'factura leída', 'facturas leídas')}.` : `Se leyeron ${ok} de ${jobs.length}. Las demás puedes intentarlas otra vez.`) + note);
@@ -3417,7 +3713,7 @@ async function rereadInvoice(id, btn) {
     await db.doc('invoices/' + id).update({ ai: 'pending' });
     if (S.sheet && S.sheet.type === 'inv' && S.sheet.id === id) S.sheet.dirty = false;
     const r = await enqueueAI({ invId: id, input });
-    toast(r === 'done' ? 'Listo: datos leídos otra vez' : r === 'conduce' ? 'Era un conduce, no una factura: quedó guardado como conduce.' : 'No se pudo leer esta factura');
+    toast(r === 'done' ? 'Listo: datos leídos otra vez' : r === 'conduce' ? 'Era un conduce, no una factura: quedó guardado como conduce.' : r === 'devolucion' ? 'Era una hoja de devolución: quedó como saldo a favor (en Pagos).' : 'No se pudo leer esta factura');
   } catch (e) {
     console.error(e);
     toast('No se pudo leer esta factura');
@@ -3715,6 +4011,7 @@ async function saveConduce(form) {
     invoiceId, number: $('#c-num').value.trim().slice(0, 30), date: ymd(date) ? date : '', supplier: $('#c-sup').value.trim().slice(0, 120), projectId: $('#c-proj').value || null,
     material: $('#c-mat').value.trim().slice(0, 60), qty: $('#c-qty').value.trim().slice(0, 30), trips: tr == null ? null : tr, total: tot == null ? null : round2(tot),
   };
+  if ($('#c-kind')) { upd.kind = $('#c-kind').value === 'equipo' ? 'equipo' : 'material'; upd.returnedAt = upd.kind === 'equipo' && ymd($('#c-ret').value) ? $('#c-ret').value : ''; }
   if (upd.projectId) upd.projectHint = '';
   // Si se cambió (o se quitó) la factura a mano, la app no lo vuelve a enlazar sola.
   if (invoiceId !== (c.invoiceId || null)) { upd.auto = false; upd.noAuto = !invoiceId; }
@@ -3787,7 +4084,7 @@ async function linkCondOrders() {
   let D = derive(), wrote = 0;
   const added = new Map();
   for (const c of D.conduces) {
-    if (c.order || c.noOrderAuto || c.ai === 'pending') continue;
+    if (c.order || c.noOrderAuto || c.ai === 'pending' || c.equipo) continue;
     const byRef = c.orderRef ? matchOrderRefs('orden ' + c.orderRef, c.projectId).filter((o) => o.status !== 'anulada') : [];
     const pick = byRef.length === 1 ? { o: byRef[0], why: 'numero' } : condOrderFor(c, D, added);
     if (!pick) continue;
@@ -4834,7 +5131,7 @@ function openSupplier(id, preset = {}) {
   const pend = invs.filter((i) => i.status !== 'pagada');
   const banks = ['Banco Popular', 'Banreservas', 'BHD', 'Scotiabank', 'Banco Santa Cruz', 'Banesco', 'Banco Promerica', 'Banco BDI', 'Banco Caribe', 'Banco Vimenca', 'Asociación Popular', 'Asociación Cibao', 'Asociación La Nacional'];
   openSheet(`<form id="sup-form" data-id="${esc(s ? s.id : '')}" autocomplete="off">${sheetHead(s ? esc(s.name || 'Proveedor') : 'Nuevo proveedor')}<div class="sheet-b">
-    ${s ? `<p class="hint">${plural(invs.length, 'factura', 'facturas')}${pend.length ? ` · por pagar ${esc(totalStr(pend))}` : ''}</p>` : ''}
+    ${s ? `<p class="hint">${plural(invs.length, 'factura', 'facturas')}${pend.length ? ` · por pagar ${esc(totalStr(pend))}` : ''}${(() => { const cr = D.credits.filter((c) => c.balance > 0.005 && crSupOf(c, s.name, s.rnc)); return cr.length ? ` · <b>saldo a favor ${esc(crBalStr(cr))}</b>` : ''; })()}</p>` : ''}
     <div class="fields">
       <div class="field full"><label for="sp-name">Nombre</label><input id="sp-name" maxlength="120" value="${esc(d.name || '')}" required${dis}></div>
       <div class="field"><label for="sp-rnc">RNC o cédula</label><input id="sp-rnc" class="mono" inputmode="numeric" maxlength="15" value="${esc(RD.normRnc(d.rnc))}"${dis}></div>
@@ -5337,7 +5634,7 @@ async function envioPdfAgain(id) {
 
 /* ---------- papelera: lo que se borra se queda 30 días y se puede recuperar ---------- */
 const TRASH_DAYS = 30;
-const TRASH_KIND = { invoice: ['invoices', 'Factura', 'Factura recuperada'], conduce: ['conduces', 'Conduce', 'Conduce recuperado'], order: ['orders', 'Orden de compra', 'Orden recuperada'], payment: ['payments', 'Pago', 'Pago recuperado'], traslado: ['traslados', 'Traslado de materiales', 'Traslado recuperado'], trpago: ['traslados', 'Pago entre obras', 'Pago entre obras recuperado'] };
+const TRASH_KIND = { invoice: ['invoices', 'Factura', 'Factura recuperada'], conduce: ['conduces', 'Conduce', 'Conduce recuperado'], order: ['orders', 'Orden de compra', 'Orden recuperada'], payment: ['payments', 'Pago', 'Pago recuperado'], traslado: ['traslados', 'Traslado de materiales', 'Traslado recuperado'], trpago: ['traslados', 'Pago entre obras', 'Pago entre obras recuperado'], credito: ['creditos', 'Devolución (saldo a favor)', 'Devolución recuperada'] };
 const rawDoc = (o) => { const { id, ...rest } = o; return rest; };
 function toTrash(kind, doc, label, extra = {}) {
   return db.collection('papelera').doc().set({ kind, srcId: doc.id, data: rawDoc(doc), label: String(label || '').slice(0, 160), extra, deletedAt: new Date().toISOString() });
@@ -6165,15 +6462,17 @@ async function buildPackage(pay, D, onProgress) {
     page.drawImage(img, { x: M + (bw - img.width * s) / 2, y: M + (bh - img.height * s), width: img.width * s, height: img.height * s });
   };
   const condN = invs.reduce((t, i) => t + (i.conduces || []).length, 0);
+  const net = payNet(pay, D, invs);
 
   newPage();
   y = drawLetterhead(page, { st, font, bold, rgb, logo, x: M, xr: W - M, y, title: 'RELACIÓN DE FACTURAS PARA PAGO', sub: payNo(pay) }) - 34;
   T(fit(pay.name || 'Pago', bold, 22, W - 2 * M), M, y, 22, bold); y -= 20;
   T([pay.date ? 'Fecha del pago: ' + fmtDate(pay.date) : '', 'Estado: ' + (PAY_LABEL[pay.status] || 'Por presentar'), 'Generado el ' + fmtDate(todayISO()), st.preparedBy ? 'Elaboró: ' + st.preparedBy : ''].filter(Boolean).join('   ·   '), M, y, 9, font, C.grey); y -= 34;
   T('Total a pagar', M, y, 10, font, C.grey); R(plural(invs.length, 'factura', 'facturas') + ' · ' + plural(groups.length, 'proyecto', 'proyectos') + (condN ? ' · ' + plural(condN, 'conduce', 'conduces') : ''), W - M, y, 10, font, C.grey); y -= 28;
-  T(fit(totalStr(invs, 'toPay'), bold, 26, W - 2 * M), M, y, 26, bold); y -= 16;
+  T(fit(net.netStr, bold, 26, W - 2 * M), M, y, 26, bold); y -= 16;
+  if (net.cr.length) { T(fit(`Facturas ${net.grossStr} menos saldo a favor por devoluciones ${net.creditStr}`, font, 9.5, W - 2 * M), M, y - 2, 9.5, font, C.grey); y -= 12; }
   T('ITBIS incluido: ' + totalStr(invs, 'itbis'), M, y - 2, 9.5, font, C.grey); y -= 12;
-  { const curs = [...new Set(invs.filter((i) => isNum(i.toPay)).map((i) => normCur(i.currency)))]; if (curs.length === 1) { const w = montoEnLetras(round2(invs.reduce((t, i) => t + (isNum(i.toPay) ? i.toPay : 0), 0)), curs[0]); if (w) { y -= 4; T(fit('Son: ' + w + '.', font, 9.5, W - 2 * M), M, y - 2, 9.5, font, C.ink); y -= 12; } } }
+  { const curs = [...net.net.keys()]; if (curs.length === 1) { const w = montoEnLetras(round2(net.net.get(curs[0])), curs[0]); if (w) { y -= 4; T(fit('Son: ' + w + '.', font, 9.5, W - 2 * M), M, y - 2, 9.5, font, C.ink); y -= 12; } } }
   hr(y, C.ink, 1.2); y -= 28;
 
   T('Por proyecto', M, y, 11.5, bold); y -= 20;
@@ -6189,8 +6488,12 @@ async function buildPackage(pay, D, onProgress) {
     const sp = D.supFor(g.items[0]);
     const bank = sp && (sp.bank || sp.account) ? [sp.bank, sp.accountType, sp.account ? 'Cta. ' + sp.account : ''].filter(Boolean).join(' · ') : '';
     ensure(bank ? 30 : 20, supHead);
-    T(fit(g.name || 'Sin nombre', font, 10, 245), M + 6, y, 10); T(g.rnc ? RD.fmtRnc(g.rnc) : '-', 300, y, 10); R(String(g.items.length), 418, y, 10); R(totalStr(g.items, 'toPay'), W - M - 6, y, 10, bold);
+    const gcr = net.cr.filter((x) => crSupOf(x.c, g.name, g.rnc));
+    const gNet = gcr.length ? (() => { const m = sumBy(g.items, 'toPay'); for (const x of gcr) { const k = normCur(x.c.currency); m.set(k, (m.get(k) || 0) - x.amount); } return [...m].map(([k, v]) => money(round2(v), k)).join(' + '); })() : totalStr(g.items, 'toPay');
+    ensure(gcr.length ? 12 * gcr.length : 0);
+    T(fit(g.name || 'Sin nombre', font, 10, 245), M + 6, y, 10); T(g.rnc ? RD.fmtRnc(g.rnc) : '-', 300, y, 10); R(String(g.items.length), 418, y, 10); R(gNet, W - M - 6, y, 10, bold);
     if (bank) { y -= 11; T(fit(bank, font, 8, 380), M + 6, y, 8, font, C.grey); }
+    for (const x of gcr) { y -= 11; T(fit(`Facturas ${totalStr(g.items, 'toPay')}; menos saldo a favor (${crLabel(x.c)}): ${money(x.amount, x.c.currency)}`, font, 8, 420), M + 6, y, 8, font, C.grey); }
     y -= 8; hr(y); y -= 13;
   }
   y -= 18;
@@ -6209,7 +6512,9 @@ async function buildPackage(pay, D, onProgress) {
     y -= 7; hr(y, C.line, 0.5); y -= 12;
   });
   ensure(30); y -= 6;
-  T('Total', M + 294, y, 10, bold); R(totalStr(invs, 'itbis'), M + 454, y, 10, bold); R(totalStr(invs, 'toPay'), W - M - 2, y, 10, bold);
+  T(net.cr.length ? 'Total facturas' : 'Total', M + 294, y, 10, bold); R(totalStr(invs, 'itbis'), M + 454, y, 10, bold); R(totalStr(invs, 'toPay'), W - M - 2, y, 10, bold);
+  for (const x of net.cr) { ensure(16); y -= 15; T(fit(`Menos saldo a favor · ${x.c.supplier || 'Proveedor'} · ${crLabel(x.c)}`, font, 9, 380), M + 2, y, 9); R('-' + money(x.amount, x.c.currency), W - M - 2, y, 9.5); }
+  if (net.cr.length) { ensure(18); y -= 17; T('Total a pagar', M + 294, y, 10.5, bold); R(net.netStr, W - M - 2, y, 10.5, bold); }
   const rep = invs.filter((i) => i.payMode === 'reponer');
   if (rep.length) { y -= 16; T(fit('Reposición (se pagó al contado): ' + rep.map((i) => `${i.supplier || 'Factura'} ${RD.normNcf(i.number)} por ${money(i.toPay, i.currency)}, se le repone a ${i.paidBy || 'quien lo pagó'}`).join('; '), font, 8, W - 2 * M), M, y, 8, font, C.grey); }
   const withAb = invs.filter((i) => i.abonado > 0);
@@ -6296,6 +6601,11 @@ async function buildPackage(pay, D, onProgress) {
       } catch (e) { console.warn('PDF orden', e); }
     }
   }
+  // Las hojas de devolución del saldo a favor descontado van al final, como soporte.
+  for (const x of net.cr) {
+    if (!x.c.fileId) continue;
+    try { await addFile(x.c.fileId, x.c.fileType, `Hoja de devolución ${crNo(x.c)} · ${x.c.supplier || ''} · saldo a favor descontado en este pago: ${money(x.amount, x.c.currency)}`); } catch (e) { console.warn('PDF devolución', e); }
+  }
   stampPages(out, font, rgb, [pay.name || 'Pago', payNo(pay)].filter(Boolean).join(' ') + ' · Relación de facturas', { own, x: M });
   return out.save();
 }
@@ -6333,7 +6643,7 @@ function supplierGroups(invs, byCur) {
   const tot = (g) => g.items.reduce((t, i) => t + (isNum(i.amount) ? i.amount : 0), 0);
   return [...m.values()].sort((a, b) => tot(b) - tot(a));
 }
-function invoicesWorkbook({ heading, scope, invs, D, isPayment }) {
+function invoicesWorkbook({ heading, scope, invs, D, isPayment, credits = [] }) {
   const { XS, colName, excelDate, sheetXml, buildXlsx } = FILES;
   const st = S.settings || {};
   const list = packageGroups(invs, D).flatMap((g) => g.items);
@@ -6403,6 +6713,16 @@ function invoicesWorkbook({ heading, scope, invs, D, isPayment }) {
     }
   }
   for (const c of curs) rs[r++] = line('Total' + (multi ? ' ' + (CUR_PREFIX[c] || c) : ''), list.filter((i) => normCur(i.currency) === c), c, true);
+  // Saldo a favor descontado (devoluciones) y lo que queda por pagar.
+  if (credits.length) {
+    r++;
+    rs[r++] = [{ v: 'Saldo a favor descontado (devoluciones)', s: XS.head }, { v: '', s: XS.head }, { v: '', s: XS.head }, { v: '', s: XS.head }, { v: 'Monto', s: XS.headR }];
+    for (const x of credits) rs[r++] = [{ v: `${x.c.supplier || 'Proveedor'} · ${crLabel(x.c)}` }, { v: '' }, { v: '' }, { v: '' }, { v: -round2(x.amount), s: mStyle(x.c.currency) }];
+    for (const c of curs) {
+      const gross = list.filter((i) => normCur(i.currency) === c).reduce((t, i) => t + (isNum(i.toPay) ? i.toPay : 0), 0), cr = credits.filter((x) => normCur(x.c.currency) === c).reduce((t, x) => t + x.amount, 0);
+      rs[r++] = [{ v: 'Total a pagar' + (multi ? ' ' + (CUR_PREFIX[c] || c) : ''), s: XS.totLabel }, { v: '', s: XS.totBlank }, { v: '', s: XS.totBlank }, { v: '', s: XS.totBlank }, { v: round2(gross - cr), s: mStyle(c, true) }];
+    }
+  }
   if (!isPayment) {
     r++;
     rs[r++] = [{ v: 'Estado', s: XS.head }, { v: 'Facturas', s: XS.headR }, { v: 'Subtotal', s: XS.headR }, { v: 'ITBIS', s: XS.headR }, { v: 'Total', s: XS.headR }];
@@ -6548,7 +6868,7 @@ function exportPaymentExcel(payId) {
   const invs = payInvoices(pay, D);
   if (!invs.length) { toast('Este pago no tiene facturas.'); return; }
   const scope = [pay.name || 'Pago', pay.date ? 'Fecha del pago: ' + fmtDate(pay.date) : '', PAY_LABEL[pay.status] || 'Por presentar'].filter(Boolean).join(' · ');
-  deliverFile(invoicesWorkbook({ heading: 'Relación de facturas para pago', scope, invs, D, isPayment: true }), fileSafe(`${pay.name || 'Pago'} - facturas`) + '.xlsx');
+  deliverFile(invoicesWorkbook({ heading: 'Relación de facturas para pago', scope, invs, D, isPayment: true, credits: payCredits(pay, D) }), fileSafe(`${pay.name || 'Pago'} - facturas`) + '.xlsx');
 }
 function exportListExcel(only) {
   const D = derive();
@@ -6586,6 +6906,8 @@ function infData(from, to, D) {
   for (const p of S.payments) {
     const d = String(p.paidAt || '').slice(0, 10);
     if (p.status === 'pagado' && inR(d)) for (const i of payInvoices(p, D)) if (isNum(i.toPay)) paid.push({ i, date: d, amount: i.toPay, currency: i.currency, how: [payNo(p), p.name || 'Pago'].filter(Boolean).join(' ') });
+    // El saldo a favor descontado en ese pago no salió de caja: resta.
+    if (p.status === 'pagado' && inR(d)) for (const x of payCredits(p, D)) paid.push({ i: { supplier: x.c.supplier, number: '', project: x.c.project, projectId: x.c.projectId }, date: d, amount: -x.amount, currency: x.c.currency, how: 'Saldo a favor, dev. ' + crNo(x.c) });
   }
   for (const i of live) {
     if (i.payMode === 'directo' && !i.pay && inR(i.paidDate) && isNum(i.toPay) && i.toPay > 0) paid.push({ i, date: i.paidDate, amount: i.toPay, currency: i.currency, how: 'Al contado' + (i.payMethod ? ' (' + i.payMethod.toLowerCase() + ')' : '') });
@@ -6615,7 +6937,7 @@ function infData(from, to, D) {
   return {
     from, to, pFrom, pTo, invs, prev, paid, open, overdue, waitPay, byProj, bySup, noInv, review, noOrd, trIn,
     approval: approvalOn() ? waitPay.filter((x) => !x.p.approvedAt) : [],
-    reponer: reponerGroups(D), accounts: trAccounts().filter((x) => x.amount >= 0.01),
+    reponer: reponerGroups(D), accounts: trAccounts().filter((x) => x.amount >= 0.01), credits: D.credits.filter((c) => c.balance > 0.005),
     trBad: S.traslados.filter((t) => trState(t) === 'diferencia'), trWait: S.traslados.filter((t) => trState(t) === 'porrecibir'),
   };
 }
@@ -6773,7 +7095,7 @@ async function buildInfPdf(R) {
   }
   if (R.waitPay.length) {
     need(40); text('Pagos presentados', X0, 9, bold, INK); y -= 14;
-    table([['Pago', 236], ['Presentado', 70], ['Facturas', 60, 'r'], ['Aprobación', 80], ['Monto', 90, 'r']], R.waitPay.map(({ p: py, invs }) => [[payNo(py), py.name || 'Pago'].filter(Boolean).join(' · '), fmtDmy(py.presentedAt), String(invs.length), approvalOn() ? (py.approvedAt ? 'Aprobado' : 'Espera al dueño') : '—', M(invs, 'toPay')]));
+    table([['Pago', 236], ['Presentado', 70], ['Facturas', 60, 'r'], ['Aprobación', 80], ['Monto', 90, 'r']], R.waitPay.map(({ p: py, invs }) => [[payNo(py), py.name || 'Pago'].filter(Boolean).join(' · '), fmtDmy(py.presentedAt), String(invs.length), approvalOn() ? (py.approvedAt ? 'Aprobado' : 'Espera al dueño') : '—', payNet(py, derive(), invs).netStr]));
   }
   const repPend = R.reponer.filter((g) => g.pend.length || g.inPay.length);
   if (repPend.length) {
@@ -6785,6 +7107,10 @@ async function buildInfPdf(R) {
     const rows = R.noInv.slice(0, 15).map((o) => { const d = String(o.date || o.createdAt || '').slice(0, 10); return [orderNo(o), o.supplier || '', o.project ? o.project.name : '', fmtDmy(d), ymd(d) ? String(daysBetween(d, todayISO())) : '', orderEst(o) ? money(orderEst(o)) : '—']; });
     if (R.noInv.length > 15) rows.push([`y ${R.noInv.length - 15} más`, '', '', '', '', '']);
     table([['Orden', 70], ['Proveedor', 170], ['Obra', 110], ['Fecha', 56], ['Días', 40, 'r'], ['Estimado', 90, 'r']], rows);
+  }
+  if (R.credits.length) {
+    need(40); text('Saldo a favor con proveedores (devoluciones de lo ya pagado)', X0, 9, bold, INK); y -= 14;
+    table([['Proveedor', 196], ['Devolución', 170], ['Disponible', 170, 'r']], R.credits.map((c) => [c.supplier || 'Proveedor', crLabel(c), money(c.balance, c.currency)]));
   }
   if (R.accounts.length) {
     need(40); text('Cuentas entre obras por traslados de materiales', X0, 9, bold, INK); y -= 14;
@@ -6836,6 +7162,7 @@ function infWorkbook(R) {
   rs.push([{ v: 'Pagado en el período' }, { v: R.paid.length, s: XS.int }, Mn(dopOf(amtRows(R.paid)))]);
   rs.push([{ v: 'Por pagar hoy' }, { v: R.open.length, s: XS.int }, Mn(dopOf(R.open, 'toPay'))]);
   rs.push([{ v: 'Vencido hoy' }, { v: R.overdue.length, s: XS.int }, Mn(dopOf(R.overdue, 'toPay'))]);
+  if (R.credits.length) rs.push([{ v: 'Saldo a favor con proveedores (devoluciones)' }, { v: R.credits.length, s: XS.int }, Mn(round2(R.credits.filter((c) => normCur(c.currency) === 'DOP').reduce((t, c) => t + c.balance, 0)))]);
   rs.push([]);
   for (const a of infAlerts(R)) rs.push([{ v: a }]);
   if (other) rs.push([{ v: 'Hay facturas en otras monedas: el resumen suma solo los pesos; el detalle tiene cada una con su moneda.', s: XS.muted }]);
@@ -7062,6 +7389,19 @@ function onClick(e) {
     case 'cond-del-yes': deleteConduce(id); break;
     case 'cond-link': linkConduce(id, t.dataset.inv); break;
     case 'inv-to-cond': invoiceToConduce(id); break;
+    case 'inv-to-cr': invoiceToCredit(id); break;
+    case 'cr-new': closeSheet(); openCredit(null); break;
+    case 'cr-open': closeSheet(); openCredit(id); break;
+    case 'cr-all': S.crAll = !S.crAll; renderAll(); break;
+    case 'cr-file': { const i = $('#cr-file-in'); if (i) i.click(); break; }
+    case 'cr-view': { const f = $('#cr-form'), c = f && f.dataset.id ? S.creditos.find((x) => x.id === f.dataset.id) : null, fid = (f && f.dataset.file) || (c && c.fileId), ft = (f && f.dataset.file && f.dataset.ftype) || (c && c.fileType); if (fid) showFile({ title: 'Hoja de devolución' + (c ? ' ' + crNo(c) : ''), fileId: fid, fileType: ft }); break; }
+    case 'cr-refund': creditRefund(id); break;
+    case 'cr-refund-rm': creditRefundRm(id); break;
+    case 'cr-del': { const b = $('#cr-del-box'); if (b) b.hidden = false; break; }
+    case 'cr-del-no': { const b = $('#cr-del-box'); if (b) b.hidden = true; break; }
+    case 'cr-del-yes': deleteCredit(id); break;
+    case 'pay-cr-add': payCreditAdd(S.paymentId, id); break;
+    case 'pay-cr-rm': payCreditRm(S.paymentId, id); break;
     case 'inv-to-page': openPagePick(id); break;
     case 'digi-open': closeSheet(); openDigi(); break;
     case 'digi-pdf': digiSend('archivo', t); break;
@@ -7248,6 +7588,8 @@ async function hintCreate(id, btn) {
 function onChange(e) {
   const t = e.target;
   if (t.id === 'wc-photo-in' || t.id === 'wc-video-in') { const f = t.files[0]; t.value = ''; if (f) wFileMedia(t.id === 'wc-photo-in' ? 'photo' : 'video', f); return; }
+  if (t.id === 'cr-file-in') { const f = t.files[0]; t.value = ''; if (f) crPickFile(f); return; }
+  if (t.id === 'c-kind' && $('#c-ret-wrap')) $('#c-ret-wrap').hidden = t.value !== 'equipo';
   if (t.id === 'wc-photo-pick' || t.id === 'wc-video-pick') { const f = t.files[0]; t.value = ''; if (f) wFileMedia(t.id === 'wc-photo-pick' ? 'photo' : 'video', f, 'galeria'); return; }
   if (t.id === 'f-proj') { $('#f-newproj-wrap').hidden = t.value !== '__new'; if (t.value === '__new') $('#f-newproj').focus(); }
   if (t.id === 'f-order' || t.id === 'mo-add') {
@@ -7316,6 +7658,7 @@ function onInput(e) {
   if (t.id === 'f-rnc' || t.id === 'f-num') liveHelp(t);
   if (S.sheet && S.sheet.type === 'inv' && t.closest && t.closest('#inv-form') && !/^(ab|tc|mo)-/.test(String(t.id || '')) && !(t.dataset && t.dataset.cpick)) S.sheet.dirty = true;
   if (S.sheet && S.sheet.type === 'cond' && t.closest && t.closest('#cond-form')) S.sheet.dirty = true;
+  if (S.sheet && S.sheet.type === 'cr' && t.closest && t.closest('#cr-form') && !/^cr-rf-/.test(String(t.id || ''))) S.sheet.dirty = true;
 }
 function onSubmit(e) {
   const f = e.target;
@@ -7323,6 +7666,7 @@ function onSubmit(e) {
   if (f.id === 'inv-form') saveInvoice(f);
   else if (f.id === 'w-add') addWorker();
   else if (f.id === 'sup-form') saveSupplier(f);
+  else if (f.id === 'cr-form') saveCredit(f);
   else if (f.id === 'att-rules-form') saveAttRules();
   else if (f.id === 'cond-form') saveConduce(f);
   else if (f.id === 'order-form') saveOrder(false);
@@ -7446,8 +7790,8 @@ function subscribe() {
   db.doc('settings/digitacion').onSnapshot((snap) => { S.digi = (snap.exists && snap.data()) || {}; scheduleRender(); }, (err) => console.warn(err));
   db.doc('settings/conduces').onSnapshot((snap) => { S.condCfg = (snap.exists && snap.data()) || {}; scheduleRender(); }, (err) => console.warn(err));
   db.doc('settings/informe').onSnapshot((snap) => { S.inf = (snap.exists && snap.data()) || {}; scheduleRender(); }, (err) => console.warn(err));
-  const done = () => { if (S.got.projects && S.got.invoices && S.got.payments && S.got.orders && S.got.conduces && S.got.workers && S.got.asistencia && S.got.suppliers && S.got.envios && S.got.papelera && S.got.traslados && S.dbState === 'loading') { S.dbState = 'ready'; setTimeout(retryOffline, 1500); setTimeout(() => { fixCreditSigns().catch((e) => console.warn(e)); fixAttRules().catch((e) => console.warn(e)); fixPayNumbers().catch((e) => console.warn(e)); scheduleLink(); purgeTrash(false).catch((e) => console.warn(e)); measureStorage(); }, 2500); } };
-  for (const name of ['projects', 'invoices', 'payments', 'orders', 'conduces', 'workers', 'asistencia', 'suppliers', 'envios', 'papelera', 'traslados']) {
+  const done = () => { if (S.got.projects && S.got.invoices && S.got.payments && S.got.orders && S.got.conduces && S.got.workers && S.got.asistencia && S.got.suppliers && S.got.envios && S.got.papelera && S.got.traslados && S.got.creditos && S.dbState === 'loading') { S.dbState = 'ready'; setTimeout(retryOffline, 1500); setTimeout(() => { fixCreditSigns().catch((e) => console.warn(e)); fixAttRules().catch((e) => console.warn(e)); fixPayNumbers().catch((e) => console.warn(e)); scheduleLink(); purgeTrash(false).catch((e) => console.warn(e)); measureStorage(); }, 2500); } };
+  for (const name of ['projects', 'invoices', 'payments', 'orders', 'conduces', 'workers', 'asistencia', 'suppliers', 'envios', 'papelera', 'traslados', 'creditos']) {
     db.collection(name).onSnapshot((snap) => {
       S[name] = snap.docs.map((d) => ({ ...d.data(), id: d.id }));
       S.got[name] = true;
