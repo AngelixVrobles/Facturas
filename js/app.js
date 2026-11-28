@@ -10,7 +10,7 @@ const LIB = {
   qrgen: 'js/qr.js',
 };
 const PDF_CREATOR = 'Facturas de Proyectos';
-const APP_VERSION = '1.39.0';
+const APP_VERSION = '1.39.1';
 const SVG = (d) => `<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
 const ICON = {
   lock: SVG('<rect x="5" y="10.5" width="14" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>'),
@@ -102,7 +102,7 @@ const DEFAULT_ORDER_NOTE = 'Toda factura recibida por compras deberá estar acom
 const S = {
   tab: 'facturas', filter: 'pendientes', projectFilter: 'all', search: '', paymentId: null,
   projects: [], invoices: [], payments: [], orders: [], conduces: [], workers: [], asistencia: [], suppliers: [], envios: [], papelera: [], traslados: [], creditos: [], settings: {}, attRules: {}, digi: {}, bk: {}, inf: {}, condCfg: {}, envioPending: null, got: { projects: false, invoices: false, payments: false, orders: false, conduces: false, workers: false, asistencia: false, suppliers: false, envios: false, papelera: false, traslados: false, creditos: false },
-  attProject: '', attSheet: '', attDay: 0, orderFilter: 'todas', orderSearch: '', orderProject: 'all', orderReq: '', orderReqName: '', itemsProg: null, itemsAsk: false, condFilter: 'esperando', crAll: false, condSearch: '', condProject: 'all', trProject: 'all', trSearch: '', sort: { inv: null, cond: null, ord: null, tr: null }, sel: new Set(), todoAll: false, focus: null, invOrder: 'all', dateFilter: '', dateFrom: '', dateTo: '', showAll: new Set(),
+  attProject: '', attSheet: '', attDay: 0, orderFilter: 'todas', orderSearch: '', orderProject: 'all', orderReq: '', orderReqName: '', itemsProg: null, condFilter: 'esperando', crAll: false, condSearch: '', condProject: 'all', trProject: 'all', trSearch: '', sort: { inv: null, cond: null, ord: null, tr: null }, sel: new Set(), todoAll: false, focus: null, invOrder: 'all', dateFilter: '', dateFrom: '', dateTo: '', showAll: new Set(),
   dbState: 'loading', aiState: 'ok', queue: [], sheet: null, payDel: false, busyPdf: false, pdfMsg: '',
   updateReg: null, updating: false, ready: null, restoreFile: null,
 };
@@ -816,12 +816,12 @@ function hitLineHTML(i, words) {
 // Mientras se busca: si hay facturas sin sus artículos leídos, el buscador no ve lo que traen.
 function itemsHintHTML(D) {
   if (S.itemsProg) return `<p class="hint f-items">Leyendo los artículos de las facturas: ${S.itemsProg.n} de ${S.itemsProg.of}…</p>`;
-  const miss = D.invoices.filter(itemsMissing);
-  if (!miss.length) return '';
-  const nAi = miss.filter((i) => !i.xmlId).length;
-  if (S.itemsAsk && ai.hasKey()) return `<p class="hint f-items">Son ${plural(nAi, 'factura', 'facturas')} para la lectura automática: cada una cuesta más o menos lo mismo que leerla otra vez. <button type="button" class="link" data-act="items-read-all" data-ok="1">Sí, leer sus artículos</button> <button type="button" class="link" data-act="items-ask-no">Ahora no</button></p>`;
-  const can = ai.hasKey() || miss.some((i) => i.xmlId);
-  return `<p class="hint f-items">El buscador también busca en lo que trae cada factura, pero ${plural(miss.length, 'factura todavía no tiene', 'facturas todavía no tienen')} sus artículos leídos. ${can ? `<button type="button" class="link" data-act="items-read-all">Leer sus artículos</button>` : '<button type="button" class="link" data-act="settings">Agrega tu clave de API en Ajustes</button> para leerlos.'}</p>`;
+  const miss = itemsAutoList(D), all = D.invoices.filter((i) => itemsMissing(i) && !needsReading(i));
+  if (!all.length) return '';
+  if (!miss.length) return `<p class="hint f-items">El buscador también busca en lo que trae cada factura, pero ${plural(all.length, 'factura todavía no tiene', 'facturas todavía no tienen')} sus artículos leídos. <button type="button" class="link" data-act="settings">Agrega tu clave de API en Ajustes</button> y se leen solos.</p>`;
+  return itemsAutoOn()
+    ? `<p class="hint f-items">El buscador también busca en lo que trae cada factura. Faltan los artículos de ${plural(miss.length, 'factura', 'facturas')}: se están leyendo solos, de una en una. <button type="button" class="link" data-act="items-auto-off">Pausar</button></p>`
+    : `<p class="hint f-items">El buscador también busca en lo que trae cada factura, pero ${plural(miss.length, 'factura todavía no tiene', 'facturas todavía no tienen')} sus artículos leídos. <button type="button" class="link" data-act="items-auto-on">Leerlos solos</button></p>`;
 }
 function visibleList(D) {
   const q = norm(S.search);
@@ -1027,6 +1027,7 @@ async function measureStorage() {
 
 function renderAll() {
   const D = derive();
+  scheduleItemsAuto();
   $$('.tabs [data-tab]').forEach((b) => { if (b.dataset.tab === S.tab) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current'); });
   { const m = $('.tabs .more-tab'); if (m) { if (S.tab === 'asistencia' || S.tab === 'proyectos' || S.tab === 'traslados') m.setAttribute('aria-current', 'page'); else m.removeAttribute('aria-current'); } }
   for (const t of ['facturas', 'conduces', 'ordenes', 'traslados', 'pagos', 'asistencia', 'proyectos']) $('#v-' + t).hidden = S.tab !== t;
@@ -1340,6 +1341,7 @@ function renderTodo(D) {
   const rows = [];
   if (unread.length) rows.push(ai.hasKey() ? row(unread.length, plural(unread.length, 'factura sin leer', 'facturas sin leer'), b('read-all', 'Leer todas'))
     : row(unread.length, `${plural(unread.length, 'factura', 'facturas')} sin datos. Con la clave de API se llenan solas.`, b('settings', 'Ajustes')));
+  { const n = itemsAutoList(D).length; if (n) rows.push(itemsAutoOn() ? row(n, `${plural(n, 'factura de antes', 'facturas de antes')}: se están leyendo solos sus artículos, para buscarlas por lo que traen`, b('items-auto-off', 'Pausar')) : row(n, `${plural(n, 'factura', 'facturas')} sin sus artículos leídos: el buscador no ve lo que traen`, b('items-auto-on', 'Leerlos solos'))); }
   if (review.length) rows.push(row(review.length, plural(review.length, 'factura con algo que revisar', 'facturas con algo que revisar'), b('focus', 'Ver', ' data-f="revisar"'), 'warn'));
   if (noOrd.length) rows.push(row(noOrd.length, plural(noOrd.length, 'factura sin orden de compra', 'facturas sin orden de compra'), b('focus', 'Ver', ' data-f="sinorden"'), 'warn'));
   const condWait = D.conduces.filter((c) => !c.invoiceId && c.ai !== 'pending' && !c.equipo);
@@ -2912,8 +2914,9 @@ function invItemsHTML(i, edit) {
   const canRead = edit && i.ai !== 'pending' && !i.notInvoice && (!!i.xmlId || (readableFile(i) && ai.hasKey()));
   const readBtn = (label) => `<button type="button" class="link" data-act="inv-items-read" data-id="${esc(i.id)}"${S.itemsProg ? ' disabled' : ''}>${label}</button>`;
   if (!its || !its.length) {
-    if (!canRead) return '';
-    return `<div class="msg" id="inv-items"><span>${its ? 'No se le encontraron artículos a esta factura.' : 'Todavía no se han leído los artículos de esta factura: con ellos la encuentras en el buscador por lo que trae.'} ${readBtn(its ? 'Leer otra vez' : 'Leer sus artículos')}</span></div>`;
+    if (its || !canRead) return '';
+    const auto = itemsAutoOn() && !needsReading(i);
+    return `<div class="msg" id="inv-items"><span>${auto ? 'Sus artículos se están leyendo solos, con los de las demás facturas de antes; con ellos la encuentras en el buscador por lo que trae.' : 'Todavía no se han leído los artículos de esta factura: con ellos la encuentras en el buscador por lo que trae.'} ${readBtn(auto ? 'Leerlos ya' : 'Leer sus artículos')}</span></div>`;
   }
   const words = searchWords(S.search), hit = new Set(words.length ? itemHits(i, words) : []);
   const cur = normCur(i.currency);
@@ -3165,6 +3168,7 @@ async function openSettings() {
       <div class="fields">
         <div class="field full"><label for="st-key">Clave de API</label><input id="st-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-…" value="${esc(ai.getKey())}"></div>
         <div class="field full"><label for="st-model">Modelo</label><select id="st-model">${models}</select></div>
+        <label class="field full check-row"><input type="checkbox" id="st-items-auto"${itemsAutoOn() ? ' checked' : ''}><span>Leer solos los artículos de las facturas de antes<small>Para buscarlas por lo que traen. Se leen de una en una mientras la app está abierta en este aparato; cada una cuesta más o menos lo mismo que leerla otra vez.</small></span></label>
       </div>
       <div class="actions"><button type="button" class="btn" data-act="ai-test">${ICON.spark} Probar la clave</button></div>
       <p class="usage" id="st-ai-status"></p>
@@ -3547,7 +3551,7 @@ async function addXml(item, f) {
   if (isNum(x.total)) fields.amount = round2(x.total);
   if (isNum(x.itbis)) fields.itbis = round2(x.itbis);
   if (x.rncComprador) fields.buyerRnc = x.rncComprador;
-  if (x.items && x.items.length) fields.items = x.items;
+  fields.items = x.items || [];
   signAmounts(fields);
   const same = S.invoices.find((i) => RD.normNcf(i.number) === x.encf && (!i.rnc || RD.normRnc(i.rnc) === x.rncEmisor));
   const xo = x.ordenCompra ? orderByNumberText(x.ordenCompra, (same && same.projectId) || item.projectId) : null;
@@ -3685,7 +3689,7 @@ function parseAI(out, inv) {
   const itb = parseAmount(s(o.itbis, 40)); if (isNum(itb) && itb >= 0 && itb < 1e12 && !keep('itbis')) upd.itbis = round2(itb);
   if (o.moneda && !official) upd.currency = normCur(o.moneda);
   const con = s(o.concepto, 140); if (con) upd.concept = con;
-  { const its = aiItems(o.articulos); if (its && !(inv && inv.fiscal === 'xml' && Array.isArray(inv.items) && inv.items.length)) upd.items = its; }
+  if (!(inv && inv.fiscal === 'xml' && Array.isArray(inv.items) && inv.items.length)) { const its = aiItems(o.articulos); if (its) upd.items = its; else if (!(inv && Array.isArray(inv.items))) upd.items = []; }
   const buyer = RD.normRnc(o.rnc_cliente); if ((buyer.length === 9 || buyer.length === 11) && !keep('buyerRnc')) upd.buyerRnc = buyer;
   const pname = s(o.proyecto, 80);
   const hasProject = inv && inv.projectId && S.projects.some((p) => p.id === inv.projectId);
@@ -3807,7 +3811,6 @@ async function readMany(list, quiet) {
 const readableFile = (i) => !!i.fileId && (i.fileType === 'application/pdf' || String(i.fileType || '').startsWith('image/'));
 // Las que todavía no tienen sus artículos leídos (las de antes de que la app los guardara).
 const itemsMissing = (i) => !Array.isArray(i.items) && !i.notInvoice && i.ai !== 'pending' && (!!i.xmlId || readableFile(i));
-const ITEMS_ASK = 20; // con más que estas, se pregunta antes de leer (cuesta)
 const ITEMS_SCHEMA = { type: 'object', properties: { articulos: AI_ITEMS }, required: ['articulos'], additionalProperties: false };
 function itemsPrompt(text, withImage) {
   const t = String(text || '').trim();
@@ -3831,7 +3834,7 @@ async function readItemsWithAI(invId, input) {
   if (S.aiState !== 'ok') { S.aiState = 'ok'; scheduleRender(); }
   const its = aiItems(out && out.articulos);
   if (!its || !S.invoices.some((x) => x.id === invId)) return 'failed';
-  try { await dbw(() => db.doc('invoices/' + invId).update({ items: its })); } catch (e) { console.error(e); return 'failed'; }
+  try { await dbw(() => db.doc('invoices/' + invId).update({ items: its, itemsClaim: '' })); } catch (e) { console.error(e); return 'failed'; }
   return 'done';
 }
 // Leer los artículos de varias facturas: las del XML salen del XML (sin la clave de API); las demás, con la lectura automática.
@@ -3843,7 +3846,6 @@ async function readItemsMany(list) {
   const todo = [...xml, ...(ai.hasKey() ? rest : [])], skipped = ai.hasKey() ? 0 : rest.length;
   if (!todo.length) return;
   S.itemsProg = { n: 0, of: todo.length, ok: 0, stop: false };
-  S.itemsAsk = false;
   scheduleRender();
   toast(todo.length > 1 ? `Leyendo los artículos de ${plural(todo.length, 'factura', 'facturas')}…` : 'Leyendo los artículos de la factura…');
   const step = (r) => { S.itemsProg.n++; if (r === 'done') S.itemsProg.ok++; scheduleRender(); return r; };
@@ -3865,6 +3867,55 @@ async function readItemsMany(list) {
     const { ok, of } = S.itemsProg;
     toast((ok === of ? (of === 1 ? 'Listo: se leyeron los artículos de la factura.' : `Listo: se leyeron los artículos de ${plural(ok, 'factura', 'facturas')}.`) : `Se leyeron los artículos de ${ok} de ${of}. Las demás puedes intentarlas otra vez.`) + (skipped ? ` Para las otras ${skipped}, agrega tu clave de API en Ajustes.` : ''));
   } finally { S.itemsProg = null; scheduleRender(); }
+}
+/* ---------- los artículos de las facturas de antes se leen solos ---------- */
+// Las facturas leídas antes de que la app guardara sus renglones: se les leen solos los artículos, de una en una, mientras
+// la app está abierta en el aparato que tiene la clave de API (las del XML, del XML, sin la clave). Lo que se manda a leer
+// va primero. Se pausa en «Para hacer» o en Ajustes (cada aparato decide). Si dos aparatos tienen la clave, no la leen los dos.
+const LS_ITEMS_AUTO = 'facturas.articulosSolos';
+const itemsAutoOn = () => { try { return localStorage.getItem(LS_ITEMS_AUTO) !== '0'; } catch (e) { return true; } };
+function setItemsAuto(on) {
+  try { localStorage.setItem(LS_ITEMS_AUTO, on ? '1' : '0'); } catch (e) { /* sin almacenamiento */ }
+  if (on) { itemsAutoFails.clear(); scheduleItemsAuto(300); }
+  scheduleRender();
+}
+let devIdC = '';
+function devId() {
+  if (devIdC) return devIdC;
+  try { devIdC = localStorage.getItem('facturas.aparato') || ''; if (!devIdC) { devIdC = Math.random().toString(36).slice(2, 10); localStorage.setItem('facturas.aparato', devIdC); } } catch (e) { devIdC = Math.random().toString(36).slice(2, 10); }
+  return devIdC;
+}
+const ITEMS_CLAIM_MS = 20 * 60000;
+const itemsAutoFails = new Map();
+const claimedByOther = (i) => { const m = /^([^|]+)\|(\d+)$/.exec(String(i.itemsClaim || '')); return !!m && m[1] !== devId() && Date.now() - Number(m[2]) < ITEMS_CLAIM_MS; };
+// Las que se pueden leer solas en este aparato (las nunca leídas se leen enteras con «Leer todas»).
+const itemsAutoList = (D) => D.invoices.filter((i) => itemsMissing(i) && !needsReading(i) && (!!i.xmlId || ai.hasKey()));
+const itemsAutoWants = (i) => (itemsAutoFails.get(i.id) || 0) < 2 && !claimedByOther(i) && (!!i.xmlId || S.aiState === 'ok');
+let itemsAutoBusy = false, itemsAutoT = null;
+function scheduleItemsAuto(ms = 2500) { if (!itemsAutoT && !itemsAutoBusy) itemsAutoT = setTimeout(itemsAutoStep, ms); }
+async function itemsAutoStep() {
+  itemsAutoT = null;
+  if (itemsAutoBusy || !itemsAutoOn() || !navigator.onLine || S.dbState !== 'ready' || !S.got.invoices || !canEdit()) return;
+  // Lo que se manda a leer (facturas nuevas, «Leer todas», un conduce) va primero.
+  if (aiJobs.length || aiRunning || readingMany || S.itemsProg) { scheduleItemsAuto(4000); return; }
+  const next = itemsAutoList(derive()).filter(itemsAutoWants).sort((a, b) => String(b.date || b.createdAt || '').localeCompare(String(a.date || a.createdAt || '')))[0];
+  if (!next) return;
+  itemsAutoBusy = true;
+  let r = 'failed';
+  try {
+    if (next.xmlId) {
+      const x = RD.parseEcfXml(await (await getBlob(next.xmlId)).text());
+      if (x) { await dbw(() => db.doc('invoices/' + next.id).update({ items: x.items || [] })); r = 'done'; }
+    } else {
+      await dbw(() => db.doc('invoices/' + next.id).update({ itemsClaim: devId() + '|' + Date.now() }));
+      const input = await aiInputFor(next);
+      if (input) r = await enqueueAI({ itemsId: next.id, input });
+    }
+  } catch (e) { console.warn('artículos solos', e); }
+  itemsAutoBusy = false;
+  if (r !== 'done') itemsAutoFails.set(next.id, (itemsAutoFails.get(next.id) || 0) + 1);
+  scheduleRender();
+  scheduleItemsAuto(r === 'done' ? 600 : 15000);
 }
 // Las que no se pudieron leer por falta de internet se leen solas cuando vuelve la conexión.
 function retryOffline() {
@@ -6254,7 +6305,7 @@ function orderMatchHTML(o, D, edit, has) {
     const what = x.got === m.want ? (m.want === 1 ? 'Trae lo que pidió' : `Trae los ${m.want} artículos`) : `Trae ${x.got} de los ${m.want} artículos`;
     return `<div class="o-mrow"><button type="button" class="o-pick" data-act="open-inv" data-id="${esc(i.id)}"><span><b class="mono">${esc(i.number ? 'NCF ' + RD.normNcf(i.number) : 'Factura sin NCF')}</b><small>${esc(sub)}</small><small class="o-mits">${esc(what + ': ' + x.its.slice(0, 3).map(itemLine).join(' · ') + (x.its.length > 3 ? '…' : ''))}</small></span></button>${edit ? `<button type="button" class="btn sm" data-act="order-link-inv" data-id="${esc(i.id)}" data-order="${esc(o.id)}">Enlazar</button>` : ''}</div>`;
   }).join('');
-  const more = unread ? `<p class="usage">${unread === 1 ? 'Una factura' : unread + ' facturas'}${o.supplier ? ' de este proveedor' : ''} todavía no ${unread === 1 ? 'tiene' : 'tienen'} sus artículos leídos, así que aquí no se ve lo que ${unread === 1 ? 'trae' : 'traen'}. <button type="button" class="link" data-act="items-read-order" data-id="${esc(o.id)}"${S.itemsProg ? ' disabled' : ''}>Leer sus artículos</button></p>` : '';
+  const more = unread ? `<p class="usage">${unread === 1 ? 'Una factura' : unread + ' facturas'}${o.supplier ? ' de este proveedor' : ''} todavía no ${unread === 1 ? 'tiene' : 'tienen'} sus artículos leídos, así que aquí no se ve lo que ${unread === 1 ? 'trae' : 'traen'}${itemsAutoOn() && ai.hasKey() ? ' (se están leyendo solos)' : ''}. <button type="button" class="link" data-act="items-read-order" data-id="${esc(o.id)}"${S.itemsProg ? ' disabled' : ''}>${itemsAutoOn() && ai.hasKey() ? 'Leer estas ya' : 'Leer sus artículos'}</button></p>` : '';
   return `<div class="o-match" id="o-match"><h3 class="h3">${has ? '¿Llegó otra parte en otra factura?' : '¿En qué factura vino?'}</h3>${rows ? `<p class="usage">${has ? 'Facturas sin orden' : 'Facturas'}${o.supplier ? ' de ' + esc(o.supplier) : ''} que traen lo que pidió esta orden:</p><div class="o-mlist">${rows}</div>` : ''}${more}</div>`;
 }
 function orderLinkResultsHTML(orderId, q) {
@@ -7679,8 +7730,8 @@ function onClick(e) {
     case 'pay-pdf': makePdf(S.paymentId); break;
     case 'pay-xlsx': exportPaymentExcel(S.paymentId); break;
     case 'list-xlsx': exportListExcel(); break;
-    case 'items-read-all': { const list = derive().invoices.filter(itemsMissing); if (!t.dataset.ok && ai.hasKey() && list.filter((i) => !i.xmlId).length > ITEMS_ASK) { S.itemsAsk = true; renderAll(); } else readItemsMany(list); break; }
-    case 'items-ask-no': S.itemsAsk = false; renderAll(); break;
+    case 'items-auto-on': setItemsAuto(true); toast('Listo: los artículos se van a leer solos, de una en una, mientras la app esté abierta.'); break;
+    case 'items-auto-off': setItemsAuto(false); toast('En pausa. Para seguir, toca «Leerlos solos».'); break;
     case 'items-read-order': { const D = derive(), o = D.orderById.get(id); if (o) readItemsMany(orderUnread(o, D)); break; }
     case 'inv-items-read': { const i = S.invoices.find((x) => x.id === id); if (i) readItemsMany([i]); break; }
     case 'pay-del': S.payDel = true; renderAll(); break;
@@ -8077,6 +8128,7 @@ function onSubmit(e) {
     if (key !== ai.getKey()) S.aiState = 'ok';
     ai.setKey(key);
     ai.setModel($('#st-model').value);
+    if ($('#st-items-auto') && $('#st-items-auto').checked !== itemsAutoOn()) setItemsAuto($('#st-items-auto').checked);
     write(() => db.doc('settings/general').set(data), 'Ajustes guardados').then((ok) => { if (ok) { S.settings = data; closeSheet(); renderAll(); } });
   }
 }
@@ -8109,7 +8161,7 @@ function bind() {
     img.dataset.fb = '1';
     RT.assets.objectUrl(decodeURIComponent(m[1])).then((u) => { if (u) img.src = u; });
   }, true);
-  window.addEventListener('online', () => { if (S.aiState !== 'ok') scheduleRender(); retryOffline(); });
+  window.addEventListener('online', () => { if (S.aiState !== 'ok') scheduleRender(); retryOffline(); scheduleItemsAuto(1500); });
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushAtt(); else scheduleRender(); });
   if (wideMQ && wideMQ.addEventListener) wideMQ.addEventListener('change', () => scheduleRender());
   setInterval(() => { if (document.visibilityState === 'visible') renderTodo(derive()); }, 300000);

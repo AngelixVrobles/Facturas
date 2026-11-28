@@ -71,6 +71,7 @@ const XML = `<?xml version="1.0" encoding="UTF-8"?>
   await page.waitForSelector('.empty h2');
   const I = await page.evaluate(async (d) => {
     const db = RT.db;
+    localStorage.setItem('facturas.articulosSolos', '0'); // la lectura sola se prueba al final
     await db.doc('settings/general').set({ company: 'SUCRE B. LANTIGUA CONSTRUCTORA, S.R.L.', companyRnc: '104595114', preparedBy: 'A. Robles' });
     const e = db.collection('projects').doc(); await e.set({ name: 'ENZO', createdAt: '2026-09-01T10:00:00.000Z' });
     await db.collection('suppliers').doc().set({ name: 'Ferretería Gama', rnc: '131000222', phone: '809-555-0101', creditDays: 30, createdAt: '2026-09-01T10:00:00.000Z' });
@@ -136,7 +137,7 @@ const XML = `<?xml version="1.0" encoding="UTF-8"?>
   await settle(page);
   got = await ids();
   check(got.includes(I.i1) && got.includes(I.i4) && got.length === 2, '«cemento» encuentra las dos facturas que lo traen');
-  check(/El buscador también busca en lo que trae cada factura, pero 2 facturas todavía no tienen sus artículos leídos\. Leer sus artículos/.test(await txt(page, '#f-sum')), 'avisa cuántas facturas todavía no tienen sus artículos leídos');
+  check(/El buscador también busca en lo que trae cada factura, pero 2 facturas todavía no tienen sus artículos leídos\. Leerlos solos/.test(await txt(page, '#f-sum')), 'avisa cuántas facturas todavía no tienen sus artículos leídos');
   await page.setViewportSize({ width: 1280, height: 900 });
   await settle(page, 600);
   check(/Trae: 10 Funda CEMENTO GRIS PORTLAND 42\.5KG/.test(await txt(page, '#f-list .inv-tbl')) && /Trae: 2 fundas CEMENTO GRIS/.test(await txt(page, '#f-list .inv-tbl')), 'en la computadora, la tabla también dice qué renglón coincide');
@@ -201,7 +202,7 @@ const XML = `<?xml version="1.0" encoding="UTF-8"?>
   await settle(page);
   check(/1 factura todavía no tiene sus artículos leídos/.test(await txt(page, '#f-sum')) && !(await ids()).length, 'antes de leerlos, «block» no encuentra nada y avisa que falta 1');
   const nCalls = calls.length;
-  await page.click('#f-sum [data-act="items-read-all"]');
+  await page.click('#f-sum [data-act="items-auto-on"]');
   const r5 = await waitUntil(async () => { const x = await inv(page, I.i5); return x && Array.isArray(x.items) && x.items.length ? x : null; }, 10000);
   check(r5 && r5.items.length === 2 && calls.length === nCalls, 'los de la factura del XML salen del XML, sin la lectura automática');
   await waitUntil(async () => (await ids()).includes(I.i5), 5000);
@@ -332,19 +333,50 @@ print(json.dumps({'hojas': wb.sheetnames, 'head': rows[0] if rows else [], 'rows
   check(xr.hojas.includes('Artículos de las facturas') && xr.head.join('|') === 'Proyecto|Proveedor|NCF|Fecha|Orden de compra|#|Cantidad|Unidad|Descripción|Precio|Importe', 'el Excel tiene la hoja «Artículos de las facturas»');
   check(xr.rows.length === 9 && xr.rows.some((r) => r[2] === 'B0100004521' && r[4] === 'OC-0001' && r[8] === 'VARILLA CORRUGADA 3/8 X 20' && r[10] === 500), 'un renglón por artículo, con su factura y su orden (9)');
 
-  // 9) Con muchas sin sus artículos, antes de gastar en la lectura, pregunta.
+  // 9) Las de antes se leen solas, de una en una, sin tocarlas; «Pausar» las detiene, y la que otro aparato ya está leyendo no se lee dos veces.
+  await page.evaluate(() => localStorage.setItem('facturas.articulosSolos', '0'));
   const i3doc = await inv(page, I.i3);
-  await page.evaluate(async (x) => { for (let k = 0; k < 21; k++) await RT.db.collection('invoices').doc().set({ projectId: x.e, supplier: 'Ferretería Gama', rnc: '131000222', number: 'B01000090' + String(10 + k), date: x.d, amount: 100, currency: 'DOP', itbis: 0, ai: 'done', notInvoice: false, fileId: x.f, fileType: 'image/png', thumbId: null, pages: 1, createdAt: '2026-11-20T10:00:00.000Z' }); }, { e: I.e, d: dayIso(-2), f: i3doc.fileId });
+  const seeded = await page.evaluate(async (x) => {
+    const out = [];
+    for (let k = 0; k < 4; k++) { const r = RT.db.collection('invoices').doc(); await r.set({ projectId: x.e, supplier: 'Ferretería Gama', rnc: '131000222', number: 'B01000090' + String(10 + k), date: x.d, amount: 100, currency: 'DOP', itbis: 0, ai: 'done', notInvoice: false, fileId: x.f, fileType: 'image/png', thumbId: null, pages: 1, createdAt: '2026-11-20T10:00:00.000Z', ...(k === 3 ? { itemsClaim: 'otroaparato|' + Date.now() } : {}) }); out.push(r.id); }
+    return out;
+  }, { e: I.e, d: dayIso(-2), f: i3doc.fileId });
   await page.fill('#f-search', 'cemento');
   await settle(page, 600);
-  check(/21 facturas todavía no tienen sus artículos leídos/.test(await txt(page, '#f-sum')), 'dice cuántas faltan (21)');
   const before = calls.length;
-  await page.click('#f-sum [data-act="items-read-all"]');
+  check(/El buscador también busca en lo que trae cada factura, pero 4 facturas todavía no tienen sus artículos leídos\. Leerlos solos/.test(await txt(page, '#f-sum')), 'en pausa: dice cuántas faltan y ofrece «Leerlos solos»');
+  if (!/sin sus artículos leídos/.test(await txt(page, '#todo'))) await page.click('[data-act="todo-all"]').catch(() => {});
+  check(/4 facturas sin sus artículos leídos: el buscador no ve lo que traen\s*Leerlos solos/.test(await txt(page, '#todo')), '«Para hacer» también lo dice, con «Leerlos solos»');
+  await page.waitForTimeout(3500);
+  check(calls.length === before, 'en pausa no lee nada');
+  for (let k = 0; k < 3; k++) answers.push({ articulos: [{ cantidad: String(k + 1), unidad: 'qq', descripcion: 'CEMENTO GRIS LOTE ' + (k + 1), precio: '500.00', importe: (500 * (k + 1)).toFixed(2) }] });
+  await page.click('#f-sum [data-act="items-auto-on"]');
+  const got3 = await waitUntil(async () => { const s3 = (await docs(page, 'invoices')).filter((i) => seeded.slice(0, 3).includes(i.id)); return s3.every((i) => Array.isArray(i.items) && i.items.length) ? s3 : null; }, 40000);
+  check(!!got3 && calls.length === before + 3, 'con «Leerlos solos» se leen solas, de una en una, sin tocarlas (3 lecturas)');
+  await page.waitForTimeout(3000);
+  const claimed = (await docs(page, 'invoices')).find((i) => i.id === seeded[3]);
+  check(!Array.isArray(claimed.items) && calls.length === before + 3, 'la que otro aparato ya está leyendo no se lee otra vez');
+  await settle(page, 600);
+  check(/Faltan los artículos de 1 factura: se están leyendo solos, de una en una\. Pausar/.test(await txt(page, '#f-sum')) && /1 factura de antes: se están leyendo solos sus artículos, para buscarlas por lo que traen\s*Pausar/.test(await txt(page, '#todo')), 'mientras tanto dice que se están leyendo solos, con «Pausar»');
+  check((await ids()).filter((x) => seeded.includes(x)).length === 3, 'y el buscador ya las encuentra por lo que traen');
+  await page.screenshot({ path: path.join(OUT, 'solos.png') });
+  await page.click('#f-sum [data-act="items-auto-off"]');
   await settle(page);
-  check(/Son 21 facturas para la lectura automática: cada una cuesta más o menos lo mismo que leerla otra vez\. Sí, leer sus artículos Ahora no/.test(await txt(page, '#f-sum')) && calls.length === before, 'con muchas, antes de leer pregunta (cuesta)');
-  await page.click('#f-sum [data-act="items-ask-no"]');
-  await settle(page);
-  check(/21 facturas todavía no tienen sus artículos leídos\. Leer sus artículos/.test(await txt(page, '#f-sum')) && calls.length === before, '«Ahora no» no lee nada');
+  check(/1 factura todavía no tiene sus artículos leídos\. Leerlos solos/.test(await txt(page, '#f-sum')) && await page.evaluate(() => localStorage.getItem('facturas.articulosSolos')) === '0', '«Pausar» las detiene');
+  await page.click('#settings-btn');
+  await page.waitForSelector('#st-items-auto');
+  check(!(await page.isChecked('#st-items-auto')), 'en Ajustes, la casilla «Leer solos los artículos de las facturas de antes» sigue lo mismo');
+  await page.check('#st-items-auto');
+  await page.click('#settings-form button[type="submit"]');
+  await page.waitForSelector('#settings-form', { state: 'detached' });
+  check(await page.evaluate(() => localStorage.getItem('facturas.articulosSolos')) === '1', 'y desde Ajustes se vuelve a encender');
+  // En un aparato que nunca lo ha tocado, viene encendido: se leen solas sin hacer nada.
+  await page.evaluate(() => localStorage.removeItem('facturas.articulosSolos'));
+  const before2 = calls.length;
+  answers.push({ articulos: [{ cantidad: '8', unidad: 'unidades', descripcion: 'TUBO PVC 4 PULGADAS', precio: '650.00', importe: '5200.00' }] });
+  const nueva = await page.evaluate(async (x) => { const r = RT.db.collection('invoices').doc(); await r.set({ projectId: x.e, supplier: 'Ferretería Gama', rnc: '131000222', number: 'B0100009030', date: x.d, amount: 5200, currency: 'DOP', itbis: 0, ai: 'done', notInvoice: false, fileId: x.f, fileType: 'image/png', thumbId: null, pages: 1, createdAt: '2026-11-21T10:00:00.000Z' }); return r.id; }, { e: I.e, d: dayIso(-2), f: i3doc.fileId });
+  const rn = await waitUntil(async () => { const x = await inv(page, nueva); return x && Array.isArray(x.items) && x.items.length ? x : null; }, 30000);
+  check(rn && rn.items[0].desc === 'TUBO PVC 4 PULGADAS' && calls.length === before2 + 1, 'sin tocar nada (viene encendido), la factura de antes se lee sola');
 
   console.log('problemas:', problems.length ? problems : 'ninguno');
   await browser.close();
