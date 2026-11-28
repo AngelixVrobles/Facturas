@@ -101,8 +101,20 @@
     const num = (n) => { const v = g(n); if (!v) return null; const x = Number(v.replace(/,/g, '')); return Number.isFinite(x) ? x : null; };
     const encf = normNcf(g('eNCF'));
     if (!/^E\d{12}$/.test(encf)) return null;
+    // Los renglones (<DetallesItems><Item>): lo que trae la factura, para buscarla después por lo que se compró.
+    const items = [];
+    const kid = (el, n) => { for (const c of el.children) if (String(c.localName || c.nodeName).toLowerCase() === n) return String(c.textContent || '').trim(); return ''; };
+    const nnum = (v) => { if (!v) return null; const x = Number(v.replace(/,/g, '')); return Number.isFinite(x) ? x : null; };
+    for (const el of doc.getElementsByTagName('*')) {
+      if (String(el.localName || el.nodeName).toLowerCase() !== 'item' || !el.children.length) continue;
+      const desc = (kid(el, 'nombreitem') || kid(el, 'descripcionitem')).replace(/\s+/g, ' ').slice(0, 160);
+      if (!desc) continue;
+      const u = kid(el, 'unidadmedida');
+      items.push({ qty: nnum(kid(el, 'cantidaditem')), unit: /^\d*$/.test(u) ? '' : u.slice(0, 20), desc, price: nnum(kid(el, 'preciounitarioitem')), total: nnum(kid(el, 'montoitem')) });
+      if (items.length >= 200) break;
+    }
     return {
-      encf,
+      encf, items,
       tipo: g('TipoeCF'),
       vence: dmyToIso(g('FechaVencimientoSecuencia')),
       rncEmisor: normRnc(g('RNCEmisor')),

@@ -824,6 +824,37 @@ input[type="date"]::-webkit-calendar-picker-indicator { margin: 0 0 0 4px; paddi
 .xml-card summary { cursor: pointer; color: #2242C0; font-weight: 600; }
 .xml-card pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.4 var(--font-data); max-height: 50vh; overflow: auto; background: #F1F3F7; padding: 10px; border-radius: 8px; }
 
+/* 1.39: buscar por lo que trae la factura, ¿en qué factura vino?, solicitante y directorio de proveedores. */
+.inv-hit { display: block; font: 13px/1.35 var(--font-body); color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inv-hit small { color: var(--muted); }
+.tbl .c-tags .inv-hit { white-space: normal; margin-bottom: 2px; }
+.f-items { margin: 6px 0 0; }
+.inv-items .it-tbl { margin-top: 8px; font-size: 13px; }
+.it-tbl .w-q { width: 14%; } .it-tbl .w-u { width: 17%; } .it-tbl .w-t { width: 25%; }
+.it-tbl td { white-space: normal; padding: 6px 8px; vertical-align: top; }
+.it-tbl th .th-txt { padding: 7px 8px; }
+.it-tbl tr.hit td { background: color-mix(in srgb, var(--accent) 12%, var(--surface)); font-weight: 600; }
+.ord-by { font-size: 13px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ord-by b { color: var(--ink); font-weight: 600; }
+.ord-hint { font-size: 13px; font-weight: 600; color: var(--accent); }
+.ord-tbl td:last-child small.o-maybe { color: var(--accent); font-weight: 600; }
+.o-reqf { display: flex; }
+.o-req-pick { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); max-width: 100%; }
+.o-req-pick select { border: 1px solid var(--line); background: var(--surface); color: var(--ink); border-radius: 10px; padding: 8px 10px; font: 550 14px/1.2 var(--font-body); min-height: 38px; max-width: 100%; min-width: 0; }
+.ord-tbl .w-ord { width: 10%; } .ord-tbl .w-date { width: 12.5%; } .ord-tbl .w-by { width: 13%; } .ord-tbl .w-st { width: 10%; } .ord-tbl .w-trips { width: 9%; } .ord-tbl .w-amt { width: 11%; } .ord-tbl .w-ncf { width: 15%; }
+.o-match { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.o-match .h3 { margin: 6px 0 0; font-size: 15px; }
+.o-match .usage { margin: 0; }
+.o-mlist { display: flex; flex-direction: column; gap: 8px; }
+.o-mrow { display: flex; align-items: center; gap: 8px; }
+.o-mrow .o-pick { flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 12px; }
+.o-mrow .o-pick small { white-space: normal; }
+.o-mrow .o-pick small.o-mits { color: var(--ink); font: 12.5px/1.35 var(--font-body); margin-top: 2px; }
+.o-picks.sups { max-height: 60vh; }
+.o-picks.sups .o-pick small { white-space: normal; font: 12.5px/1.35 var(--font-body); }
+.o-pick .sup-add { display: inline-flex; align-items: center; gap: 4px; flex: none; font-size: 13px; color: var(--accent); }
+.o-pick .sup-add svg { width: 14px; height: 14px; }
+.sup-facts { margin: 0; }
 </style>
 </head>
 <body>
@@ -878,6 +909,7 @@ input[type="date"]::-webkit-calendar-picker-indicator { margin: 0 0 0 4px; paddi
     <button type="button" class="btn primary block" data-act="new-order" id="o-new">Nueva orden de compra</button>
     <div class="seg seg4" id="o-seg" role="group" aria-label="Órdenes con o sin factura"></div>
     <div class="chips" id="o-chips" role="group" aria-label="Proyecto" hidden></div>
+    <div class="o-reqf" id="o-reqf" hidden></div>
     <label class="search-box">
       <span class="sr">Buscar órdenes</span>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>
